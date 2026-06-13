@@ -1,89 +1,62 @@
-# Alchemy Hyperliquid — Builder API
+# perps-platform
 
-> **Scope:** This repo is the **builder-codes product, Hyperliquid-only** — a
-> developer/agent-facing REST API + SDK + MCP server that routes signed orders
-> into Hyperliquid with our builder code attached. It is deliberately
-> single-venue.
->
-> The **multi-venue trading platform** (a liquid.trade competitor — Hyperliquid
-> + Lighter + Ostium behind one trading UI) lives in a separate repo,
-> `perps-platform`, which was forked from this one and reuses this Hyperliquid
-> engine as its first venue adapter. Keep venue-agnostic/aggregation work there;
-> keep Hyperliquid builder-code work here.
+A multi-venue perpetuals trading platform — a liquid.trade competitor — that
+routes orders across **Hyperliquid, Lighter, and Ostium** behind one trading UI
+and one API.
 
-A zero-custody REST builder API for trading on Hyperliquid. The user's private key never leaves their machine — our backend builds the action, the client signs it locally, and we forward the signed payload to Hyperliquid's `/exchange` endpoint with Alchemy's builder code attached. We earn the builder fee on every routed trade.
+> **Origin:** This repo was forked from the Hyperliquid **builder-codes** repo
+> (`hyperliquid-builder-api`) so it inherits the full Hyperliquid engine —
+> EIP-712 phantom-agent signing, builder-fee injection, the HL client, the
+> jurisdiction gate, and all its tests. Hyperliquid is therefore the platform's
+> first venue adapter, not a rewrite. The builder-codes repo stays single-venue
+> and developer/agent-facing; **venue-agnostic and aggregation work happens
+> here.**
 
-## Repo layout
+## What's different from the builder repo
 
-```
-apps/
-  api/          Fastify + TypeScript backend
-  web/          Next.js 14 site (landing + docs + /approve)
-packages/
-  shared/       Shared TypeScript types
-  sdk-preview/  Thin typed fetch client (preview, no signing)
-render.yaml     Render deploy config (two services)
-.env.example    Documented environment variables
-```
+| | `hyperliquid-builder-api` | `perps-platform` (this repo) |
+|---|---|---|
+| Audience | Developers / agents integrating HL | Retail traders |
+| Venues | Hyperliquid only | Hyperliquid + Lighter + Ostium |
+| Product | REST builder API + SDK + MCP | Trading app + aggregating API |
+| HL revenue | Builder fee | Builder fee (kept — routing into HL still earns) |
 
-## Prerequisites
+## The venue abstraction
 
-1. **Node 20+** and **npm 10+**.
-2. **An Alchemy builder wallet** — a Hyperliquid account funded with ≥ 100 USDC in perps, running in standard (non-account-abstraction) mode. This is the wallet that earns the builder fee. Put its address in `ALCHEMY_BUILDER_ADDRESS`.
-3. **A WalletConnect Cloud project ID** for the wallet-connect flow on `/approve`. Get one at https://cloud.walletconnect.com.
+The core new piece is `packages/venues` — a `Venue` interface that hides the
+fact that the three launch venues share neither a signing model nor a settlement
+model:
+
+- **Hyperliquid** — `eip712` signing, `sync` settlement, earns a builder fee.
+- **Lighter** — `venueSig` (L2 API-key) signing, `sync` settlement.
+- **Ostium** — `evmTx` (Arbitrum tx) signing, `asyncOnchain` settlement, needs gas.
+
+The app/API layer talks to venues only through the registry
+(`getVenue`, `listVenues`). Adding a venue is one registration plus one adapter
+file. See `packages/venues/ROADMAP.md` for the build order — the next concrete
+step is extracting the HL helpers out of `apps/api` into the `HyperliquidVenue`
+adapter so it owns the full lifecycle.
+
+## Open product decisions (gate the build)
+
+1. **Revenue on non-HL venues** — Lighter/Ostium have no builder-code primitive.
+   Coverage-only, or a referral/fee-wrapper for monetization?
+2. **Ostium gas/custody** — fund ETH on Arbitrum via the embedded wallet, or add
+   a relayer/paymaster to preserve the gasless feel?
+3. **Routing scope** — v1 "user picks venue" vs. smart cross-venue best
+   execution (the larger, more differentiating effort).
 
 ## Local dev
 
 ```bash
 cp .env.example .env
-# edit .env with your builder address + WC project id
 npm install
-npm run dev
-```
-
-This boots:
-- `apps/web` at http://localhost:3000
-- `apps/api` at http://localhost:8080
-
-## Tests
-
-```bash
+npm run build
 npm test
 ```
 
-Unit tests live under `apps/api/test/` (vitest). They cover builder-fee injection, signature recovery for L1 and EIP-712 actions, cap enforcement, replay/idempotency guards, metrics accounting, and a mocked build→send roundtrip.
-
-### Integration tests (real Hyperliquid testnet)
-
-```bash
-cd apps/api && npm run test:integration
-```
-
-Hits `api.hyperliquid-testnet.xyz` over the network — proves our wire shapes match HL's current API, which mocked unit tests can drift from. Two tiers:
-
-- **Read + build** — always runs, no keys needed.
-- **Signed roundtrip** (approveBuilderFee → resting order → openOrders → cancel) — runs only when `HL_TESTNET_PRIVATE_KEY` is set to a wallet funded on the [testnet faucet](https://app.hyperliquid-testnet.xyz/drip). The configured `ALCHEMY_BUILDER_ADDRESS` must also have a funded testnet account. Never use a mainnet key.
-
-## Deploying to Render
-
-1. Push this repo to GitHub.
-2. In Render: **New → Blueprint** → point at the repo. Render reads `render.yaml` and creates three services: `alchemy-hl-api`, `alchemy-hl-web`, `alchemy-hl-mcp`.
-3. Generate two 32-byte hex secrets locally — these are shared across multiple services so generate them once and copy:
-   ```
-   openssl rand -hex 32   # → OAUTH_SIGNING_SECRET (used on api + web + mcp)
-   openssl rand -hex 32   # → AGENT_MASTER_SEED (used on api only)
-   ```
-4. In each service's **Environment** tab, fill in the `sync: false` secrets:
-   - `alchemy-hl-api`: `ALCHEMY_BUILDER_ADDRESS`, `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `AGENT_MASTER_SEED`, `OAUTH_SIGNING_SECRET`
-   - `alchemy-hl-web`: `NEXT_PUBLIC_BUILDER_ADDR`, `NEXT_PUBLIC_PRIVY_APP_ID`, `OAUTH_SIGNING_SECRET`
-   - `alchemy-hl-mcp`: `ALCHEMY_HL_TRADE_KEY` (optional fallback hot key), `OAUTH_SIGNING_SECRET`
-5. Deploy. Render hits `/healthz` to gate readiness on api + mcp. Web is gated on a successful Next.js build.
-6. Verify each service with `curl https://<service>.onrender.com/healthz` before adding the connector to Claude Web.
-
-## Bumping the fee config without a redeploy
-
-The fee BPS values are read from env, so you can update them in the Render service's Environment tab and restart — no code change, no redeploy. Hard caps (`MAX_BUILDER_FEE_BPS_*`) exist in env too but the protocol enforces its own ceilings (10 bps perps, 100 bps spot), so raising ours above those won't help.
-
-## Status
-
-Scaffold in place. Endpoints land next — see the project plan in the conversation.
+Everything inherited from the builder repo (the `apps/api` relay, `apps/web`,
+the SDK/MCP packages) still works; this repo adds `packages/venues` on top. As
+the platform specializes, the builder-codes-specific surfaces (SDK-as-product,
+MCP, the `/approve` marketing flow) can be pruned — tracked as follow-up, not
+done yet so the build stays green.

@@ -1,8 +1,8 @@
 {
-  "name": "alchemy-hyperliquid",
+  "name": "perps-platform",
   "private": true,
   "version": "0.0.1",
-  "description": "Alchemy Hyperliquid — zero-custody REST builder API for Hyperliquid.",
+  "description": "Multi-venue perps trading platform (Hyperliquid + Lighter + Ostium). Forked from the Hyperliquid builder-codes repo; HL is the first venue adapter.",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -11,10 +11,10 @@
     "dev": "npm-run-all --parallel dev:*",
     "dev:api": "npm run dev -w @alchemy-hl/api",
     "dev:web": "npm run dev -w @alchemy-hl/web",
-    "build": "npm run build -w @alchemy-hl/shared && npm run build -w @alchemy-hl/sdk-preview && npm run build -w @alchemy-hl/sdk && npm run build -w @alchemy-hl/api && npm run build -w @alchemy-hl/web",
-    "test": "npm run test -w @alchemy-hl/api && npm run test -w @alchemy-hl/sdk && npm run test -w @alchemy-hl/web",
+    "build": "npm run build -w @alchemy-hl/shared && npm run build -w @alchemy-hl/venues && npm run build -w @alchemy-hl/sdk-preview && npm run build -w @alchemy-hl/sdk && npm run build -w @alchemy-hl/api && npm run build -w @alchemy-hl/web",
+    "test": "npm run test -w @alchemy-hl/venues && npm run test -w @alchemy-hl/api && npm run test -w @alchemy-hl/sdk && npm run test -w @alchemy-hl/web",
     "lint": "echo 'lint not configured yet'",
-    "typecheck": "tsc -b apps/api apps/web packages/shared packages/sdk-preview --pretty"
+    "typecheck": "tsc -b apps/api apps/web packages/shared packages/venues packages/sdk-preview --pretty"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5",
