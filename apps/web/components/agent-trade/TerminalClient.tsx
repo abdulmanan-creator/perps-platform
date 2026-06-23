@@ -11,6 +11,13 @@ import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import { normalizeSymbol } from "@/lib/agent-trade/markets";
 import { buildHlOrderAction } from "@/lib/agent-trade/orders";
+import {
+  calculateDraftImpact,
+  calculatePortfolioExposure,
+  classifyPortfolioRisk,
+  estimateDraftLiquidation,
+  type DraftImpact,
+} from "@/lib/agent-trade/portfolio";
 import type {
   AgentResponse,
   ChartAnnotation,
@@ -19,7 +26,6 @@ import type {
   OrderDraft,
   OrderType,
   SharedTradingSnapshot,
-  TradeSide,
 } from "@/lib/agent-trade/types";
 
 interface EligibilityResponse {
@@ -40,17 +46,6 @@ interface BrowserWallet {
 }
 
 const agentService = new DeterministicAgentService();
-
-function estimateLiquidation(args: {
-  side: TradeSide;
-  entry: number;
-  leverage: number;
-}): number {
-  const maintenance = 0.006;
-  return args.side === "long"
-    ? args.entry * (1 - 1 / args.leverage + maintenance)
-    : args.entry * (1 + 1 / args.leverage - maintenance);
-}
 
 function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
   const size = Number(
@@ -157,12 +152,29 @@ export function TerminalClient() {
   const notional = draft.sizeBtc * entryPrice;
   const marginRequired = notional / draft.leverage;
   const fees = notional * 0.00045;
-  const liquidation = estimateLiquidation({
+  const liquidation = estimateDraftLiquidation({
     side: draft.side,
-    entry: entryPrice,
+    entryPrice,
     leverage: draft.leverage,
   });
   const canLiveTrade = mode === "live" && eligibility.state === "liveEligible" && !isStale;
+  const draftImpact = useMemo(
+    () => calculateDraftImpact({ account: snapshot.account, market: snapshot.market, draft, entryPrice }),
+    [snapshot.account, snapshot.market, draft, entryPrice],
+  );
+  const portfolioExposure = useMemo(
+    () => calculatePortfolioExposure(snapshot.account, snapshot.market.symbol),
+    [snapshot.account, snapshot.market.symbol],
+  );
+  const portfolioRiskLabels = useMemo(
+    () => classifyPortfolioRisk({
+      account: snapshot.account,
+      exposure: portfolioExposure,
+      selectedSymbol: snapshot.market.symbol,
+      mode,
+    }),
+    [snapshot.account, portfolioExposure, snapshot.market.symbol, mode],
+  );
 
   const maxBookSize = useMemo(() => {
     const sizes = [...snapshot.orderBook.asks, ...snapshot.orderBook.bids].map((level) => level.size);
@@ -337,6 +349,11 @@ export function TerminalClient() {
               setIsAcked(false);
               setModalOpen(true);
             }}
+          />
+          <ImpactPanel
+            base={snapshot.market.base}
+            impact={draftImpact}
+            exposureLabels={portfolioRiskLabels}
           />
           {submitState ? <div className="submit-state">{submitState}</div> : null}
           <AgentPanel
@@ -633,6 +650,36 @@ function TicketPanel(props: {
       <button className="primary-action" disabled={props.draft.sizeBtc <= 0 || blocked} onClick={props.openModal}>
         Review {props.mode} order
       </button>
+    </div>
+  );
+}
+
+function ImpactPanel(props: {
+  base: string;
+  impact: DraftImpact;
+  exposureLabels: string[];
+}) {
+  return (
+    <div className="panel impact-panel">
+      <div className="panel-head tight">
+        <div>
+          <span>Impact on portfolio</span>
+          <strong>Before confirmation</strong>
+        </div>
+      </div>
+      <div className="impact-grid">
+        <span>Est. notional <strong>{fmtUsd(props.impact.estimatedNotionalUsd, 2)}</strong></span>
+        <span>Margin required <strong>{fmtUsd(props.impact.marginRequiredUsd, 2)}</strong></span>
+        <span>Post-trade available <strong className={props.impact.postTradeAvailableUsd >= 0 ? "pos" : "neg"}>{fmtUsd(props.impact.postTradeAvailableUsd, 2)}</strong></span>
+        <span>Added exposure <strong className={props.impact.addedExposureUsd >= 0 ? "pos" : "neg"}>{fmtUsd(props.impact.addedExposureUsd, 2)}</strong></span>
+        <span>{props.base} concentration <strong>{fmtPct(props.impact.selectedMarketConcentrationPct, 1)}</strong></span>
+        <span>Liq distance <strong>{fmtPct(props.impact.liquidationDistancePct, 1)}</strong></span>
+      </div>
+      <div className="risk-tags compact">
+        {props.exposureLabels.map((label) => (
+          <span key={label}>{label}</span>
+        ))}
+      </div>
     </div>
   );
 }

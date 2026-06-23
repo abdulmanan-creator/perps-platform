@@ -1,4 +1,9 @@
 import { fmtCompactUsd, fmtPct, fmtUsd } from "./format";
+import {
+  calculateDraftImpact,
+  calculatePortfolioExposure,
+  classifyPortfolioRisk,
+} from "./portfolio";
 import type { AgentResponse, SharedTradingSnapshot } from "./types";
 
 export type AgentScenario = "long" | "explain" | "noTrade";
@@ -51,6 +56,28 @@ export class DeterministicAgentService implements AgentService {
     const stopLoss = Number((market.markPrice * 0.972).toFixed(1));
     const takeProfit = Number((market.markPrice * 1.054).toFixed(1));
     const liquidation = Number((market.markPrice * 0.766).toFixed(1));
+    const draft = {
+      symbol: market.symbol,
+      side: "long" as const,
+      orderType: "market" as const,
+      sizeBtc,
+      leverage: 3,
+      marginMode: "isolated" as const,
+      reduceOnly: false,
+      takeProfit,
+      stopLoss,
+      fromAgent: true,
+      scenarioId: `${market.base.toLowerCase()}-continuation-long`,
+    };
+    const impact = calculateDraftImpact({ account, market, draft });
+    const exposure = calculatePortfolioExposure(account, market.symbol);
+    const riskLabels = classifyPortfolioRisk({ account, exposure, selectedSymbol: market.symbol, mode });
+    const existingExposure = exposure.selectedMarketNotionalUsd > 0
+      ? `${fmtCompactUsd(exposure.selectedMarketNotionalUsd)} current ${market.base} exposure`
+      : `no current ${market.base} exposure`;
+    const concentrationNote = impact.selectedMarketConcentrationPct >= 55
+      ? `This would concentrate ${fmtPct(impact.selectedMarketConcentrationPct, 1)} of gross exposure in ${market.base}.`
+      : `Post-trade ${market.base} concentration stays near ${fmtPct(impact.selectedMarketConcentrationPct, 1)}.`;
 
     return {
       id: `${market.base.toLowerCase()}-continuation-long`,
@@ -58,30 +85,20 @@ export class DeterministicAgentService implements AgentService {
       question: `Should I long ${market.base} here for the next 4-8 hours?`,
       thesis:
         `${market.base} is holding the upper range while OI is expanding and funding is still modest at ${fmtPct(market.fundingRatePct)}. ` +
-        `That is constructive, but not euphoric. I would only draft this as a controlled ${mode} trade with a defined invalidation.`,
+        `Available balance is ${fmtUsd(account.availableUsd, 0)} with ${existingExposure}. ` +
+        `I would only draft this as a controlled ${mode} trade with a defined invalidation.`,
       receipts: [
         receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
         receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
         receipt("Open interest", fmtCompactUsd(market.openInterestUsd), snapshot),
         receipt("24h volume", fmtCompactUsd(market.volume24hUsd), snapshot),
+        receipt("Margin impact", fmtUsd(impact.marginRequiredUsd, 2), snapshot),
       ],
       riskNote:
-        `The risk is a failed breakout back through ${fmtUsd(stopLoss, 1)}. Keep leverage modest and let the stop define the trade.`,
+        `The risk is a failed breakout back through ${fmtUsd(stopLoss, 1)}. ${concentrationNote} Current labels: ${riskLabels.join(", ")}.`,
       whyWrong:
         "If OI keeps rising while price loses the range high, this becomes crowded long positioning rather than confirmation.",
-      orderDraft: {
-        symbol: market.symbol,
-        side: "long",
-        orderType: "market",
-        sizeBtc,
-        leverage: 3,
-        marginMode: "isolated",
-        reduceOnly: false,
-        takeProfit,
-        stopLoss,
-        fromAgent: true,
-        scenarioId: `${market.base.toLowerCase()}-continuation-long`,
-      },
+      orderDraft: draft,
       annotations: [
         {
           id: "liq-cluster",
@@ -144,19 +161,25 @@ export class DeterministicAgentService implements AgentService {
   }
 
   private noTrade(snapshot: SharedTradingSnapshot): AgentResponse {
-    const { market } = snapshot;
+    const { market, account } = snapshot;
+    const exposure = calculatePortfolioExposure(account, market.symbol);
+    const riskLabels = classifyPortfolioRisk({ account, exposure, selectedSymbol: market.symbol, mode: "paper" });
+    const selectedExposure = exposure.selectedMarketNotionalUsd > 0
+      ? `${fmtCompactUsd(exposure.selectedMarketNotionalUsd)} already on ${market.base}`
+      : `no existing ${market.base} position`;
     return {
       id: `${market.base.toLowerCase()}-no-clean-setup`,
       state: "noTrade",
       question: `Find a cleaner ${market.base} setup.`,
       thesis:
-        "No clean setup right now. Price is between actionable levels and the order book does not offer a good asymmetric entry.",
+        `No clean setup right now. Price is between actionable levels and the book already has ${selectedExposure}, so adding risk here is not justified.`,
       receipts: [
         receipt("Upper liquidity", fmtUsd(market.markPrice * 1.052, 1), snapshot),
         receipt("Lower liquidity", fmtUsd(market.markPrice * 0.971, 1), snapshot),
         receipt("Spread", fmtUsd(Math.abs(snapshot.orderBook.asks[0].price - snapshot.orderBook.bids[0].price), 1), snapshot),
+        receipt("Portfolio labels", riskLabels.join(", "), snapshot),
       ],
-      riskNote: "Chasing the middle of the range gives poor invalidation and makes sizing arbitrary.",
+      riskNote: `Chasing the middle of the range gives poor invalidation. Portfolio state: ${riskLabels.join(", ")}.`,
       whyWrong: "A fast sweep through either liquidity zone could produce a valid entry later, but it has not happened yet.",
       annotations: [
         {

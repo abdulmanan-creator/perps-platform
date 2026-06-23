@@ -1,5 +1,10 @@
-import { LockedRoute } from "@/components/agent-trade/LockedRoute";
+import { AppShell } from "@/components/agent-trade/AppShell";
+import { PortfolioClient } from "@/components/agent-trade/PortfolioClient";
 
 export default function PortfolioPage() {
-  return <LockedRoute title="Portfolio and Risk" milestone="Milestone 2" />;
+  return (
+    <AppShell>
+      <PortfolioClient />
+    </AppShell>
+  );
 }

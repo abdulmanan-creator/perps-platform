@@ -29,8 +29,22 @@ export function applyMarketToAccount(
   const stopLoss = Number((market.markPrice * 0.972).toFixed(2));
   const demoSize = Number(Math.max(1 / 10 ** market.szDecimals, 5000 / market.markPrice).toFixed(market.szDecimals));
 
+  const hedgeSymbol = market.base === "ETH" ? "BTC-USD" : "ETH-USD";
+  const hedgeBase = hedgeSymbol.replace("-USD", "");
+  const hedgeMark = Number((market.base === "ETH" ? market.markPrice * 28 : market.markPrice * 0.038).toFixed(2));
+  const hedgeEntry = Number((hedgeMark * 1.041).toFixed(2));
+  const hedgeSize = Number(Math.max(1 / 1000, 2600 / hedgeMark).toFixed(3));
+  const selectedPnlUsd = (market.markPrice - entryPrice) * demoSize;
+  const hedgePnlUsd = (hedgeEntry - hedgeMark) * hedgeSize;
+  const selectedMarginUsd = (entryPrice * demoSize) / 4;
+  const hedgeMarginUsd = (hedgeEntry * hedgeSize) / 3;
+
   return {
     ...snapshot.account,
+    availableUsd: 18_740,
+    equityUsd: 24_860 + selectedPnlUsd + hedgePnlUsd,
+    marginUsedUsd: selectedMarginUsd + hedgeMarginUsd,
+    unrealizedPnlUsd: selectedPnlUsd + hedgePnlUsd,
     positions: [
       {
         symbol: market.symbol,
@@ -42,12 +56,28 @@ export function applyMarketToAccount(
         entryPrice,
         markPrice: market.markPrice,
         liquidationPrice: Number((market.markPrice * 0.753).toFixed(2)),
-        pnlUsd: (market.markPrice - entryPrice) * demoSize,
+        pnlUsd: selectedPnlUsd,
         pnlPct: ((market.markPrice - entryPrice) / entryPrice) * 100,
-        marginUsd: (entryPrice * demoSize) / 4,
+        marginUsd: selectedMarginUsd,
         fundingUsd: -Math.abs((market.fundingRatePct / 100) * entryPrice * demoSize),
         takeProfit,
         stopLoss,
+      },
+      {
+        symbol: hedgeSymbol,
+        base: hedgeBase,
+        side: "short",
+        size: hedgeSize,
+        leverage: 3,
+        marginMode: "cross",
+        entryPrice: hedgeEntry,
+        markPrice: hedgeMark,
+        liquidationPrice: Number((hedgeMark * 1.182).toFixed(2)),
+        pnlUsd: hedgePnlUsd,
+        pnlPct: ((hedgeEntry - hedgeMark) / hedgeEntry) * 100,
+        marginUsd: hedgeMarginUsd,
+        fundingUsd: 2.84,
+        stopLoss: Number((hedgeMark * 1.071).toFixed(2)),
       },
     ],
     openOrders: [
@@ -60,6 +90,15 @@ export function applyMarketToAccount(
         reduceOnly: true,
         timestamp: snapshot.asOf - 28 * 60_000,
       },
+      {
+        symbol: hedgeSymbol,
+        side: "buy",
+        type: "limit",
+        price: Number((hedgeMark * 0.958).toFixed(2)),
+        size: Number((hedgeSize * 0.5).toFixed(2)),
+        reduceOnly: true,
+        timestamp: snapshot.asOf - 54 * 60_000,
+      },
     ],
     fills: [
       {
@@ -69,6 +108,14 @@ export function applyMarketToAccount(
         size: demoSize,
         feeUsd: entryPrice * demoSize * 0.00045,
         timestamp: snapshot.asOf - 4 * 60 * 60_000,
+      },
+      {
+        symbol: hedgeSymbol,
+        side: "sell",
+        price: hedgeEntry,
+        size: hedgeSize,
+        feeUsd: hedgeEntry * hedgeSize * 0.00045,
+        timestamp: snapshot.asOf - 7 * 60 * 60_000,
       },
     ],
   };
