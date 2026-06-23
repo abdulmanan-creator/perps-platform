@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { hashTypedData } from "viem";
 import { ZodError } from "zod";
 
@@ -36,8 +36,43 @@ import { TtlCache } from "../helpers/ttlCache.js";
  *
  * The phase is determined by presence of `signature`. Missing nonce in Phase A
  * is filled with Date.now(); missing nonce in Phase B is INVALID_PARAMS.
+ *
+ * This route intentionally remains the generic builder/API exchange path for
+ * SDK, MCP, dashboard, and legacy callers. Agent.trade product live orders use
+ * /agent-trade/exchange, which wraps this same execution logic with
+ * Agent.trade-specific eligibility, acknowledgement, kill-switch, mainnet, and
+ * notional-cap checks.
  */
 export async function exchangeRoute(app: FastifyInstance): Promise<void> {
+  await registerExchangeEndpoint(app, { path: "/exchange", metricRoute: "/exchange" });
+}
+
+export interface ExchangeEndpointHooks {
+  beforeBuild?: (args: {
+    req: FastifyRequest;
+    body: ExchangeBody;
+  }) => void;
+  beforeSend?: (args: {
+    req: FastifyRequest;
+    body: ExchangeBody;
+    signer: `0x${string}`;
+  }) => void;
+  afterSend?: (args: {
+    req: FastifyRequest;
+    body: ExchangeBody;
+    signer: `0x${string}`;
+    exchangeResponse: unknown;
+  }) => void;
+}
+
+export async function registerExchangeEndpoint(
+  app: FastifyInstance,
+  args: {
+    path: string;
+    metricRoute: string;
+    hooks?: ExchangeEndpointHooks;
+  },
+): Promise<void> {
   const hl = new HlClient({
     baseUrl: app.config.HYPERLIQUID_API_URL,
     logger: { warn: app.log.warn.bind(app.log) },
@@ -51,7 +86,7 @@ export async function exchangeRoute(app: FastifyInstance): Promise<void> {
   // per-address nonce tracking is the backstop beyond that.
   const seenSignatures = new TtlCache<true>({ ttlMs: 10 * 60_000, maxEntries: 50_000 });
 
-  app.post("/exchange", { config: { rateLimit: WRITE_RATE_LIMIT } }, async (req, reply) => {
+  app.post(args.path, { config: { rateLimit: WRITE_RATE_LIMIT } }, async (req, reply) => {
     let body: ExchangeBody;
     try {
       body = ExchangeBodySchema.parse(req.body);
@@ -79,7 +114,7 @@ export async function exchangeRoute(app: FastifyInstance): Promise<void> {
 
       const replayKey = `${body.signature.r}:${body.signature.s}:${body.signature.v}:${body.nonce}`;
       if (!seenSignatures.addIfAbsent(replayKey, true)) {
-        metrics.duplicatesRejected.inc({ route: "/exchange" });
+        metrics.duplicatesRejected.inc({ route: args.metricRoute });
         throw new ApiException(
           "DUPLICATE_REQUEST",
           "This signed payload was already submitted.",
@@ -93,9 +128,10 @@ export async function exchangeRoute(app: FastifyInstance): Promise<void> {
         body.signature,
         app.config,
       );
+      args.hooks?.beforeSend?.({ req, body, signer });
 
       req.log.info(
-        { type: body.action.type, signer, builderFee, nonce: body.nonce },
+        { route: args.metricRoute, type: body.action.type, signer, builderFee, nonce: body.nonce },
         "exchange_send",
       );
 
@@ -142,6 +178,7 @@ export async function exchangeRoute(app: FastifyInstance): Promise<void> {
       if (body.action.type === "order") {
         recordOrderOutcome(exchangeResponse, builderFee, "user");
       }
+      args.hooks?.afterSend?.({ req, body, signer, exchangeResponse });
 
       const out: SendResponse = {
         success: true,
@@ -153,9 +190,10 @@ export async function exchangeRoute(app: FastifyInstance): Promise<void> {
 
     // ---- Phase A: build ------------------------------------------------------
     const nonce = body.nonce ?? Date.now();
+    args.hooks?.beforeBuild?.({ req, body });
     const out = buildPhase(body.action, nonce, app.config, body.user);
     req.log.info(
-      { type: body.action.type, nonce, hash: out.hash, builderFee: out.builderFee },
+      { route: args.metricRoute, type: body.action.type, nonce, hash: out.hash, builderFee: out.builderFee },
       "exchange_build",
     );
     return reply.send(out);

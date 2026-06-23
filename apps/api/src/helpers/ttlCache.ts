@@ -60,6 +60,10 @@ export class TtlCache<V> {
     this.store.delete(key);
   }
 
+  clear(): void {
+    this.store.clear();
+  }
+
   get size(): number {
     return this.store.size;
   }

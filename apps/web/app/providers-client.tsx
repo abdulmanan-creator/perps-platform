@@ -9,9 +9,9 @@
  * keep the whole wallet stack truly browser-only, we dynamic-import Providers
  * with `ssr: false` so it never touches the server render path.
  *
- * The trade-off: the page renders an empty layout on the server, then hydrates
- * with the Privy-wrapped tree on the client. Acceptable for a wallet-driven
- * app — there's nothing useful to render server-side without a session anyway.
+ * The trade-off: the page renders a lightweight loading shell on the server,
+ * then hydrates with the Privy-wrapped tree on the client. That keeps
+ * headless/slow browser sessions from seeing a blank page.
  */
 
 import dynamic from "next/dynamic";
@@ -19,7 +19,17 @@ import type { ReactNode } from "react";
 
 const ProvidersInner = dynamic(
   () => import("./providers").then((m) => m.Providers),
-  { ssr: false },
+  {
+    ssr: false,
+    loading: () => (
+      <div className="provider-fallback">
+        <div>
+          <strong>Agent.trade</strong>
+          <span>Loading terminal...</span>
+        </div>
+      </div>
+    ),
+  },
 );
 
 export function Providers({ children }: { children: ReactNode }) {

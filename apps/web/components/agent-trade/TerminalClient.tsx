@@ -1,0 +1,800 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { hexToSignature } from "viem";
+
+import { API_BASE_URL } from "@/lib/api";
+import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
+import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
+import { loadTradingSnapshot } from "@/lib/agent-trade/data";
+import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
+import type {
+  AgentResponse,
+  ChartAnnotation,
+  EligibilityMode,
+  MarginMode,
+  OrderDraft,
+  OrderType,
+  SharedTradingSnapshot,
+  TradeSide,
+} from "@/lib/agent-trade/types";
+
+interface EligibilityResponse {
+  state: EligibilityMode;
+  executionVenue: string;
+  mainnetExecutionEnabled: boolean;
+  killSwitchEnabled: boolean;
+  orderNotionalCapUsd: number;
+  dailyNotionalCapUsd: number;
+}
+
+interface Eip1193Provider {
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+}
+
+interface BrowserWallet {
+  ethereum?: Eip1193Provider;
+}
+
+const agentService = new DeterministicAgentService();
+
+function estimateLiquidation(args: {
+  side: TradeSide;
+  entry: number;
+  leverage: number;
+}): number {
+  const maintenance = 0.006;
+  return args.side === "long"
+    ? args.entry * (1 - 1 / args.leverage + maintenance)
+    : args.entry * (1 + 1 / args.leverage - maintenance);
+}
+
+function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
+  return {
+    symbol: snapshot.market.symbol,
+    side: "long",
+    orderType: "market",
+    sizeBtc: 0.01,
+    leverage: 2,
+    marginMode: "isolated",
+    reduceOnly: false,
+    fromAgent: false,
+  };
+}
+
+function buildHlAction(draft: OrderDraft, markPrice: number) {
+  const isBuy = draft.side === "long";
+  const price =
+    draft.orderType === "limit" && draft.limitPrice
+      ? draft.limitPrice
+      : isBuy
+        ? markPrice * 1.005
+        : markPrice * 0.995;
+
+  return {
+    type: "order" as const,
+    grouping: "na" as const,
+    orders: [
+      {
+        a: 0,
+        b: isBuy,
+        p: price.toFixed(1),
+        s: draft.sizeBtc.toFixed(4),
+        r: draft.reduceOnly,
+        t: { limit: { tif: draft.orderType === "market" ? "Ioc" : "Gtc" } },
+      },
+    ],
+  };
+}
+
+export function TerminalClient() {
+  const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [eligibility, setEligibility] = useState<EligibilityResponse>({
+    state: "loading",
+    executionVenue: "hyperliquid-testnet",
+    mainnetExecutionEnabled: false,
+    killSwitchEnabled: false,
+    orderNotionalCapUsd: 250,
+    dailyNotionalCapUsd: 1000,
+  });
+  const [mode, setMode] = useState<"paper" | "live">("paper");
+  const [isStale, setIsStale] = useState(false);
+  const [draft, setDraft] = useState<OrderDraft>(() => buildDefaultDraft(MOCK_TRADING_SNAPSHOT));
+  const [agent, setAgent] = useState<AgentResponse | undefined>();
+  const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
+  const [isThinking, setIsThinking] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [isAcked, setIsAcked] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [submitState, setSubmitState] = useState<string | undefined>();
+  const [bottomTab, setBottomTab] = useState<"positions" | "orders" | "fills">("positions");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setIsLoadingData(true);
+      const next = await loadTradingSnapshot();
+      if (!cancelled) {
+        setSnapshot(next);
+        setDraft((current) => ({ ...current, symbol: next.market.symbol }));
+        setIsLoadingData(false);
+      }
+    }
+
+    void load();
+    const timer = window.setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadEligibility() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/agent-trade/eligibility`, { cache: "no-store" });
+        if (!res.ok) {
+          throw new Error("eligibility request failed");
+        }
+        const next = (await res.json()) as EligibilityResponse;
+        if (!cancelled) {
+          setEligibility(next);
+          setMode(next.state === "liveEligible" ? "live" : "paper");
+        }
+      } catch {
+        if (!cancelled) {
+          setEligibility((current) => ({ ...current, state: "unknown" }));
+          setMode("paper");
+        }
+      }
+    }
+
+    void loadEligibility();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const entryPrice = draft.orderType === "limit" && draft.limitPrice ? draft.limitPrice : snapshot.market.markPrice;
+  const notional = draft.sizeBtc * entryPrice;
+  const marginRequired = notional / draft.leverage;
+  const fees = notional * 0.00045;
+  const liquidation = estimateLiquidation({
+    side: draft.side,
+    entry: entryPrice,
+    leverage: draft.leverage,
+  });
+  const canLiveTrade = mode === "live" && eligibility.state === "liveEligible" && !isStale;
+
+  const maxBookSize = useMemo(() => {
+    const sizes = [...snapshot.orderBook.asks, ...snapshot.orderBook.bids].map((level) => level.size);
+    return Math.max(...sizes, 1);
+  }, [snapshot.orderBook]);
+
+  async function runAgent(scenario: AgentScenario) {
+    setIsThinking(true);
+    setAgent(undefined);
+    setAnnotations([]);
+    const response = await agentService.run({
+      scenario,
+      snapshot: isStale
+        ? {
+            ...snapshot,
+            market: { ...snapshot.market, dataAgeSeconds: 46 },
+          }
+        : snapshot,
+      isStale,
+      mode,
+    });
+    setAgent(response);
+    setAnnotations(response.annotations);
+    setIsThinking(false);
+  }
+
+  function sendToTicket(orderDraft: OrderDraft) {
+    setDraft(orderDraft);
+    setSubmitState("Agent proposal copied into the ticket.");
+  }
+
+  function updateDraft(patch: Partial<OrderDraft>) {
+    setDraft((current) => ({ ...current, ...patch, fromAgent: false }));
+  }
+
+  async function submitPaperOrder() {
+    const res = await fetch(`${API_BASE_URL}/agent-trade/paper-orders`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ draft, estimatedEntry: entryPrice }),
+    });
+    if (!res.ok) {
+      throw new Error("paper order failed");
+    }
+    const json = (await res.json()) as { id: string; notionalUsd: number };
+    setSubmitState(`Paper order accepted: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
+  }
+
+  async function submitLiveOrder() {
+    if (!canLiveTrade) {
+      throw new Error("Live trading is not available for this account/state.");
+    }
+    const provider = (globalThis as unknown as BrowserWallet).ethereum;
+    if (!provider) {
+      throw new Error("Connect an EIP-1193 wallet or use paper mode for this local demo.");
+    }
+    const accounts = await provider.request({ method: "eth_requestAccounts" });
+    if (!Array.isArray(accounts) || typeof accounts[0] !== "string") {
+      throw new Error("Wallet did not return an account.");
+    }
+    const user = accounts[0] as `0x${string}`;
+    const action = buildHlAction(draft, snapshot.market.markPrice);
+    const headers = {
+      "content-type": "application/json",
+      "x-agent-trade-risk-accepted": "true",
+      "x-agent-trade-terms-accepted": "true",
+    };
+
+    const buildRes = await fetch(`${API_BASE_URL}/agent-trade/exchange`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ user, action }),
+    });
+    if (!buildRes.ok) {
+      const error = (await buildRes.json()) as { message?: string; guidance?: string };
+      throw new Error(error.guidance ?? error.message ?? "Exchange build failed");
+    }
+    const built = (await buildRes.json()) as { typedData: unknown; nonce: number; action: unknown };
+    const rawSignature = await provider.request({
+      method: "eth_signTypedData_v4",
+      params: [user, JSON.stringify(built.typedData)],
+    });
+    if (typeof rawSignature !== "string") {
+      throw new Error("Wallet returned an invalid signature.");
+    }
+    const signature = hexToSignature(rawSignature as `0x${string}`);
+    const sendRes = await fetch(`${API_BASE_URL}/agent-trade/exchange`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: built.action, nonce: built.nonce, signature }),
+    });
+    if (!sendRes.ok) {
+      const error = (await sendRes.json()) as { message?: string; guidance?: string };
+      throw new Error(error.guidance ?? error.message ?? "Exchange send failed");
+    }
+    setSubmitState("Live order forwarded to Hyperliquid after wallet signature.");
+  }
+
+  async function confirmOrder() {
+    if (!isAcked) {
+      return;
+    }
+    setIsConfirming(true);
+    setSubmitState(undefined);
+    try {
+      if (mode === "paper") {
+        await submitPaperOrder();
+      } else {
+        await submitLiveOrder();
+      }
+      setModalOpen(false);
+    } catch (err) {
+      setSubmitState(err instanceof Error ? err.message : "Order submission failed.");
+    } finally {
+      setIsConfirming(false);
+    }
+  }
+
+  return (
+    <main className="terminal-page">
+      <section className="terminal-head">
+        <div>
+          <p className="at-kicker">Milestone 1 terminal</p>
+          <h1>{snapshot.market.symbol}</h1>
+          <div className="terminal-market-line">
+            <strong>{fmtUsd(snapshot.market.markPrice, 1)}</strong>
+            <span className={snapshot.market.change24hPct >= 0 ? "pos" : "neg"}>
+              {fmtPct(snapshot.market.change24hPct, 2)} ({fmtUsd(snapshot.market.change24hAbs, 1)})
+            </span>
+            <span>{snapshot.market.venue}</span>
+          </div>
+        </div>
+        <div className="terminal-state-row">
+          <button className={isStale ? "state-pill stale" : "state-pill live"} onClick={() => setIsStale((value) => !value)}>
+            {isStale ? "Stale data: 46s" : `${snapshot.market.source === "live-mainnet" ? "Live mainnet read" : "Mock snapshot"}: ${snapshot.market.dataAgeSeconds}s`}
+          </button>
+          <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
+        </div>
+      </section>
+
+      <section className="terminal-grid">
+        <div className="terminal-left">
+          <StatsStrip snapshot={snapshot} isLoading={isLoadingData} />
+          <ChartPanel snapshot={snapshot} annotations={annotations} />
+          <BottomPanel
+            snapshot={snapshot}
+            bottomTab={bottomTab}
+            setBottomTab={setBottomTab}
+          />
+        </div>
+        <div className="terminal-mid">
+          <BookPanel snapshot={snapshot} maxBookSize={maxBookSize} />
+          <TradesPanel snapshot={snapshot} />
+        </div>
+        <div className="terminal-right">
+          <TicketPanel
+            draft={draft}
+            updateDraft={updateDraft}
+            entryPrice={entryPrice}
+            notional={notional}
+            marginRequired={marginRequired}
+            fees={fees}
+            liquidation={liquidation}
+            canLiveTrade={canLiveTrade}
+            mode={mode}
+            eligibility={eligibility}
+            openModal={() => {
+              setIsAcked(false);
+              setModalOpen(true);
+            }}
+          />
+          {submitState ? <div className="submit-state">{submitState}</div> : null}
+          <AgentPanel
+            agent={agent}
+            isThinking={isThinking}
+            runAgent={runAgent}
+            sendToTicket={sendToTicket}
+            isStale={isStale}
+          />
+        </div>
+      </section>
+
+      {modalOpen ? (
+        <ConfirmModal
+          draft={draft}
+          mode={mode}
+          entryPrice={entryPrice}
+          notional={notional}
+          marginRequired={marginRequired}
+          fees={fees}
+          liquidation={liquidation}
+          canLiveTrade={canLiveTrade}
+          eligibility={eligibility}
+          isAcked={isAcked}
+          setIsAcked={setIsAcked}
+          close={() => setModalOpen(false)}
+          confirm={confirmOrder}
+          isConfirming={isConfirming}
+        />
+      ) : null}
+    </main>
+  );
+}
+
+function ModeControl({
+  eligibility,
+  mode,
+  setMode,
+}: {
+  eligibility: EligibilityResponse;
+  mode: "paper" | "live";
+  setMode: (mode: "paper" | "live") => void;
+}) {
+  const liveDisabled = eligibility.state !== "liveEligible";
+  return (
+    <div className="mode-control" aria-label="Trading mode">
+      <button className={mode === "paper" ? "active" : ""} onClick={() => setMode("paper")}>
+        Paper
+      </button>
+      <button
+        className={mode === "live" ? "active" : ""}
+        disabled={liveDisabled}
+        onClick={() => setMode("live")}
+        title={liveDisabled ? `Live blocked: ${eligibility.state}` : "Live eligible"}
+      >
+        Live
+      </button>
+      <span>{eligibility.state}</span>
+    </div>
+  );
+}
+
+function StatsStrip({ snapshot, isLoading }: { snapshot: SharedTradingSnapshot; isLoading: boolean }) {
+  const stats = [
+    ["Funding", fmtPct(snapshot.market.fundingRatePct)],
+    ["Open interest", fmtCompactUsd(snapshot.market.openInterestUsd)],
+    ["OI 24h", fmtPct(snapshot.market.openInterestChangePct, 1)],
+    ["24h volume", fmtCompactUsd(snapshot.market.volume24hUsd)],
+    ["Liquidity", fmtCompactUsd(snapshot.market.liquidityUsd)],
+    ["Next funding", `${snapshot.market.nextFundingMinutes}m`],
+  ];
+  return (
+    <div className="stats-strip">
+      {stats.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{isLoading ? "..." : value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChartPanel({
+  snapshot,
+  annotations,
+}: {
+  snapshot: SharedTradingSnapshot;
+  annotations: ChartAnnotation[];
+}) {
+  const mark = snapshot.market.markPrice;
+  const prices = [
+    mark * 0.982,
+    mark * 0.988,
+    mark * 0.984,
+    mark * 0.996,
+    mark * 0.992,
+    mark * 1.004,
+    mark * 1.009,
+    mark * 1.001,
+    mark * 1.015,
+    mark * 1.011,
+    mark * 1.022,
+    mark * 1.018,
+  ];
+  const allPrices = [...prices, ...annotations.map((a) => a.price)];
+  const min = Math.min(...allPrices) * 0.998;
+  const max = Math.max(...allPrices) * 1.002;
+  const points = prices
+    .map((price, index) => {
+      const x = 24 + index * 62;
+      const y = 260 - ((price - min) / (max - min)) * 210;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <div className="panel chart-panel">
+      <div className="panel-head">
+        <div>
+          <span>BTC perpetual</span>
+          <strong>Agent annotated chart</strong>
+        </div>
+        <div className="timeframes">
+          {["1m", "5m", "15m", "1h", "4h"].map((tf) => (
+            <button key={tf} className={tf === "15m" ? "active" : ""}>{tf}</button>
+          ))}
+        </div>
+      </div>
+      <svg className="chart-svg" viewBox="0 0 760 300" role="img" aria-label="BTC chart with agent annotations">
+        <defs>
+          <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="rgba(39, 214, 170, 0.28)" />
+            <stop offset="100%" stopColor="rgba(39, 214, 170, 0)" />
+          </linearGradient>
+        </defs>
+        {[0, 1, 2, 3].map((line) => (
+          <line key={line} x1="20" x2="735" y1={60 + line * 55} y2={60 + line * 55} className="chart-grid-line" />
+        ))}
+        <polyline points={`24,275 ${points} 706,250`} fill="url(#chartFill)" stroke="none" />
+        <polyline points={points} fill="none" className="chart-line" />
+        {annotations.map((annotation) => {
+          const y = 260 - ((annotation.price - min) / (max - min)) * 210;
+          return (
+            <g key={annotation.id}>
+              <line x1="24" x2="725" y1={y} y2={y} className={`annotation-line ${annotation.tone}`} />
+              <text x="575" y={y - 7} className={`annotation-label ${annotation.tone}`}>
+                {annotation.label} {fmtUsd(annotation.price, 0)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+function BookPanel({
+  snapshot,
+  maxBookSize,
+}: {
+  snapshot: SharedTradingSnapshot;
+  maxBookSize: number;
+}) {
+  return (
+    <div className="panel compact-panel">
+      <div className="panel-head tight"><strong>Order book</strong><span>{fmtUsd(snapshot.market.markPrice, 1)}</span></div>
+      <div className="book-table">
+        {[...snapshot.orderBook.asks].reverse().map((level) => (
+          <BookRow key={`ask-${level.price}`} level={level} max={maxBookSize} side="ask" />
+        ))}
+        <div className="spread-row">
+          Spread {fmtUsd(snapshot.orderBook.asks[0].price - snapshot.orderBook.bids[0].price, 1)}
+        </div>
+        {snapshot.orderBook.bids.map((level) => (
+          <BookRow key={`bid-${level.price}`} level={level} max={maxBookSize} side="bid" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BookRow({ level, max, side }: { level: { price: number; size: number }; max: number; side: "bid" | "ask" }) {
+  return (
+    <div className={`book-row ${side}`}>
+      <span className="depth" style={{ width: `${(level.size / max) * 100}%` }} />
+      <strong>{fmtNumber(level.price, 1)}</strong>
+      <span>{fmtNumber(level.size, 3)}</span>
+    </div>
+  );
+}
+
+function TradesPanel({ snapshot }: { snapshot: SharedTradingSnapshot }) {
+  return (
+    <div className="panel compact-panel trades-panel">
+      <div className="panel-head tight"><strong>Recent trades</strong><span>BTC</span></div>
+      {snapshot.recentTrades.map((trade) => (
+        <div key={`${trade.timestamp}-${trade.price}`} className={`trade-row ${trade.side}`}>
+          <strong>{trade.side === "buy" ? "Buy" : "Sell"}</strong>
+          <span>{fmtUsd(trade.price, 1)}</span>
+          <span>{fmtNumber(trade.size, 4)}</span>
+          <span>{fmtAgo(trade.timestamp, snapshot.asOf)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TicketPanel(props: {
+  draft: OrderDraft;
+  updateDraft: (patch: Partial<OrderDraft>) => void;
+  entryPrice: number;
+  notional: number;
+  marginRequired: number;
+  fees: number;
+  liquidation: number;
+  canLiveTrade: boolean;
+  mode: "paper" | "live";
+  eligibility: EligibilityResponse;
+  openModal: () => void;
+}) {
+  const blocked = props.mode === "live" && !props.canLiveTrade;
+  return (
+    <div className={`panel ticket-panel ${props.draft.fromAgent ? "from-agent" : ""}`}>
+      <div className="panel-head">
+        <div>
+          <span>Order ticket</span>
+          <strong>{props.draft.fromAgent ? "From Agent" : "Manual"}</strong>
+        </div>
+        <span className={props.mode === "paper" ? "paper-badge" : "live-badge"}>{props.mode}</span>
+      </div>
+      <div className="segmented">
+        <button className={props.draft.side === "long" ? "active long" : ""} onClick={() => props.updateDraft({ side: "long" })}>Long</button>
+        <button className={props.draft.side === "short" ? "active short" : ""} onClick={() => props.updateDraft({ side: "short" })}>Short</button>
+      </div>
+      <div className="segmented">
+        {(["market", "limit"] as OrderType[]).map((type) => (
+          <button key={type} className={props.draft.orderType === type ? "active" : ""} onClick={() => props.updateDraft({ orderType: type })}>{type}</button>
+        ))}
+      </div>
+      <label className="field">
+        <span>Size BTC</span>
+        <input value={props.draft.sizeBtc} type="number" min="0" step="0.001" onChange={(event) => props.updateDraft({ sizeBtc: Number(event.target.value) })} />
+      </label>
+      {props.draft.orderType === "limit" ? (
+        <label className="field">
+          <span>Limit price</span>
+          <input value={props.draft.limitPrice ?? ""} type="number" onChange={(event) => props.updateDraft({ limitPrice: Number(event.target.value) })} />
+        </label>
+      ) : null}
+      <label className="field">
+        <span>Leverage {props.draft.leverage}x</span>
+        <input value={props.draft.leverage} type="range" min="1" max="10" onChange={(event) => props.updateDraft({ leverage: Number(event.target.value) })} />
+      </label>
+      <div className="segmented">
+        {(["isolated", "cross"] as MarginMode[]).map((marginMode) => (
+          <button key={marginMode} className={props.draft.marginMode === marginMode ? "active" : ""} onClick={() => props.updateDraft({ marginMode })}>{marginMode}</button>
+        ))}
+      </div>
+      <label className="check-row">
+        <input type="checkbox" checked={props.draft.reduceOnly} onChange={(event) => props.updateDraft({ reduceOnly: event.target.checked })} />
+        Reduce only
+      </label>
+      <div className="ticket-two">
+        <label className="field">
+          <span>Take profit</span>
+          <input value={props.draft.takeProfit ?? ""} type="number" onChange={(event) => props.updateDraft({ takeProfit: Number(event.target.value) })} />
+        </label>
+        <label className="field">
+          <span>Stop loss</span>
+          <input value={props.draft.stopLoss ?? ""} type="number" onChange={(event) => props.updateDraft({ stopLoss: Number(event.target.value) })} />
+        </label>
+      </div>
+      <div className="ticket-summary">
+        <span>Entry <strong>{fmtUsd(props.entryPrice, 1)}</strong></span>
+        <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
+        <span>Margin <strong>{fmtUsd(props.marginRequired, 2)}</strong></span>
+        <span>Est. liq <strong>{fmtUsd(props.liquidation, 1)}</strong></span>
+        <span>Fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
+      </div>
+      {blocked ? <p className="block-note">Live blocked by {props.eligibility.state}. Use paper mode.</p> : null}
+      <button className="primary-action" disabled={props.draft.sizeBtc <= 0 || blocked} onClick={props.openModal}>
+        Review {props.mode} order
+      </button>
+    </div>
+  );
+}
+
+function AgentPanel(props: {
+  agent: AgentResponse | undefined;
+  isThinking: boolean;
+  runAgent: (scenario: AgentScenario) => void;
+  sendToTicket: (draft: OrderDraft) => void;
+  isStale: boolean;
+}) {
+  return (
+    <div className="panel agent-panel">
+      <div className="panel-head">
+        <div>
+          <span>Embedded agent</span>
+          <strong>{props.isStale ? "Stale-data guard active" : "Deterministic AgentService"}</strong>
+        </div>
+      </div>
+      <div className="prompt-chips">
+        <button onClick={() => props.runAgent("long")}>Should I long BTC?</button>
+        <button onClick={() => props.runAgent("explain")}>Explain funding + OI</button>
+        <button onClick={() => props.runAgent("noTrade")}>Find cleaner setup</button>
+      </div>
+      {props.isThinking ? <div className="thinking">Reading funding, OI, book pressure, and liquidation levels...</div> : null}
+      {!props.isThinking && props.agent ? (
+        <div className={`agent-answer ${props.agent.state}`}>
+          <p className="agent-question">{props.agent.question}</p>
+          <h3>{props.agent.state === "noTrade" ? "No clean setup" : props.agent.state === "staleRefusal" ? "Refusing to draft" : "Market read"}</h3>
+          <p>{props.agent.thesis}</p>
+          <div className="receipt-row">
+            {props.agent.receipts.map((item) => (
+              <span key={item.label}>{item.label}: {item.value}</span>
+            ))}
+          </div>
+          <div className="agent-risk">
+            <strong>Risk</strong>
+            <p>{props.agent.riskNote}</p>
+            <strong>Why this could be wrong</strong>
+            <p>{props.agent.whyWrong}</p>
+          </div>
+          {props.agent.orderDraft ? (
+            <button className="secondary-action" onClick={() => props.sendToTicket(props.agent?.orderDraft as OrderDraft)}>
+              Send to ticket
+            </button>
+          ) : null}
+          {props.agent.followUps ? (
+            <div className="prompt-chips followups">
+              {props.agent.followUps.map((followUp) => <button key={followUp}>{followUp}</button>)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {!props.isThinking && !props.agent ? (
+        <p className="agent-empty">Ask for a setup, a market explanation, or a no-trade read. Outputs are structured and drive chart annotations plus ticket prefill.</p>
+      ) : null}
+    </div>
+  );
+}
+
+function BottomPanel(props: {
+  snapshot: SharedTradingSnapshot;
+  bottomTab: "positions" | "orders" | "fills";
+  setBottomTab: (tab: "positions" | "orders" | "fills") => void;
+}) {
+  return (
+    <div className="panel bottom-panel">
+      <div className="bottom-tabs">
+        <button className={props.bottomTab === "positions" ? "active" : ""} onClick={() => props.setBottomTab("positions")}>Positions</button>
+        <button className={props.bottomTab === "orders" ? "active" : ""} onClick={() => props.setBottomTab("orders")}>Open orders</button>
+        <button className={props.bottomTab === "fills" ? "active" : ""} onClick={() => props.setBottomTab("fills")}>Fills</button>
+        <span>Equity {fmtUsd(props.snapshot.account.equityUsd, 2)} | Available {fmtUsd(props.snapshot.account.availableUsd, 2)}</span>
+      </div>
+      {props.bottomTab === "positions" ? (
+        <div className="data-table">
+          {props.snapshot.account.positions.map((position) => (
+            <div key={position.symbol} className="data-row">
+              <strong>{position.symbol}</strong>
+              <span className={position.side === "long" ? "pos" : "neg"}>{position.side} {position.size} {position.base}</span>
+              <span>{position.leverage}x {position.marginMode}</span>
+              <span>Entry {fmtUsd(position.entryPrice, 1)}</span>
+              <span>PnL <b className={position.pnlUsd >= 0 ? "pos" : "neg"}>{fmtUsd(position.pnlUsd, 2)}</b></span>
+              <span>Liq {fmtUsd(position.liquidationPrice, 1)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {props.bottomTab === "orders" ? (
+        <div className="data-table">
+          {props.snapshot.account.openOrders.map((order) => (
+            <div key={`${order.symbol}-${order.timestamp}`} className="data-row">
+              <strong>{order.symbol}</strong>
+              <span className={order.side === "buy" ? "pos" : "neg"}>{order.side}</span>
+              <span>{order.type}</span>
+              <span>{fmtUsd(order.price, 1)}</span>
+              <span>{order.size}</span>
+              <span>{order.reduceOnly ? "Reduce only" : "Open"}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {props.bottomTab === "fills" ? (
+        <div className="data-table">
+          {props.snapshot.account.fills.map((fill) => (
+            <div key={`${fill.symbol}-${fill.timestamp}`} className="data-row">
+              <strong>{fill.symbol}</strong>
+              <span className={fill.side === "buy" ? "pos" : "neg"}>{fill.side}</span>
+              <span>{fmtUsd(fill.price, 1)}</span>
+              <span>{fill.size}</span>
+              <span>Fee {fmtUsd(fill.feeUsd, 2)}</span>
+              <span>{fmtAgo(fill.timestamp, props.snapshot.asOf)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ConfirmModal(props: {
+  draft: OrderDraft;
+  mode: "paper" | "live";
+  entryPrice: number;
+  notional: number;
+  marginRequired: number;
+  fees: number;
+  liquidation: number;
+  canLiveTrade: boolean;
+  eligibility: EligibilityResponse;
+  isAcked: boolean;
+  setIsAcked: (value: boolean) => void;
+  close: () => void;
+  confirm: () => void;
+  isConfirming: boolean;
+}) {
+  const liveBlocked = props.mode === "live" && !props.canLiveTrade;
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm order">
+      <div className={`confirm-modal ${props.mode}`}>
+        <div className="panel-head">
+          <div>
+            <span>{props.mode === "paper" ? "Paper confirmation" : "Live confirmation"}</span>
+            <strong>{props.draft.symbol} {props.draft.side}</strong>
+          </div>
+          {props.draft.fromAgent ? <span className="from-agent-badge">From Agent</span> : null}
+        </div>
+        <div className="confirm-grid">
+          <span>Market <strong>{props.draft.symbol}</strong></span>
+          <span>Side <strong>{props.draft.side}</strong></span>
+          <span>Size <strong>{fmtNumber(props.draft.sizeBtc, 4)} BTC</strong></span>
+          <span>Order type <strong>{props.draft.orderType}</strong></span>
+          <span>Leverage <strong>{props.draft.leverage}x</strong></span>
+          <span>Margin mode <strong>{props.draft.marginMode}</strong></span>
+          <span>Estimated entry <strong>{fmtUsd(props.entryPrice, 1)}</strong></span>
+          <span>Est. liquidation <strong>{fmtUsd(props.liquidation, 1)}</strong></span>
+          <span>TP <strong>{props.draft.takeProfit ? fmtUsd(props.draft.takeProfit, 1) : "Not set"}</strong></span>
+          <span>SL <strong>{props.draft.stopLoss ? fmtUsd(props.draft.stopLoss, 1) : "Not set"}</strong></span>
+          <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
+          <span>Est. fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
+        </div>
+        <label className="ack-row">
+          <input type="checkbox" checked={props.isAcked} onChange={(event) => props.setIsAcked(event.target.checked)} />
+          I understand this is a leveraged perpetual order. The agent drafted, but I am confirming.
+        </label>
+        {props.mode === "paper" ? <p className="paper-note">Paper orders are simulated and never call /exchange.</p> : null}
+        {liveBlocked ? <p className="block-note">Live blocked by {props.eligibility.state}.</p> : null}
+        <div className="modal-actions">
+          <button className="secondary-action" onClick={props.close}>Cancel</button>
+          <button className="primary-action" disabled={!props.isAcked || liveBlocked || props.isConfirming} onClick={props.confirm}>
+            {props.isConfirming ? "Submitting..." : `Confirm ${props.mode} order`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

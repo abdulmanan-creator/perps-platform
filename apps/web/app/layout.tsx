@@ -5,9 +5,9 @@ import { Providers } from "./providers-client";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Alchemy Hyperliquid — One line to trade Hyperliquid.",
+  title: "Agent.trade",
   description:
-    "A zero-custody REST builder API for trading on Hyperliquid. Perps, spot, HIP-3 and HIP-4 markets. Your keys never leave your machine.",
+    "A Hyperliquid-first, agent-native trading terminal for market reads, ticket drafting, and controlled execution.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -1,0 +1,272 @@
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { OrderAction } from "@alchemy-hl/shared";
+
+import { loadConfig, type Config } from "../src/config.js";
+import { ApiException, sendError } from "../src/errors.js";
+import {
+  assertAgentTradeExchangeAllowed,
+  eligibilityForRequest,
+  recordAgentTradeNotional,
+  resetAgentTradeNotionalForTests,
+} from "../src/helpers/agentTradeSafety.js";
+import { agentRoute } from "../src/routes/agent.js";
+import { agentTradeRoute } from "../src/routes/agentTrade.js";
+import { exchangeRoute } from "../src/routes/exchange.js";
+
+const USER = "0xcccc000000000000000000000000000000000001" as const;
+const SEED = "0x1111111111111111111111111111111111111111111111111111111111111111";
+
+const baseEnv = {
+  ALCHEMY_BUILDER_ADDRESS: "0xAAAA000000000000000000000000000000000001",
+  HYPERLIQUID_API_URL: "https://api.hyperliquid-testnet.xyz",
+  PERPS_BUILDER_FEE_BPS: "4",
+  SPOT_BUILDER_FEE_BPS: "5",
+  AGENT_MASTER_SEED: SEED,
+  PRIVY_APP_ID: "test-app-id",
+  PRIVY_APP_SECRET: "test-secret",
+} as unknown as NodeJS.ProcessEnv;
+
+vi.mock("@privy-io/server-auth", () => {
+  class MockPrivyClient {
+    constructor(_appId: string, _secret: string) {}
+    async verifyAuthToken(token: string) {
+      if (token === "good-token") return { userId: "did:privy:test" };
+      throw new Error("invalid token");
+    }
+    async getUser(_id: string) {
+      return {
+        id: "did:privy:test",
+        linkedAccounts: [{ type: "wallet", address: USER, walletClientType: "privy" }],
+      };
+    }
+  }
+  return { PrivyClient: MockPrivyClient };
+});
+
+function cfg(extra: Record<string, string> = {}): Config {
+  return loadConfig({ ...baseEnv, ...extra } as NodeJS.ProcessEnv);
+}
+
+function req(headers: Record<string, string> = {}, ip = "127.0.0.1"): FastifyRequest {
+  return { headers, ip } as unknown as FastifyRequest;
+}
+
+function ackHeaders(country = "CA"): Record<string, string> {
+  return {
+    "cf-ipcountry": country,
+    "x-agent-trade-risk-accepted": "true",
+    "x-agent-trade-terms-accepted": "true",
+  };
+}
+
+function order(price = 1000, size = 0.001): OrderAction {
+  return {
+    type: "order",
+    grouping: "na",
+    orders: [
+      {
+        a: 0,
+        b: true,
+        p: String(price),
+        s: String(size),
+        r: false,
+        t: { limit: { tif: "Ioc" } },
+      },
+    ],
+  };
+}
+
+async function appWithConfig(config: Config): Promise<FastifyInstance> {
+  const app = Fastify({ logger: false });
+  app.decorate("config", config);
+  app.setErrorHandler((err, _req, reply) => {
+    if (err instanceof ApiException) return sendError(reply, err);
+    return reply.code(500).send({ error: "INTERNAL_ERROR", message: String(err) });
+  });
+  return app;
+}
+
+describe("Agent.trade safety helper", () => {
+  afterEach(() => {
+    resetAgentTradeNotionalForTests();
+  });
+
+  it("restricted jurisdiction blocks live order guard", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders("US")),
+        cfg: cfg(),
+        action: order(),
+        user: USER,
+      }),
+    ).toThrow(/not eligible/i);
+  });
+
+  it("unknown eligibility blocks live order guard", () => {
+    expect(eligibilityForRequest(req(), cfg())).toBe("unknown");
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(),
+        cfg: cfg(),
+        action: order(),
+        user: USER,
+      }),
+    ).toThrow(/eligibility is unknown/i);
+  });
+
+  it("kill switch blocks live order guard", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders()),
+        cfg: cfg({ AGENT_TRADE_LIVE_TRADING_KILL_SWITCH: "true" }),
+        action: order(),
+        user: USER,
+      }),
+    ).toThrow(/kill switch/i);
+  });
+
+  it("missing risk and terms acknowledgement blocks when required", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req({ "cf-ipcountry": "CA" }),
+        cfg: cfg(),
+        action: order(),
+        user: USER,
+      }),
+    ).toThrow(/acknowledgement/i);
+  });
+
+  it("per-order notional cap blocks oversized orders", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders()),
+        cfg: cfg({ AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: "50" }),
+        action: order(1000, 0.06),
+        user: USER,
+      }),
+    ).toThrow(/per-order notional cap/i);
+  });
+
+  it("daily notional cap blocks after recorded usage", () => {
+    const config = cfg({ AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: "100" });
+    const request = req(ackHeaders());
+    const firstOrder = order(1000, 0.06);
+    const secondOrder = order(1000, 0.06);
+
+    assertAgentTradeExchangeAllowed({ req: request, cfg: config, action: firstOrder, user: USER });
+    recordAgentTradeNotional({ req: request, action: firstOrder, user: USER });
+
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: request,
+        cfg: config,
+        action: secondOrder,
+        user: USER,
+      }),
+    ).toThrow(/daily notional cap/i);
+  });
+
+  it("mainnet execution disabled blocks order actions", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders()),
+        cfg: cfg({ HYPERLIQUID_API_URL: "https://api.hyperliquid.xyz" }),
+        action: order(),
+        user: USER,
+      }),
+    ).toThrow(/Mainnet order execution is disabled/i);
+  });
+
+  it("mainnet allowlist is required when mainnet execution is enabled", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders()),
+        cfg: cfg({
+          HYPERLIQUID_API_URL: "https://api.hyperliquid.xyz",
+          AGENT_TRADE_MAINNET_EXECUTION_ENABLED: "true",
+        }),
+        action: order(),
+        user: USER,
+      }),
+    ).toThrow(/not allowlisted/i);
+  });
+});
+
+describe("Agent.trade route safety", () => {
+  afterEach(() => {
+    resetAgentTradeNotionalForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("paper order path does not call Hyperliquid exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.01,
+          leverage: 2,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: true,
+        },
+        estimatedEntry: 60000,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().mode).toBe("paper");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("/agent-trade/exchange is guarded while generic /exchange remains backward-compatible", async () => {
+    const app = await appWithConfig(cfg());
+    await exchangeRoute(app);
+    await agentTradeRoute(app);
+
+    const guarded = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      payload: { action: order() },
+    });
+    expect(guarded.statusCode).toBe(451);
+    expect(guarded.json().message).toMatch(/eligibility is unknown/i);
+
+    const generic = await app.inject({
+      method: "POST",
+      url: "/exchange",
+      payload: { action: order() },
+    });
+    expect(generic.statusCode).toBe(200);
+    expect(generic.json().typedData).toBeTruthy();
+    await app.close();
+  });
+
+  it("/agent/exchange order actions are covered by the same safety model", async () => {
+    const app = await appWithConfig(cfg());
+    await agentRoute(app);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/exchange",
+      headers: { authorization: "Bearer good-token" },
+      payload: { action: order() },
+    });
+
+    expect(res.statusCode).toBe(451);
+    expect(res.json().message).toMatch(/eligibility is unknown/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+});

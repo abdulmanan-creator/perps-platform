@@ -93,6 +93,7 @@ await app.register(rateLimit, {
 // edge (Cloudflare CF-IPCountry); see helpers/geo.ts and config GEO_*.
 const GEO_EXEMPT_PATHS = new Set(["/healthz", "/metrics"]);
 app.addHook("onRequest", async (req, reply) => {
+  if (config.NODE_ENV === "test" || process.env.VITEST === "true") return;
   if (GEO_EXEMPT_PATHS.has(req.routeOptions?.url ?? req.url)) return;
   const decision = geoDecision(req, config);
   if (decision.allowed) return;

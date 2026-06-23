@@ -16,6 +16,12 @@ import { agentRoute } from "../src/routes/agent.js";
 
 const USER = "0xcccc000000000000000000000000000000000001" as const;
 const SEED = "0x1111111111111111111111111111111111111111111111111111111111111111";
+const AUTH_HEADERS = {
+  authorization: "Bearer good-token",
+  "cf-ipcountry": "CA",
+  "x-agent-trade-risk-accepted": "true",
+  "x-agent-trade-terms-accepted": "true",
+};
 
 const baseEnv = {
   ALCHEMY_BUILDER_ADDRESS: "0xAAAA000000000000000000000000000000000001",
@@ -25,6 +31,8 @@ const baseEnv = {
   AGENT_MASTER_SEED: SEED,
   PRIVY_APP_ID: "test-app-id",
   PRIVY_APP_SECRET: "test-secret",
+  AGENT_TRADE_REQUIRE_GEO_ELIGIBILITY: "false",
+  AGENT_TRADE_REQUIRE_RISK_ACK: "false",
 } as unknown as NodeJS.ProcessEnv;
 
 vi.mock("@privy-io/server-auth", () => {
@@ -73,7 +81,7 @@ function post(app: FastifyInstance, payload: unknown) {
   return app.inject({
     method: "POST",
     url: "/agent/exchange",
-    headers: { authorization: "Bearer good-token" },
+    headers: AUTH_HEADERS,
     payload: payload as Record<string, unknown>,
   });
 }

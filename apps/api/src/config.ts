@@ -11,6 +11,8 @@ import { z } from "zod";
 
 const HEX_ADDR = /^0x[0-9a-fA-F]{40}$/;
 
+const emptyToUndefined = (value: unknown) => value === "" ? undefined : value;
+
 /**
  * Normalize a URL-ish string into a full URL with scheme.
  *
@@ -62,18 +64,21 @@ const ConfigSchema = z.object({
    * Keep this secret. Anyone with this seed can derive every user's agent
    * key (which can trade their HL account but not withdraw).
    */
-  AGENT_MASTER_SEED: z
-    .string()
-    .regex(/^0x[0-9a-fA-F]{64}$/, "must be 0x + 64 hex chars (32 bytes)")
-    .optional(),
+  AGENT_MASTER_SEED: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{64}$/, "must be 0x + 64 hex chars (32 bytes)")
+      .optional(),
+  ),
   /**
    * Privy app credentials, server-side. Both required to verify the JWT a
    * client sends in `Authorization: Bearer <token>` for /agent/exchange.
    * Without these, the agent-signing path is disabled. APP_ID is the same
    * public string as NEXT_PUBLIC_PRIVY_APP_ID; APP_SECRET is secret.
    */
-  PRIVY_APP_ID: z.string().optional(),
-  PRIVY_APP_SECRET: z.string().optional(),
+  PRIVY_APP_ID: z.preprocess(emptyToUndefined, z.string().optional()),
+  PRIVY_APP_SECRET: z.preprocess(emptyToUndefined, z.string().optional()),
   /**
    * HS256 signing secret for the OAuth tokens our MCP server issues to
    * Claude Web / ChatGPT Apps. Shared between api + mcp + (web app for code
@@ -81,16 +86,19 @@ const ConfigSchema = z.object({
    * Optional — if absent, OAuth endpoints return INVALID_PARAMS and only
    * the Privy-JWT auth path works.
    */
-  OAUTH_SIGNING_SECRET: z
-    .string()
-    .regex(/^[0-9a-fA-F]{32,}$/, "must be at least 16 bytes hex")
-    .optional(),
+  OAUTH_SIGNING_SECRET: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^[0-9a-fA-F]{32,}$/, "must be at least 16 bytes hex")
+      .optional(),
+  ),
   /**
    * Bearer token guarding GET /metrics (Prometheus exposition — includes
    * estimated fee revenue). Optional: unset leaves the endpoint open, which
    * is fine locally but set it in production.
    */
-  METRICS_TOKEN: z.string().min(16).optional(),
+  METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
   /**
    * Hard server-side cap on leverage when the agent path signs an
    * updateLeverage action. Users can still set higher leverage via /exchange
@@ -134,6 +142,25 @@ const ConfigSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  AGENT_TRADE_MAINNET_EXECUTION_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  AGENT_TRADE_LIVE_TRADING_KILL_SWITCH: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: z.coerce.number().positive().default(250),
+  AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: z.coerce.number().positive().default(1000),
+  AGENT_TRADE_INTERNAL_ALLOWLIST: z.string().default(""),
+  AGENT_TRADE_REQUIRE_RISK_ACK: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  AGENT_TRADE_REQUIRE_GEO_ELIGIBILITY: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 });
 
 export type Config = Omit<
@@ -147,6 +174,8 @@ export type Config = Omit<
   isTestnet: boolean;
   /** Parsed RESTRICTED_COUNTRIES as an uppercased Set for O(1) lookups. */
   restrictedCountries: ReadonlySet<string>;
+  /** Lowercased addresses allowed to exercise mainnet execution. */
+  agentTradeAllowlist: ReadonlySet<string>;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -174,6 +203,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .map((c) => c.trim().toUpperCase())
       .filter((c) => c.length > 0),
   );
+  const agentTradeAllowlist = new Set(
+    parsed.AGENT_TRADE_INTERNAL_ALLOWLIST.split(",")
+      .map((address) => address.trim().toLowerCase())
+      .filter((address) => address.length > 0),
+  );
 
   return {
     ...parsed,
@@ -181,6 +215,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     builderAddressLower: checksummed.toLowerCase(),
     isTestnet: parsed.HYPERLIQUID_API_URL.includes("testnet"),
     restrictedCountries,
+    agentTradeAllowlist,
     WEB_ORIGIN: normalizeOrigins(parsed.WEB_ORIGIN),
   };
 }

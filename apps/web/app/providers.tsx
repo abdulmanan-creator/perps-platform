@@ -35,9 +35,13 @@ const wagmiConfig = createConfig({
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
 
+  if (!PRIVY_APP_ID) {
+    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  }
+
   return (
     <PrivyProvider
-      appId={PRIVY_APP_ID || "missing-privy-app-id"}
+      appId={PRIVY_APP_ID}
       config={{
         loginMethods: ["email", "google", "wallet"],
         appearance: {

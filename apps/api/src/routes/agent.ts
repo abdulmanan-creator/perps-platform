@@ -18,6 +18,10 @@ import { verifyPrivyAuth } from "../helpers/privyAuth.js";
 import { ActionSchema, ApprovalQuerySchema } from "../schemas.js";
 import { TtlCache, cachedAsync } from "../helpers/ttlCache.js";
 import { WRITE_RATE_LIMIT } from "./exchange.js";
+import {
+  assertAgentTradeExchangeAllowed,
+  recordAgentTradeNotional,
+} from "../helpers/agentTradeSafety.js";
 
 /**
  * GET /agent?user=0x... → { user, agentAddress, agentName }
@@ -196,6 +200,12 @@ export async function agentRoute(app: FastifyInstance): Promise<void> {
     // 4. Builder injection for order actions (same as the regular /exchange path).
     if (action.type === "order") {
       injectBuilder(action, app.config);
+      assertAgentTradeExchangeAllowed({
+        req,
+        cfg: app.config,
+        action,
+        user: auth.walletAddress,
+      });
     }
 
     // 5/6. Derive the user's agent key, sign the L1 phantom-agent envelope,
@@ -245,6 +255,11 @@ export async function agentRoute(app: FastifyInstance): Promise<void> {
       metrics.hlForwards.inc({ action: action.type, outcome: "ok", path: "agent" });
       if (action.type === "order") {
         recordOrderOutcome(exchangeResponse, action.builder?.f, "agent");
+        recordAgentTradeNotional({
+          req,
+          action,
+          user: auth.walletAddress,
+        });
       }
 
       return {
