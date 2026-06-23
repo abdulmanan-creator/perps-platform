@@ -44,17 +44,20 @@ export class DeterministicAgentService implements AgentService {
 
   private long(snapshot: SharedTradingSnapshot, mode: "paper" | "live"): AgentResponse {
     const { market, account } = snapshot;
-    const sizeBtc = Number(Math.min(0.05, account.availableUsd * 0.08 / market.markPrice).toFixed(4));
+    const sizeBtc = Number(
+      Math.max(1 / 10 ** market.szDecimals, Math.min(0.05, account.availableUsd * 0.08 / market.markPrice))
+        .toFixed(market.szDecimals),
+    );
     const stopLoss = Number((market.markPrice * 0.972).toFixed(1));
     const takeProfit = Number((market.markPrice * 1.054).toFixed(1));
     const liquidation = Number((market.markPrice * 0.766).toFixed(1));
 
     return {
-      id: "btc-continuation-long",
+      id: `${market.base.toLowerCase()}-continuation-long`,
       state: "tradeProposal",
-      question: "Should I long BTC here for the next 4-8 hours?",
+      question: `Should I long ${market.base} here for the next 4-8 hours?`,
       thesis:
-        `BTC is holding the upper range while OI is expanding and funding is still modest at ${fmtPct(market.fundingRatePct)}. ` +
+        `${market.base} is holding the upper range while OI is expanding and funding is still modest at ${fmtPct(market.fundingRatePct)}. ` +
         `That is constructive, but not euphoric. I would only draft this as a controlled ${mode} trade with a defined invalidation.`,
       receipts: [
         receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
@@ -77,7 +80,7 @@ export class DeterministicAgentService implements AgentService {
         takeProfit,
         stopLoss,
         fromAgent: true,
-        scenarioId: "btc-continuation-long",
+        scenarioId: `${market.base.toLowerCase()}-continuation-long`,
       },
       annotations: [
         {
@@ -115,7 +118,7 @@ export class DeterministicAgentService implements AgentService {
   private explain(snapshot: SharedTradingSnapshot): AgentResponse {
     const { market } = snapshot;
     return {
-      id: "btc-funding-oi-read",
+      id: `${market.base.toLowerCase()}-funding-oi-read`,
       state: "answered",
       question: "Explain current funding + OI.",
       thesis:
@@ -124,7 +127,7 @@ export class DeterministicAgentService implements AgentService {
       receipts: [
         receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
         receipt("OI", fmtCompactUsd(market.openInterestUsd), snapshot),
-        receipt("OI change", fmtPct(market.openInterestChangePct, 1), snapshot),
+        receipt("OI change", market.openInterestChangePct === null ? "--" : fmtPct(market.openInterestChangePct, 1), snapshot),
       ],
       riskNote: "OI expansion is useful only while price confirms. If price stalls, the same OI can become liquidation fuel.",
       whyWrong: "Funding and OI do not identify forced flow by themselves; order book and liquidation data must confirm.",
@@ -143,9 +146,9 @@ export class DeterministicAgentService implements AgentService {
   private noTrade(snapshot: SharedTradingSnapshot): AgentResponse {
     const { market } = snapshot;
     return {
-      id: "btc-no-clean-setup",
+      id: `${market.base.toLowerCase()}-no-clean-setup`,
       state: "noTrade",
-      question: "Find a cleaner BTC setup.",
+      question: `Find a cleaner ${market.base} setup.`,
       thesis:
         "No clean setup right now. Price is between actionable levels and the order book does not offer a good asymmetric entry.",
       receipts: [
@@ -171,7 +174,7 @@ export class DeterministicAgentService implements AgentService {
           tone: "red",
         },
       ],
-      followUps: ["Set alert", "Watch BTC", "Ask again after sweep"],
+      followUps: ["Set alert", `Watch ${market.base}`, "Ask again after sweep"],
     };
   }
 

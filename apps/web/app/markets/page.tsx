@@ -1,5 +1,10 @@
-import { LockedRoute } from "@/components/agent-trade/LockedRoute";
+import { AppShell } from "@/components/agent-trade/AppShell";
+import { MarketsClient } from "@/components/agent-trade/MarketsClient";
 
 export default function MarketsPage() {
-  return <LockedRoute title="Markets and Opportunities" milestone="Milestone 2" />;
+  return (
+    <AppShell>
+      <MarketsClient />
+    </AppShell>
+  );
 }

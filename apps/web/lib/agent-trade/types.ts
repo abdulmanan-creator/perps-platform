@@ -16,13 +16,15 @@ export interface MarketSnapshot {
   base: string;
   venue: string;
   assetIndex: number;
+  szDecimals: number;
+  maxLeverage: number;
   markPrice: number;
   oraclePrice: number;
   change24hPct: number;
   change24hAbs: number;
   fundingRatePct: number;
   openInterestUsd: number;
-  openInterestChangePct: number;
+  openInterestChangePct: number | null;
   volume24hUsd: number;
   liquidityUsd: number;
   nextFundingMinutes: number;

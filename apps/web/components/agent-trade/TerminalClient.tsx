@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { hexToSignature } from "viem";
 
 import { API_BASE_URL } from "@/lib/api";
@@ -8,6 +9,8 @@ import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
+import { normalizeSymbol } from "@/lib/agent-trade/markets";
+import { buildHlOrderAction } from "@/lib/agent-trade/orders";
 import type {
   AgentResponse,
   ChartAnnotation,
@@ -50,11 +53,15 @@ function estimateLiquidation(args: {
 }
 
 function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
+  const size = Number(
+    Math.max(1 / 10 ** snapshot.market.szDecimals, Math.min(0.01, 1000 / snapshot.market.markPrice))
+      .toFixed(snapshot.market.szDecimals),
+  );
   return {
     symbol: snapshot.market.symbol,
     side: "long",
     orderType: "market",
-    sizeBtc: 0.01,
+    sizeBtc: size,
     leverage: 2,
     marginMode: "isolated",
     reduceOnly: false,
@@ -62,32 +69,9 @@ function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
   };
 }
 
-function buildHlAction(draft: OrderDraft, markPrice: number) {
-  const isBuy = draft.side === "long";
-  const price =
-    draft.orderType === "limit" && draft.limitPrice
-      ? draft.limitPrice
-      : isBuy
-        ? markPrice * 1.005
-        : markPrice * 0.995;
-
-  return {
-    type: "order" as const,
-    grouping: "na" as const,
-    orders: [
-      {
-        a: 0,
-        b: isBuy,
-        p: price.toFixed(1),
-        s: draft.sizeBtc.toFixed(4),
-        r: draft.reduceOnly,
-        t: { limit: { tif: draft.orderType === "market" ? "Ioc" : "Gtc" } },
-      },
-    ],
-  };
-}
-
 export function TerminalClient() {
+  const searchParams = useSearchParams();
+  const requestedSymbol = normalizeSymbol(searchParams.get("symbol"));
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
@@ -108,6 +92,7 @@ export function TerminalClient() {
   const [isAcked, setIsAcked] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitState, setSubmitState] = useState<string | undefined>();
+  const [marketNotice, setMarketNotice] = useState<string | undefined>();
   const [bottomTab, setBottomTab] = useState<"positions" | "orders" | "fills">("positions");
 
   useEffect(() => {
@@ -115,10 +100,20 @@ export function TerminalClient() {
 
     async function load() {
       setIsLoadingData(true);
-      const next = await loadTradingSnapshot();
+      const result = await loadTradingSnapshot(requestedSymbol);
       if (!cancelled) {
+        const next = result.snapshot;
         setSnapshot(next);
-        setDraft((current) => ({ ...current, symbol: next.market.symbol }));
+        setDraft((current) =>
+          current.symbol === next.market.symbol
+            ? { ...current, symbol: next.market.symbol }
+            : buildDefaultDraft(next),
+        );
+        setMarketNotice(
+          result.usedFallback && requestedSymbol !== "BTC"
+            ? `${result.requestedSymbol.toUpperCase()} is not available from /markets yet. Showing BTC instead.`
+            : undefined,
+        );
         setIsLoadingData(false);
       }
     }
@@ -129,7 +124,7 @@ export function TerminalClient() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [requestedSymbol]);
 
   useEffect(() => {
     let cancelled = false;
@@ -229,7 +224,7 @@ export function TerminalClient() {
       throw new Error("Wallet did not return an account.");
     }
     const user = accounts[0] as `0x${string}`;
-    const action = buildHlAction(draft, snapshot.market.markPrice);
+    const action = buildHlOrderAction(draft, snapshot.market);
     const headers = {
       "content-type": "application/json",
       "x-agent-trade-risk-accepted": "true",
@@ -299,6 +294,7 @@ export function TerminalClient() {
             </span>
             <span>{snapshot.market.venue}</span>
           </div>
+          {marketNotice ? <p className="market-notice">{marketNotice}</p> : null}
         </div>
         <div className="terminal-state-row">
           <button className={isStale ? "state-pill stale" : "state-pill live"} onClick={() => setIsStale((value) => !value)}>
@@ -324,6 +320,9 @@ export function TerminalClient() {
         </div>
         <div className="terminal-right">
           <TicketPanel
+            base={snapshot.market.base}
+            szDecimals={snapshot.market.szDecimals}
+            maxLeverage={Math.min(10, snapshot.market.maxLeverage)}
             draft={draft}
             updateDraft={updateDraft}
             entryPrice={entryPrice}
@@ -341,6 +340,7 @@ export function TerminalClient() {
           />
           {submitState ? <div className="submit-state">{submitState}</div> : null}
           <AgentPanel
+            base={snapshot.market.base}
             agent={agent}
             isThinking={isThinking}
             runAgent={runAgent}
@@ -353,6 +353,8 @@ export function TerminalClient() {
       {modalOpen ? (
         <ConfirmModal
           draft={draft}
+          base={snapshot.market.base}
+          szDecimals={snapshot.market.szDecimals}
           mode={mode}
           entryPrice={entryPrice}
           notional={notional}
@@ -404,7 +406,7 @@ function StatsStrip({ snapshot, isLoading }: { snapshot: SharedTradingSnapshot; 
   const stats = [
     ["Funding", fmtPct(snapshot.market.fundingRatePct)],
     ["Open interest", fmtCompactUsd(snapshot.market.openInterestUsd)],
-    ["OI 24h", fmtPct(snapshot.market.openInterestChangePct, 1)],
+    ["OI 24h", snapshot.market.openInterestChangePct === null ? "--" : fmtPct(snapshot.market.openInterestChangePct, 1)],
     ["24h volume", fmtCompactUsd(snapshot.market.volume24hUsd)],
     ["Liquidity", fmtCompactUsd(snapshot.market.liquidityUsd)],
     ["Next funding", `${snapshot.market.nextFundingMinutes}m`],
@@ -458,7 +460,7 @@ function ChartPanel({
     <div className="panel chart-panel">
       <div className="panel-head">
         <div>
-          <span>BTC perpetual</span>
+          <span>{snapshot.market.base} perpetual</span>
           <strong>Agent annotated chart</strong>
         </div>
         <div className="timeframes">
@@ -467,7 +469,7 @@ function ChartPanel({
           ))}
         </div>
       </div>
-      <svg className="chart-svg" viewBox="0 0 760 300" role="img" aria-label="BTC chart with agent annotations">
+      <svg className="chart-svg" viewBox="0 0 760 300" role="img" aria-label={`${snapshot.market.base} chart with agent annotations`}>
         <defs>
           <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="rgba(39, 214, 170, 0.28)" />
@@ -533,7 +535,7 @@ function BookRow({ level, max, side }: { level: { price: number; size: number };
 function TradesPanel({ snapshot }: { snapshot: SharedTradingSnapshot }) {
   return (
     <div className="panel compact-panel trades-panel">
-      <div className="panel-head tight"><strong>Recent trades</strong><span>BTC</span></div>
+      <div className="panel-head tight"><strong>Recent trades</strong><span>{snapshot.market.base}</span></div>
       {snapshot.recentTrades.map((trade) => (
         <div key={`${trade.timestamp}-${trade.price}`} className={`trade-row ${trade.side}`}>
           <strong>{trade.side === "buy" ? "Buy" : "Sell"}</strong>
@@ -547,6 +549,9 @@ function TradesPanel({ snapshot }: { snapshot: SharedTradingSnapshot }) {
 }
 
 function TicketPanel(props: {
+  base: string;
+  szDecimals: number;
+  maxLeverage: number;
   draft: OrderDraft;
   updateDraft: (patch: Partial<OrderDraft>) => void;
   entryPrice: number;
@@ -579,8 +584,14 @@ function TicketPanel(props: {
         ))}
       </div>
       <label className="field">
-        <span>Size BTC</span>
-        <input value={props.draft.sizeBtc} type="number" min="0" step="0.001" onChange={(event) => props.updateDraft({ sizeBtc: Number(event.target.value) })} />
+        <span>Size {props.base}</span>
+        <input
+          value={props.draft.sizeBtc}
+          type="number"
+          min="0"
+          step={1 / 10 ** props.szDecimals}
+          onChange={(event) => props.updateDraft({ sizeBtc: Number(event.target.value) })}
+        />
       </label>
       {props.draft.orderType === "limit" ? (
         <label className="field">
@@ -590,7 +601,7 @@ function TicketPanel(props: {
       ) : null}
       <label className="field">
         <span>Leverage {props.draft.leverage}x</span>
-        <input value={props.draft.leverage} type="range" min="1" max="10" onChange={(event) => props.updateDraft({ leverage: Number(event.target.value) })} />
+        <input value={props.draft.leverage} type="range" min="1" max={props.maxLeverage} onChange={(event) => props.updateDraft({ leverage: Number(event.target.value) })} />
       </label>
       <div className="segmented">
         {(["isolated", "cross"] as MarginMode[]).map((marginMode) => (
@@ -627,6 +638,7 @@ function TicketPanel(props: {
 }
 
 function AgentPanel(props: {
+  base: string;
   agent: AgentResponse | undefined;
   isThinking: boolean;
   runAgent: (scenario: AgentScenario) => void;
@@ -642,7 +654,7 @@ function AgentPanel(props: {
         </div>
       </div>
       <div className="prompt-chips">
-        <button onClick={() => props.runAgent("long")}>Should I long BTC?</button>
+        <button onClick={() => props.runAgent("long")}>Should I long {props.base}?</button>
         <button onClick={() => props.runAgent("explain")}>Explain funding + OI</button>
         <button onClick={() => props.runAgent("noTrade")}>Find cleaner setup</button>
       </div>
@@ -743,6 +755,8 @@ function BottomPanel(props: {
 
 function ConfirmModal(props: {
   draft: OrderDraft;
+  base: string;
+  szDecimals: number;
   mode: "paper" | "live";
   entryPrice: number;
   notional: number;
@@ -771,7 +785,7 @@ function ConfirmModal(props: {
         <div className="confirm-grid">
           <span>Market <strong>{props.draft.symbol}</strong></span>
           <span>Side <strong>{props.draft.side}</strong></span>
-          <span>Size <strong>{fmtNumber(props.draft.sizeBtc, 4)} BTC</strong></span>
+          <span>Size <strong>{fmtNumber(props.draft.sizeBtc, props.szDecimals)} {props.base}</strong></span>
           <span>Order type <strong>{props.draft.orderType}</strong></span>
           <span>Leverage <strong>{props.draft.leverage}x</strong></span>
           <span>Margin mode <strong>{props.draft.marginMode}</strong></span>

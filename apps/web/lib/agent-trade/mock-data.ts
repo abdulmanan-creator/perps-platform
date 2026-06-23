@@ -9,6 +9,8 @@ export const MOCK_TRADING_SNAPSHOT: SharedTradingSnapshot = {
     base: "BTC",
     venue: "Hyperliquid",
     assetIndex: 0,
+    szDecimals: 5,
+    maxLeverage: 40,
     markPrice: 104_820.5,
     oraclePrice: 104_806.2,
     change24hPct: 2.14,
