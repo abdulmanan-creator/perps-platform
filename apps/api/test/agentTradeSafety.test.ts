@@ -1,7 +1,8 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 
-import type { OrderAction } from "@alchemy-hl/shared";
+import type { BuildResponse, OrderAction, UpdateLeverageAction } from "@alchemy-hl/shared";
 
 import { loadConfig, type Config } from "../src/config.js";
 import { ApiException, sendError } from "../src/errors.js";
@@ -78,6 +79,15 @@ function order(price = 1000, size = 0.001): OrderAction {
   };
 }
 
+function updateLeverage(): UpdateLeverageAction {
+  return {
+    type: "updateLeverage",
+    asset: 0,
+    isCross: false,
+    leverage: 3,
+  };
+}
+
 async function appWithConfig(config: Config): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   app.decorate("config", config);
@@ -86,6 +96,31 @@ async function appWithConfig(config: Config): Promise<FastifyInstance> {
     return reply.code(500).send({ error: "INTERNAL_ERROR", message: String(err) });
   });
   return app;
+}
+
+function splitHexSig(hex: `0x${string}`): { r: `0x${string}`; s: `0x${string}`; v: number } {
+  const stripped = hex.replace(/^0x/, "");
+  let v = parseInt(stripped.slice(128, 130), 16);
+  if (v < 27) v += 27;
+  return {
+    r: `0x${stripped.slice(0, 64)}` as `0x${string}`,
+    s: `0x${stripped.slice(64, 128)}` as `0x${string}`,
+    v,
+  };
+}
+
+async function signBuiltAction(built: BuildResponse) {
+  const account = privateKeyToAccount(generatePrivateKey());
+  if (!built.typedData) {
+    throw new Error("missing typedData");
+  }
+  const sigHex = await account.signTypedData({
+    domain: built.typedData.domain,
+    types: built.typedData.types,
+    primaryType: built.typedData.primaryType,
+    message: built.typedData.message,
+  });
+  return splitHexSig(sigHex);
 }
 
 describe("Agent.trade safety helper", () => {
@@ -192,6 +227,28 @@ describe("Agent.trade safety helper", () => {
       }),
     ).toThrow(/not allowlisted/i);
   });
+
+  it("unknown eligibility blocks updateLeverage guard", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(),
+        cfg: cfg(),
+        action: updateLeverage(),
+        user: USER,
+      }),
+    ).toThrow(/eligibility is unknown/i);
+  });
+
+  it("restricted jurisdiction blocks updateLeverage guard", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders("US")),
+        cfg: cfg(),
+        action: updateLeverage(),
+        user: USER,
+      }),
+    ).toThrow(/not eligible/i);
+  });
 });
 
 describe("Agent.trade route safety", () => {
@@ -267,6 +324,118 @@ describe("Agent.trade route safety", () => {
     expect(res.statusCode).toBe(451);
     expect(res.json().message).toMatch(/eligibility is unknown/i);
     expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("unknown eligibility blocks updateLeverage on /agent-trade/exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      payload: { action: updateLeverage() },
+    });
+
+    expect(res.statusCode).toBe(451);
+    expect(res.json().message).toMatch(/eligibility is unknown/i);
+    await app.close();
+  });
+
+  it("restricted eligibility blocks updateLeverage on /agent-trade/exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      headers: ackHeaders("US"),
+      payload: { action: updateLeverage() },
+    });
+
+    expect(res.statusCode).toBe(451);
+    expect(res.json().message).toMatch(/not eligible/i);
+    await app.close();
+  });
+
+  it("unknown eligibility blocks updateLeverage on /agent/exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentRoute(app);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/exchange",
+      headers: { authorization: "Bearer good-token" },
+      payload: { action: updateLeverage() },
+    });
+
+    expect(res.statusCode).toBe(451);
+    expect(res.json().message).toMatch(/eligibility is unknown/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("restricted eligibility blocks updateLeverage on /agent/exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentRoute(app);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/exchange",
+      headers: { authorization: "Bearer good-token", ...ackHeaders("US") },
+      payload: { action: updateLeverage() },
+    });
+
+    expect(res.statusCode).toBe(451);
+    expect(res.json().message).toMatch(/not eligible/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("policy-rejected send can be retried after fixing headers without DUPLICATE_REQUEST", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+
+    const buildRes = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      headers: ackHeaders(),
+      payload: { action: updateLeverage() },
+    });
+    expect(buildRes.statusCode).toBe(200);
+    const built = buildRes.json() as BuildResponse;
+    const signature = await signBuiltAction(built);
+    const payload = { action: built.action, nonce: built.nonce, signature };
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      headers: { "cf-ipcountry": "CA" },
+      payload,
+    });
+    expect(rejected.statusCode).toBe(422);
+    expect(rejected.json().error).toBe("INVALID_PARAMS");
+    expect(rejected.json().message).toMatch(/acknowledgement/i);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: "ok", response: { type: "default" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const retry = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      headers: ackHeaders(),
+      payload,
+    });
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().success).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledOnce();
     await app.close();
   });
 });

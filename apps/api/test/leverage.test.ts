@@ -15,6 +15,12 @@ import { agentRoute } from "../src/routes/agent.js";
 
 const SEED = "0x1111111111111111111111111111111111111111111111111111111111111111";
 const USER = "0xcccc000000000000000000000000000000000001" as const;
+const AUTH_HEADERS = {
+  authorization: "Bearer good",
+  "cf-ipcountry": "CA",
+  "x-agent-trade-risk-accepted": "true",
+  "x-agent-trade-terms-accepted": "true",
+};
 
 const baseEnv = {
   ALCHEMY_BUILDER_ADDRESS: "0xAAAA000000000000000000000000000000000001",
@@ -130,7 +136,7 @@ describe("/agent/exchange leverage cap", () => {
     const res = await app.inject({
       method: "POST",
       url: "/agent/exchange",
-      headers: { authorization: "Bearer good" },
+      headers: AUTH_HEADERS,
       payload: {
         action: { type: "updateLeverage", asset: 0, isCross: true, leverage: 10 },
       },
@@ -143,7 +149,7 @@ describe("/agent/exchange leverage cap", () => {
     const res = await app.inject({
       method: "POST",
       url: "/agent/exchange",
-      headers: { authorization: "Bearer good" },
+      headers: AUTH_HEADERS,
       payload: {
         action: { type: "updateLeverage", asset: 0, isCross: true, leverage: 25 },
       },

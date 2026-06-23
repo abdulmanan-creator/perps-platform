@@ -20,6 +20,7 @@ import { TtlCache, cachedAsync } from "../helpers/ttlCache.js";
 import { WRITE_RATE_LIMIT } from "./exchange.js";
 import {
   assertAgentTradeExchangeAllowed,
+  isAgentTradeGuardedAction,
   recordAgentTradeNotional,
 } from "../helpers/agentTradeSafety.js";
 
@@ -200,6 +201,8 @@ export async function agentRoute(app: FastifyInstance): Promise<void> {
     // 4. Builder injection for order actions (same as the regular /exchange path).
     if (action.type === "order") {
       injectBuilder(action, app.config);
+    }
+    if (isAgentTradeGuardedAction(action)) {
       assertAgentTradeExchangeAllowed({
         req,
         cfg: app.config,

@@ -112,6 +112,14 @@ export async function registerExchangeEndpoint(
         builderFee = body.action.builder?.f;
       }
 
+      const signer = await recoverActionSigner(
+        body.action,
+        body.nonce,
+        body.signature,
+        app.config,
+      );
+      args.hooks?.beforeSend?.({ req, body, signer });
+
       const replayKey = `${body.signature.r}:${body.signature.s}:${body.signature.v}:${body.nonce}`;
       if (!seenSignatures.addIfAbsent(replayKey, true)) {
         metrics.duplicatesRejected.inc({ route: args.metricRoute });
@@ -121,14 +129,6 @@ export async function registerExchangeEndpoint(
           "The same signature + nonce was forwarded within the last 10 minutes — the original request likely succeeded. Check order state via /openOrders or /orderStatus instead of retrying. To place the same order again, build and sign a fresh payload.",
         );
       }
-
-      const signer = await recoverActionSigner(
-        body.action,
-        body.nonce,
-        body.signature,
-        app.config,
-      );
-      args.hooks?.beforeSend?.({ req, body, signer });
 
       req.log.info(
         { route: args.metricRoute, type: body.action.type, signer, builderFee, nonce: body.nonce },

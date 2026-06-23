@@ -67,13 +67,22 @@ export function actionNotionalUsd(action: Action): number {
   }, 0);
 }
 
+export function isAgentTradeGuardedAction(action: Action): boolean {
+  return (
+    action.type === "order" ||
+    action.type === "updateLeverage" ||
+    action.type === "approveAgent" ||
+    action.type === "approveBuilderFee"
+  );
+}
+
 export function assertAgentTradeExchangeAllowed(args: {
   req: FastifyRequest;
   cfg: Config;
   action: Action;
   user?: `0x${string}`;
 }): void {
-  if (args.action.type !== "order") {
+  if (!isAgentTradeGuardedAction(args.action)) {
     return;
   }
 
@@ -129,6 +138,10 @@ export function assertAgentTradeExchangeAllowed(args: {
         "Mainnet execution requires the internal allowlist, eligibility checks, caps, and the kill switch to be open.",
       );
     }
+  }
+
+  if (args.action.type !== "order") {
+    return;
   }
 
   const notionalUsd = actionNotionalUsd(args.action);
