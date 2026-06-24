@@ -55,7 +55,7 @@ export function PortfolioClient() {
     <main className="portfolio-page">
       <section className="portfolio-head">
         <div>
-          <p className="at-kicker">Milestone 2B portfolio risk</p>
+          <p className="at-kicker">Portfolio risk</p>
           <h1>Portfolio</h1>
           <p>Hybrid paper/live-read account view. Trading actions remain isolated to the terminal confirmation flow.</p>
         </div>

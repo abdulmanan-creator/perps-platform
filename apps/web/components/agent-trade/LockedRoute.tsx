@@ -2,21 +2,21 @@ import { AppShell } from "./AppShell";
 
 export function LockedRoute({
   title,
-  milestone,
+  kicker,
 }: {
   title: string;
-  milestone: "Milestone 2" | "Milestone 3";
+  kicker: string;
 }) {
   return (
     <AppShell>
       <main className="at-placeholder">
         <div>
-          <p className="at-kicker">{milestone}</p>
+          <p className="at-kicker">{kicker}</p>
           <h1>{title}</h1>
           <p>
-            This route is intentionally present but not built in Milestone 1.
-            The current gate is limited to the terminal, embedded agent, ticket
-            handoff, paper trading, and guarded exchange path.
+            This route is intentionally reserved while the current MVP focuses
+            on the terminal, market discovery, portfolio risk, onboarding, and
+            safe connector handoff. It is not wired to live trading actions.
           </p>
         </div>
       </main>

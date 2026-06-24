@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Not available in your region — Alchemy Hyperliquid",
+  title: "Live trading unavailable - Agent.trade",
   robots: { index: false, follow: false },
 };
 
@@ -27,16 +27,17 @@ export default function RestrictedPage() {
           textAlign: "center",
         }}
       >
-        <h1 style={{ fontSize: 24, marginBottom: 12 }}>Not available in your region</h1>
+        <h1 style={{ fontSize: 24, marginBottom: 12 }}>Live trading unavailable</h1>
         <p style={{ color: "var(--fg-muted)", lineHeight: 1.6, marginBottom: 16 }}>
-          Trading perpetuals, spot, and prediction markets through this service
-          is restricted in the United States and sanctioned jurisdictions for
-          regulatory reasons.
+          Agent.trade cannot offer live leveraged-perp trading where
+          eligibility is restricted or cannot be verified. Paper mode may remain
+          available where routing permits, but restricted or unknown eligibility
+          cannot submit live orders.
         </p>
         <p style={{ color: "var(--fg-dim)", fontSize: 14, lineHeight: 1.6 }}>
-          Attempting to bypass this restriction — for example with a VPN — is a
-          violation of our terms. If you reached this page in error, contact
-          support.
+          Attempting to bypass eligibility checks is a violation of the terms.
+          Live trading also remains subject to caps, acknowledgements,
+          allowlists, and kill switches.
         </p>
       </div>
     </main>

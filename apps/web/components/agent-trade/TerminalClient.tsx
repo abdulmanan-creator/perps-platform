@@ -297,7 +297,7 @@ export function TerminalClient() {
     <main className="terminal-page">
       <section className="terminal-head">
         <div>
-          <p className="at-kicker">Milestone 1 terminal</p>
+          <p className="at-kicker">Hyperliquid terminal</p>
           <h1>{snapshot.market.symbol}</h1>
           <div className="terminal-market-line">
             <strong>{fmtUsd(snapshot.market.markPrice, 1)}</strong>

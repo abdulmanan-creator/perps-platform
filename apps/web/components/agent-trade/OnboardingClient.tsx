@@ -69,7 +69,7 @@ export function OnboardingClient() {
     <main className="onboarding-page">
       <section className="onboarding-head">
         <div>
-          <p className="at-kicker">Milestone 3A onboarding</p>
+          <p className="at-kicker">Account readiness</p>
           <h1>Account readiness</h1>
           <p>
             Set up Agent.trade for paper exploration first, then connect a wallet and funding path only if live trading is eligible.
@@ -135,6 +135,9 @@ export function OnboardingClient() {
 
 function StatusCard({ eligibility }: { eligibility: EligibilityResponse }) {
   const display = getEligibilityDisplay(eligibility.state);
+  const executionPolicy = eligibility.mainnetExecutionEnabled
+    ? "Mainnet enabled by env"
+    : "Hyperliquid testnet default";
   return (
     <div className="panel onboarding-card">
       <div className="panel-head">
@@ -148,7 +151,7 @@ function StatusCard({ eligibility }: { eligibility: EligibilityResponse }) {
         <ReadinessRow label="Paper mode" value={display.paperAvailable ? "Available" : "Unavailable"} ok={display.paperAvailable} />
         <ReadinessRow label="Live trading" value={display.liveTradingEnabled ? "Eligible" : "Disabled"} ok={display.liveTradingEnabled} />
         <ReadinessRow label="Live funding CTA" value={display.liveFundingEnabled ? "Enabled" : "Disabled"} ok={display.liveFundingEnabled} />
-        <ReadinessRow label="Execution venue" value={eligibility.executionVenue} ok />
+        <ReadinessRow label="Execution policy" value={executionPolicy} ok={!eligibility.mainnetExecutionEnabled} />
         <ReadinessRow label="Kill switch" value={eligibility.killSwitchEnabled ? "Active" : "Clear"} ok={!eligibility.killSwitchEnabled} />
         <ReadinessRow label="Mainnet execution" value={eligibility.mainnetExecutionEnabled ? "Enabled by env" : "Disabled by default"} ok={!eligibility.mainnetExecutionEnabled} />
       </div>
@@ -211,7 +214,9 @@ function WalletCard({ wallet }: { wallet: WalletSummary }) {
         <strong>{wallet.walletType ?? (wallet.status === "local-dev" ? "Privy env missing" : "Not selected")}</strong>
       </div>
       <p className="onboarding-note">
-        Wallet connection does not authorize autonomous trading. The agent can draft only; every live order still requires explicit confirmation.
+        Wallet connection does not authorize autonomous live trading. In the
+        current MVP flow, the agent researches, explains, and drafts; every
+        live order returns to Agent.trade for explicit confirmation.
       </p>
       {wallet.status === "local-dev" ? (
         <p className="local-dev-note">Set NEXT_PUBLIC_PRIVY_APP_ID to enable the Privy sign-in modal. Paper exploration works without it.</p>
@@ -277,7 +282,7 @@ function RiskCard({ state }: { state: EligibilityMode }) {
       </div>
       <div className="risk-copy-list">
         <p>Leveraged perpetuals can lose more than expected if sizing and liquidation risk are misunderstood.</p>
-        <p>The embedded agent drafts and explains. It cannot execute, withdraw funds, or bypass confirmation.</p>
+        <p>In the current MVP flow, orders require Agent.trade confirmation. Permissioned agent execution is future roadmap work with scopes, caps, revocation, eligibility checks, audit logs, and kill switches.</p>
         <p>Live orders remain guarded by server-side eligibility, caps, terms acknowledgement, and the kill switch.</p>
         <p>Where the edge jurisdiction gate blocks an entire restricted region, visitors may see the restricted page instead of app surfaces.</p>
         <p>{display.summary}</p>

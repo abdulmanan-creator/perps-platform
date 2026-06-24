@@ -119,7 +119,7 @@ export function MarketsClient() {
     <main className="markets-page">
       <section className="markets-head">
         <div>
-          <p className="at-kicker">Milestone 2A scanner</p>
+          <p className="at-kicker">Market discovery</p>
           <h1>Markets</h1>
           <p>
             Rule-based opportunity discovery from Hyperliquid market metadata and live stats. No LLM ranking yet.
@@ -195,4 +195,3 @@ export function MarketsClient() {
     </main>
   );
 }
-
