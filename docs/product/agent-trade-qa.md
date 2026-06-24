@@ -30,6 +30,7 @@ The script launches a temporary headless Chrome session through the Chrome DevTo
 - Portfolio reflection: paper positions/fills are visible and labelled as simulated, not live Hyperliquid exposure. Disconnected/local sessions must not present demo balances as real funds.
 - Session isolation: a second browser context gets a separate local paper ledger.
 - Legacy fail-closed behavior: `/approve` and `/oauth/authorize` do not expose approval, Bridge2 deposit, Get USDC, or `/exchange` compatibility calls by default.
+- Privy truth-in-copy: public copy claims only configured email, Google, existing-wallet login, and embedded-wallet creation; funding/on-ramp and Hyperliquid deposit copy stays disabled, legacy, planned, or provider-dependent.
 - API safety checks for guarded live actions and session-scoped paper ledger endpoints.
 
 Screenshots are written to `/tmp` by default:

@@ -270,7 +270,7 @@ function DashboardView(props: {
             <div className="row">
               <span>Manage</span>
               <span className="v">
-                <Link href="/approve">approve / revoke ↗</Link>
+                <Link href="/approve">legacy approval ↗</Link>
               </span>
             </div>
           </div>

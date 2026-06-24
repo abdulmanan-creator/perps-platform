@@ -29,10 +29,10 @@ const ITEMS: { q: string; a: React.ReactNode }[] = [
     a: "Hyperliquid lets any registered \"builder\" attach a small fee to orders they route to the matcher, capped by a user-signed approval. Alchemy is a builder. The protocol enforces a maximum of 0.1% on perps and 1% on spot; the user signs a ceiling at or below that, and Alchemy charges below the ceiling on every order.",
   },
   {
-    q: "How do I approve / revoke?",
+    q: "How do wallet approval and funding work in the MVP?",
     a: (
       <>
-        Visit <Link href="/approve">/approve</Link>, sign in (email, Google, or a wallet), and sign a single EIP-712 message setting your <code>maxFeeRate</code>. Revoking is symmetric — return to the same page and click &quot;Revoke&quot; to publish a revocation payload. Either action takes one signature.
+        Start at <Link href="/onboarding">account readiness</Link>. Privy sign-in is supported when configured for email, Google, or an existing wallet, and may create an embedded wallet for users without one. Funding and Hyperliquid deposit paths are environment-gated and not enabled by default; legacy approval/revoke compatibility remains hidden unless explicit internal flags are enabled.
       </>
     ),
   },

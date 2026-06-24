@@ -32,8 +32,9 @@ Key facts:
 
 ## Onboarding
 
-- [Approve & deposit](https://alchemy-hl-web.onrender.com/approve): Privy sign-in (email / Google / wallet), one approveBuilderFee signature, optional USDC deposit to Hyperliquid via the Arbitrum bridge
-- [Landing & docs](https://alchemy-hl-web.onrender.com/): API reference, fees, FAQ
+- [Account readiness](https://alchemy-hl-web.onrender.com/onboarding): Privy sign-in is supported when configured for email, Google, or existing-wallet login; users without wallets may receive a Privy embedded wallet. Paper mode remains available for local/internal testing without Privy.
+- Funding and deposit paths are environment-gated and are not enabled by default. Legacy approval/deposit compatibility screens require explicit flags, live eligibility, and legal/compliance review.
+- [Landing & docs](https://alchemy-hl-web.onrender.com/): product overview, connector setup, and safety notes
 
 ## Optional
 

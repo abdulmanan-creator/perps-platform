@@ -116,7 +116,7 @@ function ApproveFlow() {
     }
   }, [activeWallet, setActiveWallet]);
 
-  // ---- HL deposit (in-app) ------------------------------------------------
+  // ---- Legacy HL deposit compatibility (in-app, default-off) --------------
   // Privy embedded wallets can't connect to app.hyperliquid.xyz from outside
   // our app, so we drive the deposit transaction (USDC.transfer → HL Bridge2
   // on Arbitrum) from inside /approve via wagmi. After confirmation, HL's
@@ -884,12 +884,12 @@ function DepositCard(props: {
     <CardShell>
       <WalletChip address={props.userAddress} onDisconnect={props.onDisconnect} />
 
-      <h1 className="approve-title">One step first: deposit USDC.</h1>
+      <h1 className="approve-title">Legacy deposit compatibility required.</h1>
       <p className="approve-sub">
         Even gas-free actions like <code>approveBuilderFee</code> need a non-empty
         Hyperliquid account. {isTestnet
           ? "Claim testnet USDC at the link below, then come back and click Retry."
-          : "Deposit USDC from this wallet into Hyperliquid, then click Retry."}
+          : "This default-off compatibility flow can send USDC from this wallet into Hyperliquid only when explicitly enabled for internal testing."}
       </p>
 
       {/* Testnet path: external faucet link. Mainnet path: in-app deposit. */}
@@ -926,7 +926,7 @@ function DepositCard(props: {
               <span className="suffix">USDC</span>
             </div>
             <div className="fee-meta">
-              Sends to Hyperliquid Bridge2 on Arbitrum.{" "}
+              Legacy compatibility transfer to Hyperliquid Bridge2 on Arbitrum.{" "}
               <a
                 href={`https://arbiscan.io/address/${HL_BRIDGE_ARBITRUM}`}
                 target="_blank"
@@ -943,7 +943,7 @@ function DepositCard(props: {
               onClick={props.onDeposit}
               disabled={!amountOk}
             >
-              Deposit {props.depositAmount} USDC into Hyperliquid
+              Send {props.depositAmount} USDC through legacy deposit flow
               <svg className="btn-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M5 12h14M13 6l6 6-6 6" />
               </svg>
@@ -955,7 +955,7 @@ function DepositCard(props: {
               <span className="spinner"></span>
               <div className="txt">
                 <div className="ttl">Confirm in your wallet…</div>
-                <div className="sub">Approve the USDC transfer to HL Bridge2.</div>
+                <div className="sub">Approve the legacy USDC transfer to HL Bridge2.</div>
               </div>
             </div>
           )}
@@ -1027,7 +1027,7 @@ function DepositCard(props: {
           rel="noopener noreferrer"
           style={{ marginBottom: 14, marginTop: 14 }}
         >
-          Get USDC on Arbitrum ↗
+          Open external USDC swap ↗
         </a>
       )}
 

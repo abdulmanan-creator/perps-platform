@@ -30,21 +30,37 @@ mainnet money (keep sizes ~$10–15).
 - [ ] Mobile width (devtools, ~390px): landing, /approve, /dashboard all
       render without horizontal scroll. (Known soft spot — flag anything ugly.)
 
-## 2. Onboarding — fresh user (15 min) [$]
+## 2. Onboarding — fresh user / default Agent.trade gates (15 min)
 
 Use an email you've never signed in with (catches regressions your existing
 account can't).
 
-- [ ] `/approve` → sign in with a new email → embedded wallet created,
-      address chip shown.
-- [ ] Try approving before depositing → error path should show the
-      NEEDS_DEPOSIT guidance with a working deposit affordance.
-- [ ] Deposit ~$10 USDC (Arbitrum → HL bridge flow in-app) → balance
-      polling picks it up; Arbiscan link works.
-- [ ] Approve builder fee → success card shows fee schedule
-      (0.04% perps / 0.05% spot), "Order history ↗" opens HL's order page,
-      "Trouble signing?" goes to FAQ.
-- [ ] Revoke → state flips; re-approve → back to approved.
+- [ ] `/onboarding` with `NEXT_PUBLIC_PRIVY_APP_ID` configured → Privy sign-in
+      is available for the methods enabled in the dashboard and wired in the
+      app today: email, Google, and existing wallet.
+- [ ] Fresh email sign-in can create a Privy embedded wallet for a user with no
+      wallet, when embedded wallets are enabled in the Privy app.
+- [ ] `/onboarding` with no Privy env → paper mode remains available and copy
+      does not imply live funding.
+- [ ] Funding/on-ramp CTAs remain disabled unless
+      `NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING=true`, Privy is configured,
+      a wallet is connected, live eligibility is confirmed, and the Privy
+      funding hook is available.
+- [ ] `/approve` default state → legacy approval and Hyperliquid deposit
+      compatibility screens are hidden unless their explicit flags are enabled.
+
+### Legacy approval/deposit compatibility, env-gated only [$]
+
+Run this subsection only after explicit internal approval and after enabling
+`NEXT_PUBLIC_AGENT_TRADE_ENABLE_LEGACY_APPROVALS=true` and, for deposit
+compatibility, `NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT=true`.
+
+- [ ] `/approve` → sign in with a new email → embedded wallet created, address
+      chip shown.
+- [ ] Builder-fee approval/revoke copy is clearly presented as a legacy
+      compatibility flow, not normal Agent.trade onboarding.
+- [ ] Any Hyperliquid Bridge2 deposit surface is shown only when the deposit
+      flag, live eligibility, and legal/compliance prerequisites are satisfied.
 
 ## 3. Dashboard (15 min)
 
