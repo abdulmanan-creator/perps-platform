@@ -286,6 +286,116 @@ describe("Agent.trade route safety", () => {
     await app.close();
   });
 
+  it("paper POST records a fill and position for a session", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers: { "x-agent-trade-session-id": "session-paper-a" },
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.02,
+          leverage: 2,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: false,
+        },
+        estimatedEntry: 60000,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.fill.mode).toBe("paper");
+    expect(body.fill.side).toBe("buy");
+    expect(body.account.positions[0]).toMatchObject({
+      symbol: "BTC-USD",
+      side: "long",
+      mode: "paper",
+      size: 0.02,
+      entryPrice: 60000,
+    });
+    expect(body.account.fills).toHaveLength(1);
+    await app.close();
+  });
+
+  it("paper GET returns subsequent fills and positions for the same session", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers: { "x-agent-trade-session-id": "session-paper-b" },
+      payload: {
+        draft: {
+          symbol: "ETH-USD",
+          side: "short",
+          orderType: "market",
+          sizeBtc: 1.5,
+          leverage: 3,
+          marginMode: "cross",
+          reduceOnly: false,
+          fromAgent: true,
+        },
+        estimatedEntry: 3000,
+      },
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-trade/paper-account",
+      headers: { "x-agent-trade-session-id": "session-paper-b" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.sessionId).toBe("session-paper-b");
+    expect(body.positions[0]).toMatchObject({ symbol: "ETH-USD", side: "short", mode: "paper" });
+    expect(body.fills[0]).toMatchObject({ symbol: "ETH-USD", side: "sell", fromAgent: true });
+    await app.close();
+  });
+
+  it("paper ledgers are isolated by session id", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+
+    await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers: { "x-agent-trade-session-id": "session-paper-c" },
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.01,
+          leverage: 2,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: false,
+        },
+        estimatedEntry: 60000,
+      },
+    });
+
+    const other = await app.inject({
+      method: "GET",
+      url: "/agent-trade/paper-account",
+      headers: { "x-agent-trade-session-id": "session-paper-d" },
+    });
+
+    expect(other.statusCode).toBe(200);
+    expect(other.json().positions).toHaveLength(0);
+    expect(other.json().fills).toHaveLength(0);
+    await app.close();
+  });
+
   it("/agent-trade/exchange is guarded while generic /exchange remains backward-compatible", async () => {
     const app = await appWithConfig(cfg());
     await exchangeRoute(app);

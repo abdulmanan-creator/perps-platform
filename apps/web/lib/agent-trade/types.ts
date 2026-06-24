@@ -48,6 +48,7 @@ export interface Position {
   symbol: string;
   base: string;
   side: TradeSide;
+  mode?: "paper" | "live";
   size: number;
   leverage: number;
   marginMode: MarginMode;
@@ -66,6 +67,7 @@ export interface OpenOrder {
   symbol: string;
   side: "buy" | "sell";
   type: OrderType;
+  mode?: "paper" | "live";
   price: number;
   size: number;
   reduceOnly: boolean;
@@ -75,6 +77,7 @@ export interface OpenOrder {
 export interface Fill {
   symbol: string;
   side: "buy" | "sell";
+  mode?: "paper" | "live";
   price: number;
   size: number;
   feeUsd: number;
@@ -153,4 +156,16 @@ export interface PaperOrder {
   estimatedEntry: number;
   notionalUsd: number;
   createdAt: number;
+}
+
+export interface PaperAccountSnapshot {
+  sessionId: string;
+  equityUsd: number;
+  availableUsd: number;
+  marginUsedUsd: number;
+  unrealizedPnlUsd: number;
+  simulatedBalanceUsd: number;
+  positions: Position[];
+  openOrders: OpenOrder[];
+  fills: Fill[];
 }

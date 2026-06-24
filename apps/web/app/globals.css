@@ -956,6 +956,19 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .paper-badge { color: #ffe0a3; background: rgba(240,162,58,0.12); border: 1px solid rgba(240,162,58,0.3); }
 .live-badge, .from-agent-badge { color: #cad2ff; background: rgba(91,99,255,0.13); border: 1px solid rgba(91,99,255,0.35); }
+.paper-ledger-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 7px;
+  padding: 2px 6px;
+  border: 1px solid rgba(240,162,58,0.34);
+  border-radius: 999px;
+  background: rgba(240,162,58,0.12);
+  color: #ffe0a3;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px 14px 0; }
 .segmented button {
   border: 1px solid var(--line);

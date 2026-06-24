@@ -11,6 +11,7 @@ import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import { normalizeSymbol } from "@/lib/agent-trade/markets";
 import { buildHlOrderAction } from "@/lib/agent-trade/orders";
+import { paperSessionHeaders } from "@/lib/agent-trade/paper";
 import {
   calculateDraftImpact,
   calculatePortfolioExposure,
@@ -230,7 +231,7 @@ export function TerminalClient() {
     try {
       const res = await fetch(endpoint, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...paperSessionHeaders() },
         body: JSON.stringify({ draft, estimatedEntry: entryPrice }),
       });
       if (!res.ok) {
@@ -245,7 +246,9 @@ export function TerminalClient() {
       }
       const json = (await res.json()) as { id: string; notionalUsd: number };
       setApiStatus("ok");
-      setSubmitState(`Paper order accepted: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
+      const refreshed = await loadTradingSnapshot(snapshot.market.base);
+      setSnapshot(refreshed.snapshot);
+      setSubmitState(`Paper fill recorded. Positions and portfolio updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
     } catch (err) {
       setApiStatus("unavailable");
       throw new Error(paperOrderFailureMessage(err, endpoint));
@@ -861,7 +864,7 @@ function BottomPanel(props: {
         <div className="data-table">
           {props.snapshot.account.positions.map((position) => (
             <div key={position.symbol} className="data-row">
-              <strong>{position.symbol}</strong>
+              <strong>{position.symbol}{position.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={position.side === "long" ? "pos" : "neg"}>{position.side} {position.size} {position.base}</span>
               <span>{position.leverage}x {position.marginMode}</span>
               <span>Entry {fmtUsd(position.entryPrice, 1)}</span>
@@ -875,7 +878,7 @@ function BottomPanel(props: {
         <div className="data-table">
           {props.snapshot.account.openOrders.map((order) => (
             <div key={`${order.symbol}-${order.timestamp}`} className="data-row">
-              <strong>{order.symbol}</strong>
+              <strong>{order.symbol}{order.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={order.side === "buy" ? "pos" : "neg"}>{order.side}</span>
               <span>{order.type}</span>
               <span>{fmtUsd(order.price, 1)}</span>
@@ -889,7 +892,7 @@ function BottomPanel(props: {
         <div className="data-table">
           {props.snapshot.account.fills.map((fill) => (
             <div key={`${fill.symbol}-${fill.timestamp}`} className="data-row">
-              <strong>{fill.symbol}</strong>
+              <strong>{fill.symbol}{fill.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={fill.side === "buy" ? "pos" : "neg"}>{fill.side}</span>
               <span>{fmtUsd(fill.price, 1)}</span>
               <span>{fill.size}</span>

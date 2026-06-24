@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "@/lib/api";
+import { API_BASE_URL } from "../api";
 
 import {
   joinPerpMarkets,
@@ -11,6 +11,7 @@ import {
   type MarketsWireResponse,
 } from "./markets";
 import { MOCK_TRADING_SNAPSHOT, buildFallbackOrderBook } from "./mock-data";
+import { loadPaperAccount, mergePaperAccount } from "./paper";
 import type { SharedTradingSnapshot } from "./types";
 
 export interface SelectedMarketResult {
@@ -124,7 +125,7 @@ export function applyMarketToAccount(
 export async function loadTradingSnapshot(symbol?: string | null): Promise<SelectedMarketResult> {
   const requestedSymbol = symbol ?? "BTC";
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 2500);
+  const timeout = globalThis.setTimeout(() => controller.abort(), 2500);
 
   try {
     const [marketsRes, statsRes] = await Promise.all([
@@ -132,7 +133,7 @@ export async function loadTradingSnapshot(symbol?: string | null): Promise<Selec
       fetch(`${API_BASE_URL}/marketStats`, { cache: "no-store", signal: controller.signal }),
     ]);
     if (!marketsRes.ok || !statsRes.ok) {
-      return fallbackResult(requestedSymbol);
+      return await fallbackResult(requestedSymbol);
     }
 
     const [marketsWire, statsWire] = (await Promise.all([
@@ -142,7 +143,7 @@ export async function loadTradingSnapshot(symbol?: string | null): Promise<Selec
     const markets = joinPerpMarkets({ markets: marketsWire, stats: statsWire });
     const selected = resolveSelectedMarket({ symbol, markets, fallbackSymbol: "BTC" });
     if (!selected) {
-      return fallbackResult(requestedSymbol);
+      return await fallbackResult(requestedSymbol);
     }
 
     const bookRes = await fetch(`${API_BASE_URL}/l2Book?coin=${encodeURIComponent(selected.symbol)}&nSigFigs=5`, {
@@ -171,25 +172,30 @@ export async function loadTradingSnapshot(symbol?: string | null): Promise<Selec
       })),
     };
 
+    const marketAccountSnapshot = {
+      ...snapshot,
+      account: applyMarketToAccount(snapshot),
+    };
+    const paperAccount = await loadPaperAccount();
+
     return {
-      snapshot: {
-        ...snapshot,
-        account: applyMarketToAccount(snapshot),
-      },
+      snapshot: mergePaperAccount(marketAccountSnapshot, paperAccount),
       requestedSymbol,
       resolvedSymbol: selected.symbol,
       usedFallback: selected.symbol !== normalizeSymbol(requestedSymbol),
     };
   } catch {
-    return fallbackResult(requestedSymbol);
+    return await fallbackResult(requestedSymbol);
   } finally {
-    window.clearTimeout(timeout);
+    globalThis.clearTimeout(timeout);
   }
 }
 
-function fallbackResult(requestedSymbol: string): SelectedMarketResult {
+async function fallbackResult(requestedSymbol: string): Promise<SelectedMarketResult> {
+  const paperAccount = await loadPaperAccount();
+  const snapshot = mergePaperAccount(MOCK_TRADING_SNAPSHOT, paperAccount);
   return {
-    snapshot: MOCK_TRADING_SNAPSHOT,
+    snapshot,
     requestedSymbol,
     resolvedSymbol: "BTC",
     usedFallback: true,

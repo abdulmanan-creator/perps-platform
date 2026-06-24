@@ -57,7 +57,7 @@ export function PortfolioClient() {
         <div>
           <p className="at-kicker">Portfolio risk</p>
           <h1>Portfolio</h1>
-          <p>Hybrid paper/live-read account view. Trading actions remain isolated to the terminal confirmation flow.</p>
+          <p>Hybrid market-read and paper account view. Paper positions are simulated and do not imply live Hyperliquid exposure.</p>
         </div>
         <div className="portfolio-health">
           <span className="state-pill live">{snapshot.market.source === "live-mainnet" ? "Mainnet market data" : "Mock account"}</span>
@@ -135,8 +135,8 @@ export function PortfolioClient() {
               <span>TP / SL</span>
             </div>
             {snapshot.account.positions.map((position) => (
-              <div key={position.symbol} className="portfolio-row">
-                <strong>{position.symbol}</strong>
+              <div key={`${position.symbol}-${position.mode ?? "demo"}`} className="portfolio-row">
+                <strong>{position.symbol}{position.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
                 <span className={position.side === "long" ? "pos" : "neg"}>{position.side}</span>
                 <span>{fmtNumber(position.size, 4)} {position.base}</span>
                 <span>{fmtUsd(position.entryPrice, 1)} / {fmtUsd(position.markPrice, 1)}</span>
@@ -155,7 +155,7 @@ export function PortfolioClient() {
             title="Open orders"
             subtitle={`${snapshot.account.openOrders.length} working`}
             rows={snapshot.account.openOrders.map((order) => [
-              order.symbol,
+              order.mode === "paper" ? `${order.symbol} Paper` : order.symbol,
               order.side,
               order.type,
               fmtUsd(order.price, 1),
@@ -166,7 +166,7 @@ export function PortfolioClient() {
             title="Recent fills"
             subtitle={`${snapshot.account.fills.length} fills`}
             rows={snapshot.account.fills.map((fill) => [
-              fill.symbol,
+              fill.mode === "paper" ? `${fill.symbol} Paper` : fill.symbol,
               fill.side,
               fmtUsd(fill.price, 1),
               fmtNumber(fill.size, 4),
