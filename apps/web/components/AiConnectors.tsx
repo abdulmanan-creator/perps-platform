@@ -17,11 +17,11 @@ export function AiConnectors() {
       <div className="container">
         <div className="section-header">
           <span className="eyebrow">Trade with AI</span>
-          <h2>Hyperliquid in your AI chat.</h2>
+          <h2>Agent.trade context in your AI chat.</h2>
           <p>
-            Connect Claude or ChatGPT to Alchemy Hyperliquid. Ask in natural
-            language &mdash; &ldquo;buy $50 of BTC,&rdquo; &ldquo;what&apos;s my
-            position?&rdquo; &mdash; and the AI calls the trading API for you.
+            Connect Claude or ChatGPT to Agent.trade for market reads, sourced
+            context, and draft proposals. Orders return to the terminal for
+            eligibility checks, risk acknowledgement, and confirmation.
           </p>
         </div>
 
@@ -30,8 +30,8 @@ export function AiConnectors() {
             href="/connect/claude"
             badge="Available now"
             badgeKind="ready"
-            title="Trade with Claude"
-            body="Adds nine trading tools to Claude desktop via the Model Context Protocol. Read market data, place orders, manage positions — all from chat."
+            title="Research with Claude"
+            body="Adds Agent.trade context to Claude via the Model Context Protocol. Read market data and draft proposals, then confirm in the terminal."
             cta="Set up Claude →"
             iconChar="C"
             iconColor="#D97757"
@@ -40,8 +40,8 @@ export function AiConnectors() {
             href="/connect/chatgpt"
             badge="Available now"
             badgeKind="ready"
-            title="Trade with ChatGPT"
-            body="Same nine tools, registered as a ChatGPT App via MCP over HTTP. One delegation works across both Claude and ChatGPT."
+            title="Research with ChatGPT"
+            body="Use the same MCP surface for sourced market context and proposal handoff. Current MVP orders still require Agent.trade confirmation."
             cta="Set up ChatGPT →"
             iconChar="G"
             iconColor="#10A37F"

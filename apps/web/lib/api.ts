@@ -1,5 +1,5 @@
 /**
- * Thin wrapper around the Alchemy Hyperliquid API for use in the web app.
+ * Thin wrapper around the Agent.trade API for use in the web app.
  *
  * Uses @alchemy-hl/sdk-preview for typing + transport. Reads the API base URL
  * from NEXT_PUBLIC_API_URL at build time, falls back to localhost in dev.

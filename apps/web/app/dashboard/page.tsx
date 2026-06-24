@@ -11,10 +11,10 @@
  * All read data comes from public endpoints keyed by address (HL state is
  * public on-chain anyway). Write actions (cancel order) render only when the
  * viewed address IS the session wallet:
- *   - agent delegated (connector users): one-click cancel via /agent/exchange
- *     with the Privy JWT — no wallet popup. Sends an idempotencyKey so a
- *     double-click can't double-submit.
- *   - no delegation: build → sign (raw EIP-1193 — phantom-agent domain is
+ *   - connector compatibility path: one-click risk-reducing cancel via
+ *     /agent/exchange with the Privy JWT. Sends an idempotencyKey so a
+ *     double-click cannot double-submit.
+ *   - wallet-signed path: build → sign (raw EIP-1193 — phantom-agent domain is
  *     chainId 1337, wagmi would reject it) → send, same as the /approve flow.
  */
 
@@ -403,7 +403,7 @@ function OrdersSection(props: {
       setCancelling(order.oid);
       try {
         if (props.agentApproved) {
-          // Agent path: server signs with the delegated key — no wallet popup.
+          // Connector compatibility path for risk-reducing cancels.
           // idempotencyKey makes a double-click or retry replay the original
           // response instead of submitting a second cancel.
           const jwt = await getAccessToken();

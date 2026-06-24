@@ -12,7 +12,7 @@ type Lang = "python" | "ts" | "rust" | "go";
 const SNIPPETS: Record<Lang, string> = {
   ts: `import { Alchemy } from "@alchemy-hl/sdk";
 const sdk = new Alchemy({ privateKey: process.env.PK });
-// Market buy $100 of BTC — TP/SL, positions, fills all built in
+// Build a BTC order locally, sign it yourself, then submit it explicitly.
 const order = await sdk.marketBuy("BTC", { notional: 100 });
 console.log(\`Filled \${order.filledSize} @ $\${order.avgPrice}\`);`,
   python: `import requests

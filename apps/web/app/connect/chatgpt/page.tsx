@@ -2,8 +2,8 @@
  * /connect/chatgpt - safe ChatGPT connector setup walkthrough.
  *
  * Same MCP server as Claude, framed for market reads, sourced context, and
- * draft handoff back to Agent.trade. Today's connector flow does not authorize
- * autonomous live trading.
+ * draft handoff back to Agent.trade. Today's connector flow requires
+ * Agent.trade confirmation for orders.
  */
 
 import Link from "next/link";
@@ -77,7 +77,7 @@ export default function ConnectChatGptPage() {
           <strong>Roadmap:</strong> permissioned agent execution is planned for
           a later mode with user-defined scopes, caps, revocation, eligibility
           checks, audit logs, and kill switches. Today&apos;s connector flow
-          does not authorize autonomous live trading.
+          requires Agent.trade confirmation for orders.
         </section>
 
         <Step n={1} title="Copy the MCP URL">

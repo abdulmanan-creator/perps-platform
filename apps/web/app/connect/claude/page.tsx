@@ -78,7 +78,7 @@ export default function ConnectClaudePage() {
           <strong>Roadmap:</strong> permissioned agent execution is planned for
           a later mode with user-defined scopes, caps, revocation, eligibility
           checks, audit logs, and kill switches. Today&apos;s connector flow
-          does not authorize autonomous live trading.
+          requires Agent.trade confirmation for orders.
         </section>
 
         <Step n={1} title="Copy the MCP URL">

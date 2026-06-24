@@ -1,8 +1,11 @@
 "use client";
 
 /**
- * /approve — Privy-driven approveBuilderFee flow, with the design ported
- * from design/approve.html.
+ * /approve — Agent.trade wallet-readiness surface.
+ *
+ * Legacy approveBuilderFee and Bridge2 deposit mechanics remain in this file
+ * for internal compatibility testing, but they are default-off behind explicit
+ * public Agent.trade flags and live-eligibility checks.
  *
  * State machine (matches the approve.html data-state names):
  *   "connect"  — !ready || !authenticated      (state A in the mockup)
@@ -47,6 +50,11 @@ const USDC_ARBITRUM = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" as const;
 // "Place test trade" card so we can smoke-test the fee-earning loop on mainnet
 // from inside our app. NOT product surface — the product is the API itself.
 const TEST_TRADE_ENABLED = process.env.NEXT_PUBLIC_ENABLE_TEST_TRADE === "true";
+const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
+const LEGACY_APPROVALS_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_LEGACY_APPROVALS === "true";
+const HL_BRIDGE_DEPOSIT_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT === "true";
 
 import type {
   ApprovalState,
@@ -54,6 +62,12 @@ import type {
   BuildResponse,
   SendResponse,
 } from "@alchemy-hl/sdk-preview";
+import { AppShell } from "@/components/agent-trade/AppShell";
+import {
+  getBridgeDepositDecision,
+  getLegacyApprovalDecision,
+} from "@/lib/agent-trade/legacy-safety";
+import type { EligibilityMode } from "@/lib/agent-trade/types";
 import { api, API_BASE_URL, BUILDER_ADDR } from "@/lib/api";
 
 type Phase = "idle" | "building" | "signing" | "sending" | "refreshing";
@@ -65,6 +79,16 @@ interface ErrState {
 }
 
 export default function ApprovePage() {
+  if (!LEGACY_APPROVALS_ENABLED) {
+    return <ApproveLegacyDisabled />;
+  }
+  if (!HAS_PRIVY) {
+    return <ApproveMissingPrivy />;
+  }
+  return <ApproveFlow />;
+}
+
+function ApproveFlow() {
   const { ready, authenticated, login, logout, user } = usePrivy();
   const { wallets } = useWallets();
   const { setActiveWallet } = useSetActiveWallet();
@@ -79,6 +103,7 @@ export default function ApprovePage() {
   }, [wallets]);
   const isEmbedded = activeWallet?.walletClientType === "privy";
   const userAddress = activeWallet?.address as `0x${string}` | undefined;
+  const [eligibilityState, setEligibilityState] = useState<EligibilityMode>("loading");
 
   // Sync wagmi's active account to whatever wallet Privy has selected. Without
   // this, useSignTypedData (wagmi) can sign with a still-connected external
@@ -110,7 +135,14 @@ export default function ApprovePage() {
     address: USDC_ARBITRUM,
     functionName: "balanceOf",
     args: activeWallet?.address ? [activeWallet.address as `0x${string}`] : undefined,
-    query: { enabled: !!activeWallet?.address, refetchInterval: 5_000 },
+    query: {
+      enabled:
+        LEGACY_APPROVALS_ENABLED &&
+        HL_BRIDGE_DEPOSIT_ENABLED &&
+        eligibilityState === "liveEligible" &&
+        !!activeWallet?.address,
+      refetchInterval: 5_000,
+    },
   });
 
   const usdcBalance = usdcBalanceRaw ? Number(usdcBalanceRaw) / 1e6 : 0;
@@ -119,7 +151,11 @@ export default function ApprovePage() {
   const [depositError, setDepositError] = useState<string | null>(null);
 
   const submitDeposit = useCallback(async () => {
-    if (!activeWallet?.address) return;
+    const depositDecision = getBridgeDepositDecision({
+      featureEnabled: HL_BRIDGE_DEPOSIT_ENABLED,
+      eligibilityState,
+    });
+    if (!activeWallet?.address || !depositDecision.allowed) return;
     setDepositError(null);
     try {
       const amount = parseUnits(depositAmount, 6);
@@ -136,7 +172,7 @@ export default function ApprovePage() {
       setDepositError((err as Error).message ?? "Deposit transaction failed.");
       setDepositPhase("error");
     }
-  }, [activeWallet?.address, depositAmount, writeContractAsync]);
+  }, [activeWallet?.address, depositAmount, eligibilityState, writeContractAsync]);
 
   useEffect(() => {
     if (depositConfirmed) {
@@ -150,8 +186,35 @@ export default function ApprovePage() {
   const [feeRate, setFeeRate] = useState("1");
   const [error, setError] = useState<ErrState | null>(null);
 
+  useEffect(() => {
+    if (!ready || !authenticated || !userAddress) {
+      setEligibilityState("loading");
+      return;
+    }
+
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/agent-trade/eligibility`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`eligibility ${res.status}`);
+        const body = (await res.json()) as { state?: EligibilityMode };
+        if (alive) {
+          setEligibilityState(body.state ?? "unknown");
+        }
+      } catch {
+        if (alive) {
+          setEligibilityState("unknown");
+        }
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [ready, authenticated, userAddress]);
+
   const refetchApproval = useCallback(async () => {
-    if (!userAddress) {
+    if (!userAddress || eligibilityState !== "liveEligible") {
       setApproval(null);
       return;
     }
@@ -165,7 +228,7 @@ export default function ApprovePage() {
     } finally {
       setApprovalLoading(false);
     }
-  }, [userAddress]);
+  }, [eligibilityState, userAddress]);
 
   useEffect(() => {
     void refetchApproval();
@@ -174,6 +237,17 @@ export default function ApprovePage() {
   const runApproval = useCallback(
     async (rate: string) => {
       if (!userAddress) return;
+      const approvalDecision = getLegacyApprovalDecision({
+        featureEnabled: LEGACY_APPROVALS_ENABLED,
+        eligibilityState,
+      });
+      if (!approvalDecision.allowed) {
+        setError({
+          message: approvalDecision.title,
+          guidance: approvalDecision.summary,
+        });
+        return;
+      }
       setError(null);
       try {
         setPhase("building");
@@ -203,12 +277,20 @@ export default function ApprovePage() {
         setPhase("idle");
       }
     },
-    [userAddress, signTypedDataAsync, refetchApproval],
+    [eligibilityState, userAddress, signTypedDataAsync, refetchApproval],
   );
 
   // ---- Derived state -------------------------------------------------------
 
   const inFlight = phase !== "idle";
+  const approvalDecision = getLegacyApprovalDecision({
+    featureEnabled: LEGACY_APPROVALS_ENABLED,
+    eligibilityState,
+  });
+  const depositDecision = getBridgeDepositDecision({
+    featureEnabled: HL_BRIDGE_DEPOSIT_ENABLED,
+    eligibilityState,
+  });
   const stateName: "connect" | "ready" | "approved" | "pending" | "error" | "deposit" = (() => {
     if (!ready || !authenticated) return "connect";
     if (inFlight) return "pending";
@@ -225,11 +307,11 @@ export default function ApprovePage() {
       <div className="approve-nav">
         <Link href="/" className="brand">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/assets/logo-wordmark-white.svg" alt="Alchemy" />
+          <img src="/assets/logo-wordmark-white.svg" alt="Agent.trade" />
           <span className="nav-divider"></span>
-          <span className="sub">Hyperliquid</span>
+          <span className="sub">Wallet readiness</span>
         </Link>
-        <Link href="/" className="back">← Back to docs</Link>
+        <Link href="/onboarding" className="back">← Back to account readiness</Link>
       </div>
 
       <main className="approve-main">
@@ -237,7 +319,15 @@ export default function ApprovePage() {
           {stateName === "connect" && (
             <ConnectCard onLogin={login} ready={ready} />
           )}
-          {stateName === "ready" && (
+          {stateName !== "connect" && !approvalDecision.allowed && (
+            <LegacyActionDisabledCard
+              title={approvalDecision.title}
+              summary={approvalDecision.summary}
+              userAddress={userAddress!}
+              onDisconnect={logout}
+            />
+          )}
+          {stateName === "ready" && approvalDecision.allowed && (
             <ReadyCard
               userAddress={userAddress!}
               isEmbedded={isEmbedded}
@@ -249,7 +339,7 @@ export default function ApprovePage() {
               approvalLoading={approvalLoading}
             />
           )}
-          {stateName === "approved" && (
+          {stateName === "approved" && approvalDecision.allowed && (
             <>
               <ApprovedCard
                 approval={approval!}
@@ -265,7 +355,7 @@ export default function ApprovePage() {
               )}
             </>
           )}
-          {stateName === "pending" && (
+          {stateName === "pending" && approvalDecision.allowed && (
             <PendingCard
               phase={phase}
               userAddress={userAddress!}
@@ -273,7 +363,7 @@ export default function ApprovePage() {
               onDisconnect={logout}
             />
           )}
-          {stateName === "error" && (
+          {stateName === "error" && approvalDecision.allowed && (
             <ErrorCard
               error={error!}
               userAddress={userAddress!}
@@ -283,7 +373,17 @@ export default function ApprovePage() {
               onDisconnect={logout}
             />
           )}
-          {stateName === "deposit" && (
+          {stateName === "deposit" && approvalDecision.allowed && !depositDecision.allowed && (
+            <BridgeDepositDisabledCard
+              title={depositDecision.title}
+              summary={depositDecision.summary}
+              error={error!}
+              userAddress={userAddress!}
+              onDisconnect={logout}
+              onRetry={() => runApproval(`${feeRate}%`)}
+            />
+          )}
+          {stateName === "deposit" && approvalDecision.allowed && depositDecision.allowed && (
             <DepositCard
               error={error!}
               userAddress={userAddress!}
@@ -311,6 +411,102 @@ export default function ApprovePage() {
   );
 }
 
+function ApproveMissingPrivy() {
+  return (
+    <AppShell>
+      <main className="onboarding-page">
+        <section className="onboarding-head">
+          <div>
+            <p className="at-kicker">Wallet readiness</p>
+            <h1>Wallet readiness unavailable</h1>
+            <p>
+              Privy is not configured in this environment, so wallet approval
+              and OAuth compatibility setup are disabled. Paper trading and
+              market discovery remain available.
+            </p>
+          </div>
+          <div className="onboarding-actions">
+            <Link className="secondary-action" href="/connectors">Connector overview</Link>
+            <Link className="primary-link" href="/terminal">Open terminal</Link>
+          </div>
+        </section>
+        <section className="panel onboarding-card">
+          <div className="panel-head">
+            <div>
+              <span>Local dev</span>
+              <strong>Privy env missing</strong>
+            </div>
+            <span className="readiness-pill amber">Paper-ready</span>
+          </div>
+          <div className="risk-copy-list">
+            <p>
+              Set <code>NEXT_PUBLIC_PRIVY_APP_ID</code> to enable wallet
+              sign-in. Missing Privy configuration does not enable live trading
+              or connector order submission.
+            </p>
+            <p>
+              Current MVP connector flows are research and draft handoffs.
+              Orders return to Agent.trade for eligibility checks, caps, risk
+              acknowledgement, and explicit confirmation.
+            </p>
+          </div>
+        </section>
+      </main>
+    </AppShell>
+  );
+}
+
+function ApproveLegacyDisabled() {
+  return (
+    <AppShell>
+      <main className="onboarding-page">
+        <section className="onboarding-head">
+          <div>
+            <p className="at-kicker">Internal compatibility</p>
+            <h1>Legacy wallet approvals are disabled</h1>
+            <p>
+              This environment keeps Agent.trade&apos;s current MVP model:
+              assistants research, explain, and draft; orders return to the
+              Agent.trade terminal for eligibility checks, caps, risk
+              acknowledgement, and explicit confirmation.
+            </p>
+          </div>
+          <div className="onboarding-actions">
+            <Link className="secondary-action" href="/connectors">Connector overview</Link>
+            <Link className="primary-link" href="/terminal">Open terminal</Link>
+          </div>
+        </section>
+        <section className="panel onboarding-card">
+          <div className="panel-head">
+            <div>
+              <span>Default-off safety gate</span>
+              <strong>Compatibility approvals unavailable</strong>
+            </div>
+            <span className="readiness-pill amber">Draft-confirm only</span>
+          </div>
+          <div className="risk-copy-list">
+            <p>
+              <code>NEXT_PUBLIC_AGENT_TRADE_ENABLE_LEGACY_APPROVALS</code> is
+              not enabled, so builder-fee approval and revoke actions are not
+              rendered.
+            </p>
+            <p>
+              <code>NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT</code> must
+              also be explicitly enabled before any in-app Hyperliquid Bridge2
+              deposit surface can appear.
+            </p>
+            <div className="onboarding-actions compact">
+              <Link className="secondary-action" href="/onboarding">Account readiness</Link>
+              <Link className="secondary-action" href="/connectors">Connectors</Link>
+              <Link className="primary-link" href="/terminal">Terminal</Link>
+            </div>
+          </div>
+        </section>
+      </main>
+    </AppShell>
+  );
+}
+
 // ============================================================================
 // State cards
 // ============================================================================
@@ -322,9 +518,9 @@ function CardShell({ children }: { children: React.ReactNode }) {
         <span className="brand">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/assets/logo-brandmark-white.svg" alt="" />
-          <span>Approve Builder Fee</span>
+          <span>Agent.trade wallet readiness</span>
         </span>
-        <Link href="/" aria-label="Close" className="close">×</Link>
+        <Link href="/onboarding" aria-label="Close" className="close">×</Link>
       </header>
       <div className="approve-body">{children}</div>
     </div>
@@ -352,10 +548,11 @@ function ConnectCard({ onLogin, ready }: { onLogin: () => void; ready: boolean }
     <CardShell>
       <h1 className="approve-title">Connect to continue.</h1>
       <p className="approve-sub">
-        Sign in with email, Google, or an existing wallet. You&apos;ll be approving
-        Alchemy as a builder so your orders can route through our infrastructure.
-        You&apos;re approving a maximum fee rate (default <strong>1%</strong>). The actual
-        fee is <strong>0.04% perps / 0.05% spot</strong>. You can revoke any time.
+        Sign in with email, Google, or an existing wallet. This legacy readiness
+        surface checks whether your wallet has the builder-fee approval needed
+        by older internal flows. The current Agent.trade MVP remains
+        draft-confirm: the agent researches, explains, and drafts; orders return
+        to Agent.trade for confirmation.
       </p>
 
       <button
@@ -371,13 +568,45 @@ function ConnectCard({ onLogin, ready }: { onLogin: () => void; ready: boolean }
       </button>
 
       <div className="explainer">
-        Connecting only reads your address. Approving the builder fee is a separate, single
-        signature you&apos;ll review on the next step.
+        Connecting only reads your address. Any approval is a separate typed-data
+        signature you review in your wallet. It does not change the current MVP
+        requirement that orders return to Agent.trade for confirmation.
       </div>
 
       <div className="card-foot">
         <span>EIP-712 typed-data signature</span>
-        <a href="#fees">What&apos;s a builder fee?</a>
+        <Link href="/connectors">Connector safety model</Link>
+      </div>
+    </CardShell>
+  );
+}
+
+function LegacyActionDisabledCard(props: {
+  title: string;
+  summary: string;
+  userAddress: string;
+  onDisconnect: () => void;
+}) {
+  return (
+    <CardShell>
+      <WalletChip address={props.userAddress} onDisconnect={props.onDisconnect} />
+      <h1 className="approve-title">{props.title}</h1>
+      <p className="approve-sub">{props.summary}</p>
+      <div className="explainer">
+        Current MVP connector flows are research and draft handoffs. Orders
+        return to Agent.trade for eligibility checks, caps, risk
+        acknowledgement, and explicit confirmation.
+      </div>
+      <div style={{ display: "grid", gap: 10 }}>
+        <Link className="btn btn-secondary btn-secondary-block" href="/onboarding">
+          Account readiness
+        </Link>
+        <Link className="btn btn-secondary btn-secondary-block" href="/connectors">
+          Connector overview
+        </Link>
+        <Link className="btn btn-primary btn-block" href="/terminal">
+          Open terminal
+        </Link>
       </div>
     </CardShell>
   );
@@ -397,11 +626,12 @@ function ReadyCard(props: {
     <CardShell>
       <WalletChip address={props.userAddress} onDisconnect={props.onDisconnect} />
 
-      <h1 className="approve-title">Approve Alchemy as a builder.</h1>
+      <h1 className="approve-title">Review builder-fee approval.</h1>
       <p className="approve-sub">
-        Signed in as {props.userDisplay}. Set a ceiling on the builder fee you&apos;ll allow.
-        We charge well below it on every order — and you can revoke at any time with one
-        signature.
+        Signed in as {props.userDisplay}. This sets a ceiling on builder fees
+        for compatibility with older Hyperliquid routing flows. It is not a
+        grant for an assistant to place live orders without Agent.trade review.
+        You can revoke it at any time with one signature.
       </p>
 
       <div className="field-group">
@@ -428,7 +658,7 @@ function ReadyCard(props: {
         onClick={props.onApprove}
         disabled={props.approvalLoading}
       >
-        {props.approvalLoading ? "Checking…" : "Approve Builder Fee"}
+        {props.approvalLoading ? "Checking…" : "Approve builder-fee ceiling"}
         <svg className="btn-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M5 12h14M13 6l6 6-6 6" />
         </svg>
@@ -438,7 +668,7 @@ function ReadyCard(props: {
         <span>
           Wallet · {props.isEmbedded ? "Privy embedded" : "External"} · Arbitrum One
         </span>
-        <a href="#fees">Fee details</a>
+        <Link href="/terminal">Open terminal</Link>
       </div>
     </CardShell>
   );
@@ -497,25 +727,17 @@ function ApprovedCard(props: {
       </button>
 
       <div style={{ marginTop: 16 }}>
-        <a
+        <Link
           className="btn btn-secondary btn-secondary-block"
-          href="https://app.hyperliquid.xyz/trade"
-          target="_blank"
-          rel="noopener noreferrer"
+          href="/onboarding"
         >
-          Deposit USDC on Hyperliquid ↗
-        </a>
+          Continue account readiness
+        </Link>
       </div>
 
       <div className="card-foot">
-        <span>You can revoke any time</span>
-        <a
-          href="https://app.hyperliquid.xyz/historicalOrders"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Order history ↗
-        </a>
+        <span>You can revoke any time. Current MVP orders require Agent.trade confirmation.</span>
+        <Link href="/connectors">Connector setup</Link>
       </div>
     </CardShell>
   );
@@ -573,7 +795,7 @@ No funds move from this signature.`}
 
       <div className="card-foot">
         <span>Arbitrum One · chainId 42161</span>
-        <a href="/#faq">Trouble signing?</a>
+        <Link href="/onboarding">Account readiness</Link>
       </div>
     </CardShell>
   );
@@ -625,13 +847,7 @@ function ErrorCard(props: {
 
       <div className="card-foot">
         <span>Arbitrum One · chainId 42161</span>
-        <a
-          href="https://www.alchemy.com/support"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Contact support
-        </a>
+        <Link href="/connectors">Connector safety</Link>
       </div>
     </CardShell>
   );
@@ -832,8 +1048,44 @@ function DepositCard(props: {
 
       <div className="card-foot">
         <span>{isTestnet ? "Hyperliquid testnet" : "Hyperliquid mainnet"}</span>
-        <a href="#fees">Fee details</a>
+        <Link href="/onboarding">Account readiness</Link>
       </div>
+    </CardShell>
+  );
+}
+
+function BridgeDepositDisabledCard(props: {
+  title: string;
+  summary: string;
+  error: ErrState;
+  userAddress: string;
+  onDisconnect: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <CardShell>
+      <WalletChip address={props.userAddress} onDisconnect={props.onDisconnect} />
+      <h1 className="approve-title">{props.title}</h1>
+      <p className="approve-sub">{props.summary}</p>
+      <div className="explainer">
+        Funding a wallet is not the same as depositing into Hyperliquid.
+        Return to account readiness for funding guidance. Restricted or unknown
+        eligibility cannot use live funding or compatibility actions.
+      </div>
+      <div style={{ display: "grid", gap: 10 }}>
+        <Link className="btn btn-primary btn-block" href="/onboarding">
+          Account readiness
+        </Link>
+        <Link className="btn btn-secondary btn-secondary-block" href="/terminal">
+          Open terminal
+        </Link>
+        <button className="btn btn-secondary btn-secondary-block" onClick={props.onRetry}>
+          Retry compatibility check
+        </button>
+      </div>
+      <p style={{ fontSize: 12, color: "var(--fg-dim)", marginTop: 14, lineHeight: 1.55 }}>
+        {props.error.message}
+      </p>
     </CardShell>
   );
 }

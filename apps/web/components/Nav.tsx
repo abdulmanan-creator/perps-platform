@@ -8,15 +8,15 @@ export function Nav() {
       <div className="nav-inner">
         <Link href="/" className="nav-brand">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/assets/logo-wordmark-white.svg" alt="Alchemy" />
+          <img src="/assets/logo-wordmark-white.svg" alt="Agent.trade" />
           <span className="nav-divider"></span>
-          <span className="nav-sub">Hyperliquid</span>
+          <span className="nav-sub">Agent.trade</span>
         </Link>
         <div className="nav-links">
-          <Link className="nav-link" href="/dashboard">Dashboard</Link>
-          <a className="nav-link" href="#quickstart">Docs</a>
-          <a className="nav-link" href="#ai">AI</a>
-          <a className="nav-link active" href="#api">API</a>
+          <Link className="nav-link" href="/terminal">Terminal</Link>
+          <Link className="nav-link" href="/onboarding">Onboarding</Link>
+          <Link className="nav-link" href="/connectors">Connectors</Link>
+          <Link className="nav-link" href="/markets">Markets</Link>
           <a
             className="nav-link nav-link-discord"
             href="https://www.alchemy.com/discord"
@@ -30,7 +30,7 @@ export function Nav() {
             Discord
           </a>
           <Link className="btn btn-primary btn-sm" href="/approve" style={{ marginLeft: 8 }}>
-            Approve via Wallet
+            Wallet readiness
             <svg className="btn-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 12h14M13 6l6 6-6 6" />
             </svg>

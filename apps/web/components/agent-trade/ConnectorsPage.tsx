@@ -114,8 +114,8 @@ export function ConnectorsPage() {
               logs, and kill switches.
             </p>
             <p>
-              Today&apos;s connector flow does not authorize autonomous live
-              trading.
+              Today&apos;s connector flow requires Agent.trade confirmation for
+              orders.
             </p>
           </div>
         </article>

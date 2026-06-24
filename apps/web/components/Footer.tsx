@@ -8,23 +8,24 @@ export function Footer() {
           <div className="footer-brand">
             <div className="footer-brand-row">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src="/assets/logo-wordmark-white.svg" alt="Alchemy" />
-              <span>Powered by Alchemy</span>
+              <img src="/assets/logo-wordmark-white.svg" alt="Agent.trade" />
+              <span>Agent.trade</span>
             </div>
             <p className="footer-disclaimer">
-              Alchemy Hyperliquid is not affiliated with Hyperliquid Corp or the Hyper
-              Foundation. Crypto trading involves risk of loss; this product is
-              infrastructure, not investment advice.
+              Agent.trade is not affiliated with Hyperliquid Corp or the Hyper
+              Foundation. Crypto trading involves risk of loss. In the current
+              MVP flow, the agent researches, explains, and drafts; orders
+              return to Agent.trade for confirmation.
             </p>
           </div>
 
           <div className="footer-links">
             <div className="footer-col">
               <span className="head">Product</span>
-              <a href="#api">API reference</a>
-              <a href="#quickstart">Quickstart</a>
-              <Link href="/approve">Approve wallet</Link>
-              <a href="#fees">Fees</a>
+              <Link href="/terminal">Terminal</Link>
+              <Link href="/onboarding">Account readiness</Link>
+              <Link href="/connectors">Connectors</Link>
+              <Link href="/approve">Wallet readiness</Link>
             </div>
             <div className="footer-col">
               <span className="head">Community</span>

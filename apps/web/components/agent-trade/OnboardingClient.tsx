@@ -238,9 +238,9 @@ function WalletCard({ wallet }: { wallet: WalletSummary }) {
         <strong>{wallet.walletType ?? (wallet.status === "local-dev" ? "Privy env missing" : "Not selected")}</strong>
       </div>
       <p className="onboarding-note">
-        Wallet connection does not authorize autonomous live trading. In the
-        current MVP flow, the agent researches, explains, and drafts; every
-        live order returns to Agent.trade for explicit confirmation.
+        Wallet connection does not change the current MVP confirmation
+        requirement. The agent researches, explains, and drafts; every live
+        order returns to Agent.trade for explicit confirmation.
       </p>
       {wallet.status === "local-dev" ? (
         <p className="local-dev-note">Set NEXT_PUBLIC_PRIVY_APP_ID to enable the Privy sign-in modal. Paper exploration works without it.</p>

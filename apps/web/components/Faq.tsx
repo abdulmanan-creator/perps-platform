@@ -5,8 +5,8 @@ import Link from "next/link";
 
 const ITEMS: { q: string; a: React.ReactNode }[] = [
   {
-    q: "What is Alchemy Hyperliquid?",
-    a: "A zero-custody REST builder API for trading on Hyperliquid. You sign locally with your private key; Alchemy routes the signed payload to the chain and earns a small builder fee in return. Same product surface as Hyperliquid's own API, with extras like preflight, pre-built cancels, and language SDKs.",
+    q: "What is Agent.trade?",
+    a: "A Hyperliquid-first, agent-native trading app. The current MVP helps users discover market context, review sourced agent drafts, and confirm orders inside Agent.trade.",
   },
   {
     q: "How does the build-sign-send pattern work?",
