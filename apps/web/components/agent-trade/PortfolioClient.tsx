@@ -5,11 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
+import { loadPaperAccount, mergePaperAccount } from "@/lib/agent-trade/paper";
 import {
   calculatePortfolioExposure,
   classifyPortfolioRisk,
 } from "@/lib/agent-trade/portfolio";
-import type { SharedTradingSnapshot } from "@/lib/agent-trade/types";
+import type { Fill, OpenOrder, Position, SharedTradingSnapshot } from "@/lib/agent-trade/types";
 
 export function PortfolioClient() {
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
@@ -20,6 +21,11 @@ export function PortfolioClient() {
 
     async function load() {
       setIsLoading(true);
+      const paperAccount = await loadPaperAccount();
+      if (!cancelled && paperAccount && (paperAccount.positions.length > 0 || paperAccount.fills.length > 0)) {
+        setSnapshot(mergePaperAccount(MOCK_TRADING_SNAPSHOT, paperAccount));
+      }
+
       const result = await loadTradingSnapshot("BTC");
       if (!cancelled) {
         setSnapshot(result.snapshot);
@@ -135,7 +141,7 @@ export function PortfolioClient() {
               <span>TP / SL</span>
             </div>
             {snapshot.account.positions.map((position) => (
-              <div key={`${position.symbol}-${position.mode ?? "demo"}`} className="portfolio-row">
+              <div key={positionRowKey(position)} className="portfolio-row">
                 <strong>{position.symbol}{position.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
                 <span className={position.side === "long" ? "pos" : "neg"}>{position.side}</span>
                 <span>{fmtNumber(position.size, 4)} {position.base}</span>
@@ -154,24 +160,30 @@ export function PortfolioClient() {
           <SmallTable
             title="Open orders"
             subtitle={`${snapshot.account.openOrders.length} working`}
-            rows={snapshot.account.openOrders.map((order) => [
-              order.mode === "paper" ? `${order.symbol} Paper` : order.symbol,
-              order.side,
-              order.type,
-              fmtUsd(order.price, 1),
-              `${fmtNumber(order.size, 4)} ${order.reduceOnly ? "RO" : ""}`,
-            ])}
+            rows={snapshot.account.openOrders.map((order) => ({
+              key: openOrderRowKey(order),
+              cells: [
+                order.mode === "paper" ? `${order.symbol} Paper` : order.symbol,
+                order.side,
+                order.type,
+                fmtUsd(order.price, 1),
+                `${fmtNumber(order.size, 4)} ${order.reduceOnly ? "RO" : ""}`,
+              ],
+            }))}
           />
           <SmallTable
             title="Recent fills"
             subtitle={`${snapshot.account.fills.length} fills`}
-            rows={snapshot.account.fills.map((fill) => [
-              fill.mode === "paper" ? `${fill.symbol} Paper` : fill.symbol,
-              fill.side,
-              fmtUsd(fill.price, 1),
-              fmtNumber(fill.size, 4),
-              `${fmtUsd(fill.feeUsd, 2)} ${fmtAgo(fill.timestamp, snapshot.asOf)}`,
-            ])}
+            rows={snapshot.account.fills.map((fill) => ({
+              key: fillRowKey(fill),
+              cells: [
+                fill.mode === "paper" ? `${fill.symbol} Paper` : fill.symbol,
+                fill.side,
+                fmtUsd(fill.price, 1),
+                fmtNumber(fill.size, 4),
+                `${fmtUsd(fill.feeUsd, 2)} ${fmtAgo(fill.timestamp, snapshot.asOf)}`,
+              ],
+            }))}
           />
         </div>
       </section>
@@ -189,7 +201,36 @@ function Metric(props: { label: string; value: string; detail?: string; tone?: "
   );
 }
 
-function SmallTable(props: { title: string; subtitle: string; rows: string[][] }) {
+function positionRowKey(position: Position): string {
+  return [
+    position.mode ?? "demo",
+    position.symbol,
+    position.side,
+    position.lastFillId ?? position.updatedAt ?? position.entryPrice,
+  ].join("-");
+}
+
+function openOrderRowKey(order: OpenOrder): string {
+  return [
+    order.mode ?? "demo",
+    order.symbol,
+    order.side,
+    order.timestamp,
+  ].join("-");
+}
+
+function fillRowKey(fill: Fill): string {
+  return [
+    fill.mode ?? "demo",
+    fill.symbol,
+    fill.orderId ?? fill.timestamp,
+    fill.side,
+    fill.price,
+    fill.size,
+  ].join("-");
+}
+
+function SmallTable(props: { title: string; subtitle: string; rows: Array<{ key: string; cells: string[] }> }) {
   return (
     <div className="panel small-risk-table">
       <div className="panel-head">
@@ -200,8 +241,8 @@ function SmallTable(props: { title: string; subtitle: string; rows: string[][] }
       </div>
       <div className="portfolio-table compact-risk-table">
         {props.rows.map((row) => (
-          <div key={row.join("-")} className="portfolio-row">
-            {row.map((cell, index) => index === 0 ? <strong key={cell}>{cell}</strong> : <span key={`${cell}-${index}`}>{cell}</span>)}
+          <div key={row.key} className="portfolio-row">
+            {row.cells.map((cell, index) => index === 0 ? <strong key={cell}>{cell}</strong> : <span key={`${cell}-${index}`}>{cell}</span>)}
           </div>
         ))}
       </div>

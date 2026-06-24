@@ -361,6 +361,155 @@ describe("Agent.trade route safety", () => {
     await app.close();
   });
 
+  it("paper ledger nets repeated same-side market orders into one larger position", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+    const headers = { "x-agent-trade-session-id": "session-paper-repeat-long" };
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.01,
+          leverage: 2,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: false,
+        },
+        estimatedEntry: 100000,
+      },
+    });
+    const firstBody = first.json();
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.02,
+          leverage: 2,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: true,
+        },
+        estimatedEntry: 110000,
+      },
+    });
+
+    expect(second.statusCode).toBe(200);
+    const body = second.json();
+    expect(body.account.fills).toHaveLength(2);
+    expect(body.account.positions).toHaveLength(1);
+    expect(body.account.positions[0]).toMatchObject({
+      symbol: "BTC-USD",
+      side: "long",
+      size: 0.03,
+      entryPrice: 106666.67,
+      markPrice: 110000,
+      orderCount: 2,
+      lastFillId: body.id,
+    });
+    expect(body.account.positions[0].marginUsd).toBe(1650);
+    expect(body.account.availableUsd).toBeLessThan(firstBody.account.availableUsd);
+    await app.close();
+  });
+
+  it("paper ledger reduces and flips positions with opposite-side market orders", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+    const headers = { "x-agent-trade-session-id": "session-paper-repeat-flip" };
+
+    await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.03,
+          leverage: 3,
+          marginMode: "cross",
+          reduceOnly: false,
+          fromAgent: false,
+        },
+        estimatedEntry: 100000,
+      },
+    });
+
+    const reduced = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "short",
+          orderType: "market",
+          sizeBtc: 0.01,
+          leverage: 5,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: false,
+        },
+        estimatedEntry: 110000,
+      },
+    });
+
+    expect(reduced.statusCode).toBe(200);
+    expect(reduced.json().account.positions[0]).toMatchObject({
+      side: "long",
+      size: 0.02,
+      entryPrice: 100000,
+      markPrice: 110000,
+      leverage: 3,
+      marginMode: "cross",
+      orderCount: 2,
+    });
+
+    const flipped = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "BTC-USD",
+          side: "short",
+          orderType: "market",
+          sizeBtc: 0.05,
+          leverage: 4,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: true,
+        },
+        estimatedEntry: 90000,
+      },
+    });
+
+    expect(flipped.statusCode).toBe(200);
+    const body = flipped.json();
+    expect(body.account.fills).toHaveLength(3);
+    expect(body.account.positions[0]).toMatchObject({
+      side: "short",
+      size: 0.03,
+      entryPrice: 90000,
+      markPrice: 90000,
+      orderCount: 3,
+      lastFillId: body.id,
+    });
+    await app.close();
+  });
+
   it("paper ledgers are isolated by session id", async () => {
     const app = await appWithConfig(cfg());
     await agentTradeRoute(app);

@@ -49,6 +49,9 @@ export interface Position {
   base: string;
   side: TradeSide;
   mode?: "paper" | "live";
+  updatedAt?: number;
+  orderCount?: number;
+  lastFillId?: string;
   size: number;
   leverage: number;
   marginMode: MarginMode;
@@ -78,6 +81,8 @@ export interface Fill {
   symbol: string;
   side: "buy" | "sell";
   mode?: "paper" | "live";
+  orderId?: string;
+  fromAgent?: boolean;
   price: number;
   size: number;
   feeUsd: number;
@@ -160,6 +165,8 @@ export interface PaperOrder {
 
 export interface PaperAccountSnapshot {
   sessionId: string;
+  ledgerRevision?: number;
+  updatedAt?: number;
   equityUsd: number;
   availableUsd: number;
   marginUsedUsd: number;

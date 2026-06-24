@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadTradingSnapshot } from "../lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
-import { mergePaperAccount } from "../lib/agent-trade/paper";
+import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
   AGENT_PANEL_HEADING,
   getConfirmationAckCopy,
@@ -26,6 +26,9 @@ const paperAccount: PaperAccountSnapshot = {
       base: "BTC",
       mode: "paper",
       side: "long",
+      updatedAt: 123,
+      orderCount: 1,
+      lastFillId: "paper_1",
       size: 0.01,
       leverage: 2,
       marginMode: "isolated",
@@ -44,6 +47,7 @@ const paperAccount: PaperAccountSnapshot = {
       symbol: "BTC-USD",
       mode: "paper",
       side: "buy",
+      orderId: "paper_1",
       price: 100_000,
       size: 0.01,
       feeUsd: 0.45,
@@ -116,6 +120,68 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(merged.account.simulatedBalanceUsd).toBe(50_000);
   });
 
+  it("uses the latest paper ledger snapshot for repeated paper position updates", () => {
+    const repeatedPaperAccount: PaperAccountSnapshot = {
+      ...paperAccount,
+      ledgerRevision: 2,
+      updatedAt: 456,
+      availableUsd: 48_350,
+      marginUsedUsd: 1_650,
+      positions: [
+        {
+          ...paperAccount.positions[0],
+          updatedAt: 456,
+          orderCount: 2,
+          lastFillId: "paper_2",
+          size: 0.03,
+          entryPrice: 106_666.67,
+          markPrice: 110_000,
+          marginUsd: 1_650,
+        },
+      ],
+      fills: [
+        {
+          ...paperAccount.fills[0],
+          orderId: "paper_2",
+          timestamp: 456,
+          price: 110_000,
+          size: 0.02,
+          fromAgent: true,
+        },
+        paperAccount.fills[0],
+      ],
+    };
+
+    const merged = mergePaperAccount(MOCK_TRADING_SNAPSHOT, repeatedPaperAccount);
+
+    expect(merged.account.positions[0]).toMatchObject({
+      symbol: "BTC-USD",
+      mode: "paper",
+      size: 0.03,
+      orderCount: 2,
+      lastFillId: "paper_2",
+    });
+    expect(merged.account.fills.filter((fill) => fill.mode === "paper")).toHaveLength(2);
+    expect(merged.account.marginUsedUsd).toBe(MOCK_TRADING_SNAPSHOT.account.marginUsedUsd + 1650);
+  });
+
+  it("keeps paper session ids isolated through localStorage", () => {
+    const firstStorage = createLocalStorage();
+    vi.stubGlobal("window", { localStorage: firstStorage });
+    const firstSession = getPaperSessionId();
+
+    expect(firstSession).toBeTruthy();
+    expect(getPaperSessionId()).toBe(firstSession);
+    expect(paperSessionHeaders()).toEqual({ "x-agent-trade-session-id": firstSession });
+
+    const secondStorage = createLocalStorage();
+    vi.stubGlobal("window", { localStorage: secondStorage });
+    const secondSession = getPaperSessionId();
+
+    expect(secondSession).toBeTruthy();
+    expect(secondSession).not.toBe(firstSession);
+  });
+
   it("preserves paper ledger positions and fills when market data falls back", async () => {
     vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -136,3 +202,21 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(result.snapshot.account.fills[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
   });
 });
+
+function createLocalStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  };
+}

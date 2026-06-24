@@ -37,6 +37,9 @@ interface PaperPosition {
   base: string;
   mode: "paper";
   side: PaperSide;
+  updatedAt: number;
+  orderCount: number;
+  lastFillId: string;
   size: number;
   leverage: number;
   marginMode: "isolated" | "cross";
@@ -76,6 +79,8 @@ interface PaperOpenOrder {
 
 interface PaperLedger {
   sessionId: string;
+  nextSequence: number;
+  updatedAt: number;
   positions: PaperPosition[];
   fills: PaperFill[];
   openOrders: PaperOpenOrder[];
@@ -95,7 +100,7 @@ function sessionIdForRequest(req: { headers: Record<string, string | string[] | 
 function ledgerForSession(sessionId: string): PaperLedger {
   const existing = paperLedgers.get(sessionId);
   if (existing) return existing;
-  const ledger: PaperLedger = { sessionId, positions: [], fills: [], openOrders: [] };
+  const ledger: PaperLedger = { sessionId, nextSequence: 1, updatedAt: Date.now(), positions: [], fills: [], openOrders: [] };
   paperLedgers.set(sessionId, ledger);
   return ledger;
 }
@@ -137,6 +142,8 @@ function accountForLedger(ledger: PaperLedger) {
   const equityUsd = round(PAPER_STARTING_BALANCE_USD + unrealizedPnlUsd, 2);
   return {
     sessionId: ledger.sessionId,
+    ledgerRevision: ledger.nextSequence - 1,
+    updatedAt: ledger.updatedAt,
     equityUsd,
     availableUsd: round(equityUsd - marginUsedUsd, 2),
     marginUsedUsd,
@@ -157,7 +164,9 @@ function recordPaperMarketOrder(
   const fillPrice = body.estimatedEntry;
   const fillSize = draft.sizeBtc;
   const fillSide: PaperOrderSide = draft.side === "long" ? "buy" : "sell";
-  const orderId = `paper_${now.toString(36)}`;
+  const sequence = ledger.nextSequence++;
+  ledger.updatedAt = now;
+  const orderId = `paper_${now.toString(36)}_${sequence.toString(36)}`;
   const feeUsd = round(fillPrice * fillSize * 0.00045, 2);
   const fill: PaperFill = {
     symbol: draft.symbol,
@@ -189,27 +198,35 @@ function recordPaperMarketOrder(
     const nextSide: PaperSide = signedNext > 0 ? "long" : "short";
     const nextSize = round(Math.abs(signedNext), 8);
     const sameDirection = signedExisting === 0 || Math.sign(signedExisting) === Math.sign(signedFill);
+    const flippedDirection = signedExisting !== 0 && Math.sign(signedExisting) !== Math.sign(signedNext);
     const entryPrice = sameDirection && existingPosition
       ? round(((existingPosition.entryPrice * existingPosition.size) + (fillPrice * fillSize)) / (existingPosition.size + fillSize), 2)
-      : fillPrice;
+      : flippedDirection || !existingPosition
+        ? fillPrice
+        : existingPosition.entryPrice;
+    const leverage = sameDirection || !existingPosition ? draft.leverage : existingPosition.leverage;
+    const marginMode = sameDirection || !existingPosition ? draft.marginMode : existingPosition.marginMode;
 
     const nextPosition = decoratePosition({
       symbol: draft.symbol,
       base: baseFromSymbol(draft.symbol),
       mode: "paper",
       side: nextSide,
+      updatedAt: now,
+      orderCount: (existingPosition?.orderCount ?? 0) + 1,
+      lastFillId: orderId,
       size: nextSize,
-      leverage: draft.leverage,
-      marginMode: draft.marginMode,
+      leverage,
+      marginMode,
       entryPrice,
       markPrice: fillPrice,
-      liquidationPrice: liquidationPrice(nextSide, entryPrice, draft.leverage),
+      liquidationPrice: liquidationPrice(nextSide, entryPrice, leverage),
       pnlUsd: 0,
       pnlPct: 0,
-      marginUsd: round((nextSize * fillPrice) / draft.leverage, 2),
+      marginUsd: round((nextSize * fillPrice) / leverage, 2),
       fundingUsd: 0,
-      takeProfit: draft.takeProfit,
-      stopLoss: draft.stopLoss,
+      takeProfit: draft.takeProfit ?? existingPosition?.takeProfit,
+      stopLoss: draft.stopLoss ?? existingPosition?.stopLoss,
     }, fillPrice);
 
     if (existingIndex >= 0) {

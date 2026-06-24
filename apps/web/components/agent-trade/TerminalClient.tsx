@@ -248,7 +248,7 @@ export function TerminalClient() {
       setApiStatus("ok");
       const refreshed = await loadTradingSnapshot(snapshot.market.base);
       setSnapshot(refreshed.snapshot);
-      setSubmitState(`Paper fill recorded. Positions and portfolio updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
+      setSubmitState(`Paper fill recorded. Position updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
     } catch (err) {
       setApiStatus("unavailable");
       throw new Error(paperOrderFailureMessage(err, endpoint));
@@ -863,7 +863,7 @@ function BottomPanel(props: {
       {props.bottomTab === "positions" ? (
         <div className="data-table">
           {props.snapshot.account.positions.map((position) => (
-            <div key={position.symbol} className="data-row">
+            <div key={positionRowKey(position)} className="data-row">
               <strong>{position.symbol}{position.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={position.side === "long" ? "pos" : "neg"}>{position.side} {position.size} {position.base}</span>
               <span>{position.leverage}x {position.marginMode}</span>
@@ -877,7 +877,7 @@ function BottomPanel(props: {
       {props.bottomTab === "orders" ? (
         <div className="data-table">
           {props.snapshot.account.openOrders.map((order) => (
-            <div key={`${order.symbol}-${order.timestamp}`} className="data-row">
+            <div key={`${order.mode ?? "demo"}-${order.symbol}-${order.side}-${order.timestamp}`} className="data-row">
               <strong>{order.symbol}{order.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={order.side === "buy" ? "pos" : "neg"}>{order.side}</span>
               <span>{order.type}</span>
@@ -891,7 +891,7 @@ function BottomPanel(props: {
       {props.bottomTab === "fills" ? (
         <div className="data-table">
           {props.snapshot.account.fills.map((fill) => (
-            <div key={`${fill.symbol}-${fill.timestamp}`} className="data-row">
+            <div key={fillRowKey(fill)} className="data-row">
               <strong>{fill.symbol}{fill.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={fill.side === "buy" ? "pos" : "neg"}>{fill.side}</span>
               <span>{fmtUsd(fill.price, 1)}</span>
@@ -904,6 +904,26 @@ function BottomPanel(props: {
       ) : null}
     </div>
   );
+}
+
+function positionRowKey(position: SharedTradingSnapshot["account"]["positions"][number]): string {
+  return [
+    position.mode ?? "demo",
+    position.symbol,
+    position.side,
+    position.lastFillId ?? position.updatedAt ?? position.entryPrice,
+  ].join("-");
+}
+
+function fillRowKey(fill: SharedTradingSnapshot["account"]["fills"][number]): string {
+  return [
+    fill.mode ?? "demo",
+    fill.symbol,
+    fill.orderId ?? fill.timestamp,
+    fill.side,
+    fill.price,
+    fill.size,
+  ].join("-");
 }
 
 function ConfirmModal(props: {
