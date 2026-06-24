@@ -487,6 +487,7 @@ async function terminalDefaultSafety(page) {
   const text = await visibleText(page);
   assert(/Paper mode only|Live trading unavailable|Paper mode active/i.test(text), "Missing paper/live eligibility banner");
   assert(/Paper/i.test(text), "Paper mode not visible");
+  assert(/Simulated account values|Paper equity|Paper account/i.test(text), "Terminal did not label local account values as simulated/paper");
   assert(/Ask Agent.trade/i.test(text), "Agent panel heading missing");
   assert(/Hyperliquid candles|Synthetic fallback/i.test(text), "Chart candle source label missing");
   assert(/Manual/i.test(text), "Ticket did not show Manual source by default");

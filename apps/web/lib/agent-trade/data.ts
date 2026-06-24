@@ -1,4 +1,6 @@
-import { API_BASE_URL } from "../api";
+import type { PositionsResponse, UserFillsResponse } from "@alchemy-hl/sdk-preview";
+
+import { api, API_BASE_URL } from "../api";
 
 import {
   joinPerpMarkets,
@@ -28,6 +30,10 @@ export interface SelectedMarketResult {
   usedFallback: boolean;
 }
 
+export interface LoadTradingSnapshotOptions {
+  accountAddress?: string;
+}
+
 export function applyMarketToAccount(
   snapshot: SharedTradingSnapshot,
 ): SharedTradingSnapshot["account"] {
@@ -49,6 +55,10 @@ export function applyMarketToAccount(
 
   return {
     ...snapshot.account,
+    valueKind: "paper",
+    sourceLabel: "Simulated paper account",
+    liveAccountDataLoaded: false,
+    liveAccountDataUnavailable: false,
     availableUsd: 18_740,
     equityUsd: 24_860 + selectedPnlUsd + hedgePnlUsd,
     marginUsedUsd: selectedMarginUsd + hedgeMarginUsd,
@@ -129,7 +139,10 @@ export function applyMarketToAccount(
   };
 }
 
-export async function loadTradingSnapshot(symbol?: string | null): Promise<SelectedMarketResult> {
+export async function loadTradingSnapshot(
+  symbol?: string | null,
+  options: LoadTradingSnapshotOptions = {},
+): Promise<SelectedMarketResult> {
   const requestedSymbol = symbol ?? "BTC";
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), 2500);
@@ -179,10 +192,7 @@ export async function loadTradingSnapshot(symbol?: string | null): Promise<Selec
       })),
     };
 
-    const marketAccountSnapshot = {
-      ...snapshot,
-      account: applyMarketToAccount(snapshot),
-    };
+    const marketAccountSnapshot = await applyAccountState(snapshot, options.accountAddress);
     const paperAccount = await loadPaperAccount();
 
     return {
@@ -192,7 +202,7 @@ export async function loadTradingSnapshot(symbol?: string | null): Promise<Selec
       usedFallback: selected.symbol !== normalizeSymbol(requestedSymbol),
     };
   } catch {
-    return await fallbackResult(requestedSymbol);
+    return await fallbackResult(requestedSymbol, options);
   } finally {
     globalThis.clearTimeout(timeout);
   }
@@ -226,13 +236,132 @@ export async function loadTerminalCandles(
   }
 }
 
-async function fallbackResult(requestedSymbol: string): Promise<SelectedMarketResult> {
+async function fallbackResult(
+  requestedSymbol: string,
+  options: LoadTradingSnapshotOptions = {},
+): Promise<SelectedMarketResult> {
   const paperAccount = await loadPaperAccount();
-  const snapshot = mergePaperAccount(MOCK_TRADING_SNAPSHOT, paperAccount);
+  const baseSnapshot = await applyAccountState(MOCK_TRADING_SNAPSHOT, options.accountAddress);
+  const snapshot = mergePaperAccount(baseSnapshot, paperAccount);
   return {
     snapshot,
     requestedSymbol,
     resolvedSymbol: "BTC",
     usedFallback: true,
   };
+}
+
+async function applyAccountState(
+  snapshot: SharedTradingSnapshot,
+  accountAddress?: string,
+): Promise<SharedTradingSnapshot> {
+  if (!isHexAddress(accountAddress)) {
+    return {
+      ...snapshot,
+      account: applyMarketToAccount(snapshot),
+    };
+  }
+
+  try {
+    const liveAccount = await loadReadOnlyHyperliquidAccount(accountAddress, snapshot);
+    return {
+      ...snapshot,
+      account: liveAccount,
+    };
+  } catch {
+    return {
+      ...snapshot,
+      account: {
+        ...applyMarketToAccount(snapshot),
+        address: accountAddress,
+        liveAccountDataUnavailable: true,
+        sourceLabel: "Read-only account unavailable; showing simulated account",
+      },
+    };
+  }
+}
+
+export async function loadReadOnlyHyperliquidAccount(
+  accountAddress: `0x${string}`,
+  snapshot: SharedTradingSnapshot,
+): Promise<SharedTradingSnapshot["account"]> {
+  const [balance, positions, fills] = await Promise.all([
+    api.balance(accountAddress),
+    readOptionalPositions(accountAddress),
+    readOptionalFills(accountAddress),
+  ]);
+
+  return {
+    address: accountAddress,
+    valueKind: "real",
+    sourceLabel: "Read-only Hyperliquid account",
+    liveAccountDataLoaded: true,
+    liveAccountDataUnavailable: false,
+    equityUsd: toNumber(balance.accountValue),
+    availableUsd: toNumber(balance.withdrawable),
+    marginUsedUsd: toNumber(balance.marginUsed),
+    unrealizedPnlUsd: positions.positions.reduce(
+      (sum, position) => sum + toNumber(position.unrealizedPnl),
+      0,
+    ),
+    dailyLiveNotionalUsedUsd: 0,
+    simulatedBalanceUsd: snapshot.account.simulatedBalanceUsd,
+    positions: positions.positions.map((position) => {
+      const size = Math.abs(toNumber(position.size));
+      const positionValue = toNumber(position.positionValue);
+      const markPrice = size > 0 ? positionValue / size : toNumber(position.entryPx);
+      return {
+        symbol: `${position.coin}-USD`,
+        base: position.coin,
+        mode: "live",
+        side: position.side,
+        size,
+        leverage: position.leverage,
+        marginMode: position.leverageMode,
+        entryPrice: toNumber(position.entryPx),
+        markPrice,
+        liquidationPrice: position.liquidationPx == null ? 0 : toNumber(position.liquidationPx),
+        pnlUsd: toNumber(position.unrealizedPnl),
+        pnlPct: toNumber(position.returnOnEquity) * 100,
+        marginUsd: toNumber(position.marginUsed),
+        fundingUsd: 0,
+      };
+    }),
+    openOrders: [],
+    fills: fills.fills.map((fill) => ({
+      symbol: `${fill.coin}-USD`,
+      mode: "live",
+      side: fill.side === "B" ? "buy" : "sell",
+      orderId: String(fill.oid),
+      price: toNumber(fill.px),
+      size: toNumber(fill.sz),
+      feeUsd: Math.abs(toNumber(fill.fee ?? "0")) + Math.abs(toNumber(fill.builderFee ?? "0")),
+      timestamp: fill.time,
+    })),
+  };
+}
+
+async function readOptionalPositions(accountAddress: `0x${string}`): Promise<PositionsResponse> {
+  try {
+    return await api.positions(accountAddress);
+  } catch {
+    return { user: accountAddress, positions: [] };
+  }
+}
+
+async function readOptionalFills(accountAddress: `0x${string}`): Promise<UserFillsResponse> {
+  try {
+    return await api.userFills(accountAddress, 20);
+  } catch {
+    return { user: accountAddress, fills: [] };
+  }
+}
+
+function isHexAddress(value: string | undefined): value is `0x${string}` {
+  return typeof value === "string" && /^0x[a-fA-F0-9]{40}$/u.test(value);
+}
+
+function toNumber(value: string | number | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }

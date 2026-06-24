@@ -10,6 +10,7 @@ export type TradeSide = "long" | "short";
 export type OrderType = "market" | "limit";
 export type MarginMode = "isolated" | "cross";
 export type DataSource = "mock" | "live-mainnet";
+export type AccountValueKind = "paper" | "real" | "hybrid" | "unavailable";
 
 export interface MarketSnapshot {
   symbol: string;
@@ -91,6 +92,10 @@ export interface Fill {
 
 export interface AccountSnapshot {
   address: `0x${string}`;
+  valueKind?: AccountValueKind;
+  sourceLabel?: string;
+  liveAccountDataLoaded?: boolean;
+  liveAccountDataUnavailable?: boolean;
   equityUsd: number;
   availableUsd: number;
   marginUsedUsd: number;

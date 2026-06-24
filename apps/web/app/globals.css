@@ -964,7 +964,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
-.terminal-account-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.terminal-account-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .terminal-header-stats div,
 .terminal-account-strip div {
   display: grid;
@@ -988,6 +988,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.account-source-cell strong {
+  white-space: normal;
+  line-height: 1.2;
 }
 .terminal-header-actions {
   display: grid;
@@ -1013,6 +1017,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .terminal-eligibility-pill.amber { border-color: rgba(240,162,58,0.35); color: #ffe3ad; background: rgba(240,162,58,0.09); }
 .terminal-eligibility-pill.red { border-color: rgba(255,92,108,0.35); color: #ffd6dc; background: rgba(255,92,108,0.09); }
+.account-mode-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .terminal-eligibility-pill.blue { border-color: rgba(91,99,255,0.35); color: #cdd2ff; background: rgba(91,99,255,0.09); }
 
 .terminal-grid {
@@ -1556,7 +1566,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
     grid-template-columns: 1fr;
   }
   .terminal-header-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .terminal-account-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .terminal-account-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .terminal-header-actions { grid-column: auto; grid-template-columns: 1fr; }
   .terminal-agent-stack { grid-column: auto; order: 1; }
   .terminal-ticket-stack { order: 2; }

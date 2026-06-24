@@ -3,10 +3,16 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { hexToSignature } from "viem";
 import type { Time } from "lightweight-charts";
 
 import { API_BASE_URL } from "@/lib/api";
+import {
+  getAccountReadinessDisplay,
+  type AccountReadinessDisplay,
+  type WalletReadinessSummary,
+} from "@/lib/agent-trade/account-readiness";
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
@@ -29,7 +35,6 @@ import {
   getConfirmationAckCopy,
   getLiveDisabledReason,
   getTerminalEligibilityStatus,
-  getTerminalHeaderStatusText,
   getTicketSource,
   paperOrderEndpoint,
   paperOrderFailureMessage,
@@ -66,6 +71,8 @@ interface BrowserWallet {
 }
 
 const agentService = new DeterministicAgentService();
+const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
+const LOCAL_DEV_WALLET: WalletReadinessSummary = { status: "local-dev" };
 
 function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
   const size = Number(
@@ -85,6 +92,38 @@ function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
 }
 
 export function TerminalClient() {
+  if (HAS_PRIVY) {
+    return <PrivyTerminalClient />;
+  }
+  return <TerminalExperience wallet={LOCAL_DEV_WALLET} />;
+}
+
+function PrivyTerminalClient() {
+  const wallet = useTerminalWalletSummary();
+  return <TerminalExperience wallet={wallet} />;
+}
+
+function useTerminalWalletSummary(): WalletReadinessSummary {
+  const { ready, authenticated } = usePrivy();
+  const { wallets } = useWallets();
+  const activeWallet = useMemo(() => {
+    const embedded = wallets.find((wallet) => wallet.walletClientType === "privy");
+    return embedded ?? wallets[0];
+  }, [wallets]);
+
+  if (!ready) {
+    return { status: "loading" };
+  }
+  if (authenticated && activeWallet) {
+    return {
+      status: "connected",
+      address: activeWallet.address,
+    };
+  }
+  return { status: "not-connected" };
+}
+
+function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   const searchParams = useSearchParams();
   const requestedSymbol = normalizeSymbol(searchParams.get("symbol"));
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
@@ -118,7 +157,9 @@ export function TerminalClient() {
 
     async function load() {
       setIsLoadingData(true);
-      const result = await loadTradingSnapshot(requestedSymbol);
+      const result = await loadTradingSnapshot(requestedSymbol, {
+        accountAddress: wallet.status === "connected" ? wallet.address : undefined,
+      });
       if (!cancelled) {
         const next = result.snapshot;
         setSnapshot(next);
@@ -142,7 +183,7 @@ export function TerminalClient() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [requestedSymbol]);
+  }, [requestedSymbol, wallet.address, wallet.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -286,7 +327,9 @@ export function TerminalClient() {
       }
       const json = (await res.json()) as { id: string; notionalUsd: number };
       setApiStatus("ok");
-      const refreshed = await loadTradingSnapshot(snapshot.market.base);
+      const refreshed = await loadTradingSnapshot(snapshot.market.base, {
+        accountAddress: wallet.status === "connected" ? wallet.address : undefined,
+      });
       setSnapshot(refreshed.snapshot);
       setSubmitState(`Paper fill recorded. Position updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
     } catch (err) {
@@ -294,6 +337,14 @@ export function TerminalClient() {
       throw new Error(paperOrderFailureMessage(err, endpoint));
     }
   }
+
+  const accountReadiness = getAccountReadinessDisplay({
+    wallet,
+    eligibilityState: eligibility.state,
+    accountValueKind: snapshot.account.valueKind,
+    liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+    liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
+  });
 
   async function submitLiveOrder() {
     if (!canLiveTrade) {
@@ -383,6 +434,7 @@ export function TerminalClient() {
           setIsStale={setIsStale}
           isLoadingData={isLoadingData}
           marketNotice={marketNotice}
+          accountReadiness={accountReadiness}
         />
         {apiStatus !== "ok" ? (
           <TerminalStatusBanner
@@ -423,6 +475,7 @@ export function TerminalClient() {
               eligibility={eligibility}
               apiStatus={apiStatus}
               simulatedBalanceUsd={snapshot.account.simulatedBalanceUsd}
+              accountReadiness={accountReadiness}
               openModal={() => {
                 setIsAcked(false);
                 setModalError(undefined);
@@ -521,6 +574,7 @@ function TerminalMarketHeader({
   setIsStale,
   isLoadingData,
   marketNotice,
+  accountReadiness,
 }: {
   snapshot: SharedTradingSnapshot;
   eligibility: EligibilityResponse;
@@ -532,6 +586,7 @@ function TerminalMarketHeader({
   setIsStale: (updater: (value: boolean) => boolean) => void;
   isLoadingData: boolean;
   marketNotice: string | undefined;
+  accountReadiness: AccountReadinessDisplay;
 }) {
   const marketStats = [
     ["Mark", fmtUsd(snapshot.market.markPrice, 1)],
@@ -543,9 +598,12 @@ function TerminalMarketHeader({
     ["Funding", fmtPct(snapshot.market.fundingRatePct, 4)],
     ["Next", `${snapshot.market.nextFundingMinutes}m`],
   ];
+  const accountLabelPrefix = accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid"
+    ? "Account"
+    : "Paper";
   const accountStats = [
-    ["Equity", fmtUsd(snapshot.account.equityUsd, 2)],
-    ["Available", fmtUsd(snapshot.account.availableUsd, 2)],
+    [`${accountLabelPrefix} equity`, fmtUsd(snapshot.account.equityUsd, 2)],
+    [`${accountLabelPrefix} available`, fmtUsd(snapshot.account.availableUsd, 2)],
     ["Unrealized", fmtUsd(snapshot.account.unrealizedPnlUsd, 2)],
   ];
 
@@ -569,6 +627,10 @@ function TerminalMarketHeader({
         ))}
       </div>
       <div className="terminal-account-strip" aria-label="Account state">
+        <div className="account-source-cell">
+          <span>{accountReadiness.label}</span>
+          <strong>{compactAccountValueLabel(accountReadiness)}</strong>
+        </div>
         {accountStats.map(([label, value]) => (
           <div key={label}>
             <span>{label}</span>
@@ -582,7 +644,7 @@ function TerminalMarketHeader({
         </button>
         <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
         <span className={`terminal-eligibility-pill ${eligibilityStatus.tone}`}>
-          {apiStatus === "unavailable" ? "API unavailable" : getTerminalHeaderStatusText(eligibility.state, mode)}
+          {apiStatus === "unavailable" ? "API unavailable" : accountReadiness.summary}
         </span>
       </div>
     </header>
@@ -614,6 +676,25 @@ function ModeControl({
       </button>
     </div>
   );
+}
+
+function compactAccountValueLabel(readiness: AccountReadinessDisplay): string {
+  switch (readiness.accountValueKind) {
+    case "paper":
+      return "Simulated";
+    case "real":
+      return "Read-only live";
+    case "hybrid":
+      return "Live + paper";
+    case "unavailable":
+      return "Unavailable";
+    default:
+      return assertNeverAccountValueKind(readiness.accountValueKind);
+  }
+}
+
+function assertNeverAccountValueKind(value: never): never {
+  throw new Error(`Unexpected account value kind: ${String(value)}`);
 }
 
 function TerminalStatusBanner({
@@ -913,6 +994,7 @@ function TicketPanel(props: {
   eligibility: EligibilityResponse;
   apiStatus: "checking" | "ok" | "unavailable";
   simulatedBalanceUsd: number;
+  accountReadiness: AccountReadinessDisplay;
   openModal: () => void;
 }) {
   const blocked = props.mode === "live" && !props.canLiveTrade;
@@ -991,6 +1073,7 @@ function TicketPanel(props: {
       </div>
       <div className="ticket-summary">
         <span>Source <strong>{source === "agent" ? "Agent draft" : "Manual input"}</strong></span>
+        <span>Account <strong>{props.accountReadiness.accountValueKind === "real" ? "Read-only live" : props.accountReadiness.accountValueKind === "hybrid" ? "Live + paper" : "Paper"}</strong></span>
         <span>Entry <strong>{fmtUsd(props.entryPrice, 1)}</strong></span>
         <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
         <span>Margin <strong>{fmtUsd(props.marginRequired, 2)}</strong></span>
@@ -998,6 +1081,7 @@ function TicketPanel(props: {
         <span>Fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
       </div>
       {blocked ? <p className="block-note">{liveDisabledReason} Use paper mode.</p> : null}
+      <p className="account-mode-note">{props.accountReadiness.summary}</p>
       {largePaperOrder ? (
         <p className="paper-note">
           Large paper size: this order is above the simulated balance of {fmtUsd(props.simulatedBalanceUsd, 2)}.

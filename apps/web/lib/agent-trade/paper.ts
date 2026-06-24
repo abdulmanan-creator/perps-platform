@@ -58,6 +58,10 @@ export function mergePaperAccount(
     ...snapshot,
     account: {
       ...snapshot.account,
+      valueKind: snapshot.account.liveAccountDataLoaded ? "hybrid" : "paper",
+      sourceLabel: snapshot.account.liveAccountDataLoaded
+        ? "Read-only account plus paper ledger"
+        : "Simulated paper account",
       equityUsd,
       availableUsd,
       marginUsedUsd,

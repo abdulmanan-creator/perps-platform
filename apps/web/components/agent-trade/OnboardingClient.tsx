@@ -5,6 +5,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useFundWallet, usePrivy, useWallets } from "@privy-io/react-auth";
 
 import { API_BASE_URL } from "@/lib/api";
+import {
+  getAccountReadinessDisplay,
+  type WalletReadinessSummary,
+} from "@/lib/agent-trade/account-readiness";
 import { getFundingDisplay } from "@/lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
 import type { EligibilityMode } from "@/lib/agent-trade/types";
@@ -86,6 +90,7 @@ export function OnboardingClient() {
       <section className="onboarding-grid">
         <StatusCard eligibility={eligibility} />
         {HAS_PRIVY ? <PrivyWalletCard /> : <LocalDevWalletCard />}
+        <AccountReadinessCardShell eligibility={eligibility} />
       </section>
 
       <section className="onboarding-grid wide">
@@ -266,6 +271,60 @@ function FundingCardShell({ eligibility }: { eligibility: EligibilityResponse })
     );
   }
   return <PrivyFundingCard eligibility={eligibility} />;
+}
+
+function AccountReadinessCardShell({ eligibility }: { eligibility: EligibilityResponse }) {
+  if (!HAS_PRIVY) {
+    return <AccountReadinessCard eligibility={eligibility} wallet={{ status: "local-dev" }} />;
+  }
+  return <PrivyAccountReadinessCard eligibility={eligibility} />;
+}
+
+function PrivyAccountReadinessCard({ eligibility }: { eligibility: EligibilityResponse }) {
+  const wallet = useWalletSummary();
+  return <AccountReadinessCard eligibility={eligibility} wallet={wallet} />;
+}
+
+function AccountReadinessCard({
+  eligibility,
+  wallet,
+}: {
+  eligibility: EligibilityResponse;
+  wallet: WalletSummary;
+}) {
+  const readiness = getAccountReadinessDisplay({
+    wallet: toReadinessWallet(wallet),
+    eligibilityState: eligibility.state,
+    accountValueKind: "paper",
+    liveAccountDataLoaded: false,
+    liveAccountDataUnavailable: false,
+  });
+
+  return (
+    <div className="panel onboarding-card">
+      <div className="panel-head">
+        <div>
+          <span>Account state</span>
+          <strong>{readiness.label}</strong>
+        </div>
+        <span className={`readiness-pill ${readiness.tone}`}>{readiness.accountValueLabel}</span>
+      </div>
+      <div className="readiness-list">
+        <ReadinessRow label="Wallet readiness" value={readiness.walletLabel} ok={wallet.status === "connected"} />
+        <ReadinessRow label="Account values" value={readiness.accountValueLabel} ok={readiness.accountValueKind === "real" || readiness.accountValueKind === "hybrid"} />
+        <ReadinessRow label="Paper trading" value={readiness.paperTradingEnabled ? "Available" : "Unavailable"} ok={readiness.paperTradingEnabled} />
+        <ReadinessRow label="Live trading" value={readiness.liveTradingEnabled ? "Eligible" : "Unavailable"} ok={readiness.liveTradingEnabled} />
+      </div>
+      <p className="onboarding-note">{readiness.summary}</p>
+    </div>
+  );
+}
+
+function toReadinessWallet(wallet: WalletSummary): WalletReadinessSummary {
+  return {
+    status: wallet.status,
+    address: wallet.address,
+  };
 }
 
 function PrivyFundingCard({ eligibility }: { eligibility: EligibilityResponse }) {

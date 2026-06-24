@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { usePrivy, useWallets } from "@privy-io/react-auth";
 
+import { API_BASE_URL } from "@/lib/api";
+import {
+  getAccountReadinessDisplay,
+  type WalletReadinessSummary,
+} from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
@@ -10,10 +16,47 @@ import {
   calculatePortfolioExposure,
   classifyPortfolioRisk,
 } from "@/lib/agent-trade/portfolio";
-import type { Fill, OpenOrder, Position, SharedTradingSnapshot } from "@/lib/agent-trade/types";
+import type { EligibilityMode, Fill, OpenOrder, Position, SharedTradingSnapshot } from "@/lib/agent-trade/types";
+
+interface EligibilityResponse {
+  state: EligibilityMode;
+}
+
+const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
+const LOCAL_DEV_WALLET: WalletReadinessSummary = { status: "local-dev" };
 
 export function PortfolioClient() {
+  if (HAS_PRIVY) {
+    return <PrivyPortfolioClient />;
+  }
+  return <PortfolioExperience wallet={LOCAL_DEV_WALLET} />;
+}
+
+function PrivyPortfolioClient() {
+  const wallet = usePortfolioWalletSummary();
+  return <PortfolioExperience wallet={wallet} />;
+}
+
+function usePortfolioWalletSummary(): WalletReadinessSummary {
+  const { ready, authenticated } = usePrivy();
+  const { wallets } = useWallets();
+  const activeWallet = useMemo(() => {
+    const embedded = wallets.find((item) => item.walletClientType === "privy");
+    return embedded ?? wallets[0];
+  }, [wallets]);
+
+  if (!ready) {
+    return { status: "loading" };
+  }
+  if (authenticated && activeWallet) {
+    return { status: "connected", address: activeWallet.address };
+  }
+  return { status: "not-connected" };
+}
+
+function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
+  const [eligibility, setEligibility] = useState<EligibilityMode>("loading");
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -26,7 +69,9 @@ export function PortfolioClient() {
         setSnapshot(mergePaperAccount(MOCK_TRADING_SNAPSHOT, paperAccount));
       }
 
-      const result = await loadTradingSnapshot("BTC");
+      const result = await loadTradingSnapshot("BTC", {
+        accountAddress: wallet.status === "connected" ? wallet.address : undefined,
+      });
       if (!cancelled) {
         setSnapshot(result.snapshot);
         setIsLoading(false);
@@ -39,8 +84,53 @@ export function PortfolioClient() {
       cancelled = true;
       window.clearInterval(timer);
     };
+  }, [wallet.address, wallet.status]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadEligibility() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/agent-trade/eligibility`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          throw new Error("eligibility request failed");
+        }
+        const next = (await res.json()) as EligibilityResponse;
+        if (!cancelled) {
+          setEligibility(next.state);
+        }
+      } catch {
+        if (!cancelled) {
+          setEligibility("unknown");
+        }
+      }
+    }
+
+    void loadEligibility();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
+  const accountReadiness = useMemo(
+    () => getAccountReadinessDisplay({
+      wallet,
+      eligibilityState: eligibility,
+      accountValueKind: snapshot.account.valueKind,
+      liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+      liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
+    }),
+    [
+      snapshot.account.liveAccountDataLoaded,
+      snapshot.account.liveAccountDataUnavailable,
+      snapshot.account.valueKind,
+      eligibility,
+      wallet.address,
+      wallet.status,
+    ],
+  );
   const exposure = useMemo(
     () => calculatePortfolioExposure(snapshot.account, snapshot.market.symbol),
     [snapshot.account, snapshot.market.symbol],
@@ -63,25 +153,26 @@ export function PortfolioClient() {
         <div>
           <p className="at-kicker">Portfolio risk</p>
           <h1>Portfolio</h1>
-          <p>Hybrid market-read and paper account view. Paper positions are simulated and do not imply live Hyperliquid exposure.</p>
+          <p>{accountReadiness.summary} Paper positions are simulated and do not imply live Hyperliquid exposure.</p>
         </div>
         <div className="portfolio-health">
-          <span className="state-pill live">{snapshot.market.source === "live-mainnet" ? "Mainnet market data" : "Mock account"}</span>
+          <span className={`readiness-pill ${accountReadiness.tone}`}>{accountReadiness.label}</span>
+          <span className="state-pill live">{snapshot.market.source === "live-mainnet" ? "Mainnet market data" : "Deterministic market data"}</span>
           <span>{isLoading ? "Refreshing..." : `Updated ${fmtAgo(snapshot.asOf)}`}</span>
         </div>
       </section>
 
       <section className="portfolio-grid">
         <div className="overview-grid">
-          <Metric label="Equity" value={fmtUsd(snapshot.account.equityUsd, 2)} />
-          <Metric label="Available" value={fmtUsd(snapshot.account.availableUsd, 2)} />
+          <Metric label={accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid" ? "Account equity" : "Paper equity"} value={fmtUsd(snapshot.account.equityUsd, 2)} detail={accountReadiness.accountValueLabel} />
+          <Metric label={accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid" ? "Account available" : "Paper available"} value={fmtUsd(snapshot.account.availableUsd, 2)} />
           <Metric label="Margin used" value={fmtUsd(snapshot.account.marginUsedUsd, 2)} detail={fmtPct(marginUsePct, 1)} />
           <Metric
             label="Unrealized PnL"
             value={fmtUsd(snapshot.account.unrealizedPnlUsd, 2)}
             tone={snapshot.account.unrealizedPnlUsd >= 0 ? "pos" : "neg"}
           />
-          <Metric label="Sim balance" value={fmtUsd(snapshot.account.simulatedBalanceUsd, 2)} />
+          <Metric label="Simulated balance" value={fmtUsd(snapshot.account.simulatedBalanceUsd, 2)} />
           <Metric label="Daily live notional" value={fmtUsd(snapshot.account.dailyLiveNotionalUsedUsd, 2)} />
         </div>
 

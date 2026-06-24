@@ -115,7 +115,28 @@ describe("Agent.trade terminal product-loop helpers", () => {
 
     expect(merged.account.positions[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
     expect(merged.account.fills[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
+    expect(merged.account.valueKind).toBe("paper");
+    expect(merged.account.sourceLabel).toBe("Simulated paper account");
     expect(merged.account.marginUsedUsd).toBe(MOCK_TRADING_SNAPSHOT.account.marginUsedUsd + 500);
+  });
+
+  it("preserves live-read-only plus paper ledger as a hybrid account source", () => {
+    const liveSnapshot = {
+      ...MOCK_TRADING_SNAPSHOT,
+      account: {
+        ...MOCK_TRADING_SNAPSHOT.account,
+        valueKind: "real" as const,
+        sourceLabel: "Read-only Hyperliquid account",
+        liveAccountDataLoaded: true,
+        positions: [],
+        fills: [],
+      },
+    };
+    const merged = mergePaperAccount(liveSnapshot, paperAccount);
+
+    expect(merged.account.valueKind).toBe("hybrid");
+    expect(merged.account.sourceLabel).toBe("Read-only account plus paper ledger");
+    expect(merged.account.positions[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
   });
 
   it("provides portfolio-visible paper positions and exposure inputs", () => {
