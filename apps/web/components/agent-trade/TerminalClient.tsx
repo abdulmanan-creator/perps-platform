@@ -21,6 +21,7 @@ import {
 } from "@/lib/agent-trade/portfolio";
 import {
   AGENT_PANEL_HEADING,
+  applyManualDraftPatch,
   getConfirmationAckCopy,
   getTerminalEligibilityStatus,
   getTicketSource,
@@ -90,6 +91,7 @@ export function TerminalClient() {
   const [isStale, setIsStale] = useState(false);
   const [draft, setDraft] = useState<OrderDraft>(() => buildDefaultDraft(MOCK_TRADING_SNAPSHOT));
   const [agent, setAgent] = useState<AgentResponse | undefined>();
+  const [agentQuestion, setAgentQuestion] = useState<string | undefined>();
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
@@ -198,9 +200,37 @@ export function TerminalClient() {
   async function runAgent(scenario: AgentScenario) {
     setIsThinking(true);
     setAgent(undefined);
+    setAgentQuestion(undefined);
     setAnnotations([]);
     const response = await agentService.run({
       scenario,
+      snapshot: isStale
+        ? {
+            ...snapshot,
+            market: { ...snapshot.market, dataAgeSeconds: 46 },
+          }
+        : snapshot,
+      isStale,
+      mode,
+    });
+    setAgent(response);
+    setAgentQuestion(response.question);
+    setAnnotations(response.annotations);
+    setIsThinking(false);
+  }
+
+  async function runTypedAgent(prompt: string) {
+    const trimmed = prompt.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    setIsThinking(true);
+    setAgent(undefined);
+    setAgentQuestion(trimmed);
+    setAnnotations([]);
+    const response = await agentService.runPrompt({
+      prompt: trimmed,
       snapshot: isStale
         ? {
             ...snapshot,
@@ -222,7 +252,7 @@ export function TerminalClient() {
   }
 
   function updateDraft(patch: Partial<OrderDraft>) {
-    setDraft((current) => ({ ...current, ...patch, fromAgent: false }));
+    setDraft((current) => applyManualDraftPatch(current, patch));
     setModalError(undefined);
   }
 
@@ -376,8 +406,10 @@ export function TerminalClient() {
           <AgentPanel
             base={snapshot.market.base}
             agent={agent}
+            agentQuestion={agentQuestion}
             isThinking={isThinking}
             runAgent={runAgent}
+            runTypedAgent={runTypedAgent}
             sendToTicket={sendToTicket}
             isStale={isStale}
           />
@@ -793,11 +825,24 @@ function ImpactPanel(props: {
 function AgentPanel(props: {
   base: string;
   agent: AgentResponse | undefined;
+  agentQuestion: string | undefined;
   isThinking: boolean;
   runAgent: (scenario: AgentScenario) => void;
+  runTypedAgent: (prompt: string) => void;
   sendToTicket: (draft: OrderDraft) => void;
   isStale: boolean;
 }) {
+  const [prompt, setPrompt] = useState("");
+
+  function submitPrompt() {
+    const next = prompt.trim();
+    if (!next || props.isThinking) {
+      return;
+    }
+    props.runTypedAgent(next);
+    setPrompt("");
+  }
+
   return (
     <div className="panel agent-panel">
       <div className="panel-head">
@@ -811,10 +856,33 @@ function AgentPanel(props: {
         <button onClick={() => props.runAgent("explain")}>Explain funding + OI</button>
         <button onClick={() => props.runAgent("noTrade")}>Find cleaner setup</button>
       </div>
+      <div className="agent-chat-box">
+        <input
+          aria-label="Ask Agent.trade"
+          value={prompt}
+          placeholder={`Ask about ${props.base} funding, OI, or a trade setup...`}
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submitPrompt();
+            }
+          }}
+        />
+        <button onClick={submitPrompt} disabled={!prompt.trim() || props.isThinking}>
+          Send
+        </button>
+      </div>
+      {props.agentQuestion ? (
+        <div className="agent-user-message">
+          <span>User</span>
+          <p>{props.agentQuestion}</p>
+        </div>
+      ) : null}
       {props.isThinking ? <div className="thinking">Reading funding, OI, book pressure, and liquidation levels...</div> : null}
       {!props.isThinking && props.agent ? (
         <div className={`agent-answer ${props.agent.state}`}>
-          <p className="agent-question">{props.agent.question}</p>
+          <p className="agent-question">Agent.trade response</p>
           <h3>{props.agent.state === "noTrade" ? "No clean setup" : props.agent.state === "staleRefusal" ? "Refusing to draft" : "Market read"}</h3>
           <p>{props.agent.thesis}</p>
           <div className="receipt-row">
@@ -841,7 +909,7 @@ function AgentPanel(props: {
         </div>
       ) : null}
       {!props.isThinking && !props.agent ? (
-        <p className="agent-empty">Ask for a setup, a market explanation, or a no-trade read. Outputs are structured and drive chart annotations plus ticket prefill.</p>
+        <p className="agent-empty">Type a question or use a prompt chip for a setup, market explanation, or no-trade read. Outputs are structured and can drive chart annotations plus ticket prefill.</p>
       ) : null}
     </div>
   );

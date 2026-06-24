@@ -6,11 +6,17 @@ import {
 } from "./portfolio";
 import type { AgentResponse, SharedTradingSnapshot } from "./types";
 
-export type AgentScenario = "long" | "explain" | "noTrade";
+export type AgentScenario = "long" | "explain" | "noTrade" | "marketRead";
 
 export interface AgentService {
   run(args: {
     scenario: AgentScenario;
+    snapshot: SharedTradingSnapshot;
+    isStale: boolean;
+    mode: "paper" | "live";
+  }): Promise<AgentResponse>;
+  runPrompt(args: {
+    prompt: string;
     snapshot: SharedTradingSnapshot;
     isStale: boolean;
     mode: "paper" | "live";
@@ -22,6 +28,28 @@ function receipt(label: string, value: string, snapshot: SharedTradingSnapshot) 
 }
 
 export class DeterministicAgentService implements AgentService {
+  classifyPrompt(prompt: string): AgentScenario {
+    const normalized = prompt.toLowerCase();
+
+    if (/\b(long|setup|buy|bullish)\b/u.test(normalized)) {
+      return "long";
+    }
+    if (/\b(short|sell|bearish)\b/u.test(normalized)) {
+      return "noTrade";
+    }
+    if (/\b(funding|oi|open interest|order book|book|liquidation|liq)\b/u.test(normalized)) {
+      return "explain";
+    }
+    if (/\b(risk|portfolio|size|sizing|balance|exposure)\b/u.test(normalized)) {
+      return "marketRead";
+    }
+    if (/\b(should i trade|clean setup|wait|no trade|stand aside)\b/u.test(normalized)) {
+      return "noTrade";
+    }
+
+    return "marketRead";
+  }
+
   async run(args: {
     scenario: AgentScenario;
     snapshot: SharedTradingSnapshot;
@@ -43,8 +71,31 @@ export class DeterministicAgentService implements AgentService {
     if (args.scenario === "noTrade") {
       return this.noTrade(args.snapshot);
     }
+    if (args.scenario === "marketRead") {
+      return this.marketRead(args.snapshot, args.mode);
+    }
 
     throw new Error(`Unsupported agent scenario: ${args.scenario}`);
+  }
+
+  async runPrompt(args: {
+    prompt: string;
+    snapshot: SharedTradingSnapshot;
+    isStale: boolean;
+    mode: "paper" | "live";
+  }): Promise<AgentResponse> {
+    const scenario = this.classifyPrompt(args.prompt);
+    const response = await this.run({
+      scenario,
+      snapshot: args.snapshot,
+      isStale: args.isStale,
+      mode: args.mode,
+    });
+
+    return {
+      ...response,
+      question: args.prompt,
+    };
   }
 
   private long(snapshot: SharedTradingSnapshot, mode: "paper" | "live"): AgentResponse {
@@ -198,6 +249,58 @@ export class DeterministicAgentService implements AgentService {
         },
       ],
       followUps: ["Set alert", `Watch ${market.base}`, "Ask again after sweep"],
+    };
+  }
+
+  private marketRead(snapshot: SharedTradingSnapshot, mode: "paper" | "live"): AgentResponse {
+    const { market, account } = snapshot;
+    const exposure = calculatePortfolioExposure(account, market.symbol);
+    const riskLabels = classifyPortfolioRisk({ account, exposure, selectedSymbol: market.symbol, mode });
+    const oiChange = market.openInterestChangePct === null ? "--" : fmtPct(market.openInterestChangePct, 1);
+    const selectedExposure = exposure.selectedMarketNotionalUsd > 0
+      ? `${fmtCompactUsd(exposure.selectedMarketNotionalUsd)} current ${market.base} exposure`
+      : `no current ${market.base} exposure`;
+    return {
+      id: `${market.base.toLowerCase()}-typed-market-read`,
+      state: "answered",
+      question: `Give me a ${market.base} market read.`,
+      thesis:
+        `${market.base} is trading at ${fmtUsd(market.markPrice, 1)} with funding at ${fmtPct(market.fundingRatePct)} and ` +
+        `${fmtCompactUsd(market.openInterestUsd)} open interest. Account context shows ${selectedExposure} and ` +
+        `${fmtUsd(account.availableUsd, 0)} available balance. I would treat this as a market read, not an executable instruction.`,
+      receipts: [
+        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
+        receipt("Open interest", fmtCompactUsd(market.openInterestUsd), snapshot),
+        receipt("OI change", oiChange, snapshot),
+        receipt("24h volume", fmtCompactUsd(market.volume24hUsd), snapshot),
+        receipt("Portfolio labels", riskLabels.join(", "), snapshot),
+      ],
+      riskNote:
+        `Current mode is ${mode}. If live eligibility is unavailable, any draft must stay paper-only and still requires terminal confirmation.`,
+      whyWrong:
+        "This deterministic read does not include live news, hidden liquidity, or a full execution model; confirm with fresh data before acting.",
+      annotations: [
+        {
+          id: "typed-read-support",
+          kind: "support",
+          price: Number((market.markPrice * 0.989).toFixed(1)),
+          label: "Support to watch",
+          tone: "blue",
+        },
+        {
+          id: "typed-read-resistance",
+          kind: "resistance",
+          price: Number((market.markPrice * 1.018).toFixed(1)),
+          label: "Resistance",
+          tone: "amber",
+        },
+      ],
+      followUps: [
+        `Should I long ${market.base}?`,
+        "Explain funding + OI",
+        "Find cleaner setup",
+      ],
     };
   }
 

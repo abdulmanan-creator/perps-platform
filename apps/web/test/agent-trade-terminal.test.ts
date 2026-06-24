@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
 import { loadTradingSnapshot } from "../lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
   AGENT_PANEL_HEADING,
+  applyManualDraftPatch,
   getConfirmationAckCopy,
   getTerminalEligibilityStatus,
   getTicketSource,
@@ -59,6 +61,7 @@ const paperAccount: PaperAccountSnapshot = {
 describe("Agent.trade terminal product-loop helpers", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("keeps manual paper confirmation copy free of agent drafting claims", () => {
@@ -201,7 +204,74 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(result.snapshot.account.positions[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
     expect(result.snapshot.account.fills[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
   });
+
+  it("maps typed long/setup prompts to an agent order-draft response", async () => {
+    const response = await runTypedPrompt("Should I long BTC here?");
+
+    expect(response.question).toBe("Should I long BTC here?");
+    expect(response.state).toBe("tradeProposal");
+    expect(response.orderDraft).toMatchObject({
+      symbol: "BTC-USD",
+      side: "long",
+      fromAgent: true,
+    });
+  });
+
+  it("maps typed funding and OI prompts to an explain response without an order draft", async () => {
+    const response = await runTypedPrompt("Explain BTC funding and open interest");
+
+    expect(response.state).toBe("answered");
+    expect(response.orderDraft).toBeUndefined();
+    expect(response.receipts.map((receipt) => receipt.label)).toContain("Funding");
+    expect(response.receipts.map((receipt) => receipt.label)).toContain("OI");
+  });
+
+  it("returns a useful market read with follow-ups for unknown typed prompts", async () => {
+    const response = await runTypedPrompt("What is happening?");
+
+    expect(response.state).toBe("answered");
+    expect(response.orderDraft).toBeUndefined();
+    expect(response.thesis).toContain("market read");
+    expect(response.followUps?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("refuses typed trade drafts when market data is stale", async () => {
+    const response = await runTypedPrompt("Should I long BTC here?", true);
+
+    expect(response.state).toBe("staleRefusal");
+    expect(response.orderDraft).toBeUndefined();
+    expect(response.thesis).toMatch(/will not draft/i);
+  });
+
+  it("keeps typed-chat proposals agent-sourced until a manual edit resets source", async () => {
+    const response = await runTypedPrompt("Should I long BTC here?");
+    const draft = response.orderDraft;
+
+    expect(draft).toBeTruthy();
+    expect(getTicketSource(draft!)).toBe("agent");
+
+    const edited = applyManualDraftPatch(draft!, { sizeBtc: draft!.sizeBtc + 0.01 });
+    expect(getTicketSource(edited)).toBe("manual");
+  });
 });
+
+async function runTypedPrompt(prompt: string, isStale = false) {
+  vi.useFakeTimers();
+  const service = new DeterministicAgentService();
+  const promise = service.runPrompt({
+    prompt,
+    snapshot: isStale
+      ? {
+          ...MOCK_TRADING_SNAPSHOT,
+          market: { ...MOCK_TRADING_SNAPSHOT.market, dataAgeSeconds: 46 },
+        }
+      : MOCK_TRADING_SNAPSHOT,
+    isStale,
+    mode: "paper",
+  });
+  await vi.advanceTimersByTimeAsync(700);
+  return await promise;
+}
 
 function createLocalStorage(): Storage {
   const values = new Map<string, string>();

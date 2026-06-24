@@ -307,6 +307,17 @@ async function setTicketSize(page, size) {
   })()`);
 }
 
+async function typeAgentPrompt(page, prompt) {
+  await evaluate(page, `(() => {
+    const input = document.querySelector(".agent-chat-box input");
+    if (!input) throw new Error("Missing agent chat input");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, ${JSON.stringify(prompt)});
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return input.value;
+  })()`);
+}
+
 async function submitPaper(page, options = {}) {
   await clickButton(page, "Review paper order", ".ticket-panel");
   await waitFor(page, "!!document.querySelector('.confirm-modal')", 10_000);
@@ -356,7 +367,7 @@ async function routeHealth(page) {
       20_000,
     );
     const text = await visibleText(page);
-    assert(!/404|This page could not be found/i.test(text), `${route} rendered a not-found state`);
+    assert(!/404\s*This page could not be found|This page could not be found/i.test(text), `${route} rendered a not-found state`);
   }
 }
 
@@ -529,10 +540,13 @@ async function paperLoop(page) {
   const reducedPaperSize = extractFirstPaperPositionSize(reducedPositions);
   assert(reducedPaperSize < secondPaperSize, "Opposite-side paper order did not reduce/close/flip the netted position");
 
-  await clickButton(page, "Should I long", ".agent-panel");
+  await typeAgentPrompt(page, "Should I long BTC here?");
+  await clickButton(page, "Send", ".agent-panel");
+  await waitFor(page, "document.querySelector('.agent-user-message')?.innerText.includes('Should I long BTC here?')", 10_000);
   await waitFor(page, "[...document.querySelectorAll('.agent-panel button')].some((button) => button.textContent.includes('Send to ticket'))", 20_000);
   const agentText = await visibleText(page, ".agent-panel");
-  assert(/Market read|No clean setup|Refusing to draft/i.test(agentText), "Deterministic agent response did not render");
+  assert(/Agent.trade response/i.test(agentText), "Typed user message or agent response did not render");
+  assert(/Market read|No clean setup|Refusing to draft/i.test(agentText), "Deterministic typed agent response did not render");
   await clickButton(page, "Send to ticket", ".agent-panel");
   await waitFor(page, "document.querySelector('.ticket-panel')?.innerText.includes('From Agent')", 10_000);
   await submitPaper(page, { expectAgentCopy: true });

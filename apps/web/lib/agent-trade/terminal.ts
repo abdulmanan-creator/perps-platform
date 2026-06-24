@@ -15,6 +15,10 @@ export function getTicketSource(draft: Pick<OrderDraft, "fromAgent">): TicketSou
   return draft.fromAgent ? "agent" : "manual";
 }
 
+export function applyManualDraftPatch(draft: OrderDraft, patch: Partial<OrderDraft>): OrderDraft {
+  return { ...draft, ...patch, fromAgent: false };
+}
+
 export function getConfirmationAckCopy(source: TicketSource): string {
   if (source === "agent") {
     return "I understand this is a leveraged perpetual order. The agent drafted, but I am confirming.";
