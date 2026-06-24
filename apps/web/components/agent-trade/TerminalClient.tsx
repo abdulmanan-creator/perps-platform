@@ -9,7 +9,7 @@ import type { Time } from "lightweight-charts";
 import { API_BASE_URL } from "@/lib/api";
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
-import { loadTradingSnapshot } from "@/lib/agent-trade/data";
+import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import { normalizeSymbol } from "@/lib/agent-trade/markets";
 import { buildHlOrderAction } from "@/lib/agent-trade/orders";
@@ -25,7 +25,7 @@ import {
   AGENT_PANEL_HEADING,
   applyManualDraftPatch,
   annotationPriceLineTitle,
-  buildSyntheticTerminalCandles,
+  buildFallbackTerminalChartData,
   getConfirmationAckCopy,
   getLiveDisabledReason,
   getTerminalEligibilityStatus,
@@ -33,6 +33,10 @@ import {
   getTicketSource,
   paperOrderEndpoint,
   paperOrderFailureMessage,
+  terminalChartLabel,
+  TERMINAL_CHART_INTERVALS,
+  type TerminalChartData,
+  type TerminalChartInterval,
 } from "@/lib/agent-trade/terminal";
 import type {
   AgentResponse,
@@ -676,7 +680,30 @@ function ChartPanel({
   annotations: ChartAnnotation[];
 }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const candles = useMemo(() => buildSyntheticTerminalCandles(snapshot.market), [snapshot.market]);
+  const [interval, setInterval] = useState<TerminalChartInterval>("15m");
+  const [chartData, setChartData] = useState<TerminalChartData>(() =>
+    buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "Waiting for Hyperliquid candles."),
+  );
+  const [isLoadingCandles, setIsLoadingCandles] = useState(false);
+  const candles = chartData.candles;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCandles() {
+      setIsLoadingCandles(true);
+      const next = await loadTerminalCandles(snapshot.market, interval);
+      if (!cancelled) {
+        setChartData(next);
+        setIsLoadingCandles(false);
+      }
+    }
+
+    void loadCandles();
+    return () => {
+      cancelled = true;
+    };
+  }, [interval, snapshot.market]);
 
   useEffect(() => {
     let disposed = false;
@@ -777,22 +804,27 @@ function ChartPanel({
     };
   }, [annotations, candles]);
 
+  const sourceLabel = terminalChartLabel(chartData);
+
   return (
     <div className="panel chart-panel">
       <div className="panel-head">
         <div>
           <span>{snapshot.market.base} perpetual</span>
-          <strong>15m synthetic candles</strong>
+          <strong>{chartData.source === "hyperliquid" ? `${interval} Hyperliquid candles` : `${interval} fallback candles`}</strong>
         </div>
         <div className="timeframes">
-          {["1m", "5m", "15m", "1h", "4h"].map((tf) => (
-            <button key={tf} className={tf === "15m" ? "active" : ""}>{tf}</button>
+          {TERMINAL_CHART_INTERVALS.map((tf) => (
+            <button key={tf} className={tf === interval ? "active" : ""} onClick={() => setInterval(tf)}>
+              {tf}
+            </button>
           ))}
         </div>
       </div>
       <div className="chart-canvas" ref={chartRef} role="img" aria-label={`${snapshot.market.base} candlestick chart with agent annotations`} />
       <div className="chart-disclaimer">
-        <span>Visual OHLC is deterministic from the current market snapshot.</span>
+        <span>{isLoadingCandles ? `Loading ${interval} Hyperliquid candles...` : sourceLabel}</span>
+        {chartData.error ? <span className="chart-degraded-note">{chartData.error}</span> : null}
         {annotations.length > 0 ? <strong>{annotations.length} agent annotation{annotations.length === 1 ? "" : "s"}</strong> : null}
       </div>
     </div>

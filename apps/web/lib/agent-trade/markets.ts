@@ -158,7 +158,11 @@ export function filterAndSortMarkets(args: {
   const query = args.query.trim().toUpperCase();
   return args.markets
     .filter((market) => {
-      if (query && !market.symbol.includes(query) && !market.displaySymbol.includes(query)) {
+      if (
+        query &&
+        !normalizeSymbol(market.symbol).includes(query) &&
+        !normalizeSymbol(market.displaySymbol).includes(query)
+      ) {
         return false;
       }
       if (args.filter === "opportunities") {
@@ -200,8 +204,10 @@ export function resolveSelectedMarket(args: {
   const wanted = normalizeSymbol(args.symbol);
   const fallback = normalizeSymbol(args.fallbackSymbol);
   return (
-    args.markets.find((market) => market.symbol === wanted) ??
-    args.markets.find((market) => market.symbol === fallback) ??
+    args.markets.find((market) => normalizeSymbol(market.symbol) === wanted) ??
+    args.markets.find((market) => normalizeSymbol(market.displaySymbol) === wanted) ??
+    args.markets.find((market) => normalizeSymbol(market.symbol) === fallback) ??
+    args.markets.find((market) => normalizeSymbol(market.displaySymbol) === fallback) ??
     args.markets[0]
   );
 }

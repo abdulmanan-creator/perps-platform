@@ -1,18 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
-import { loadTradingSnapshot } from "../lib/agent-trade/data";
+import { loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
   AGENT_PANEL_HEADING,
   applyManualDraftPatch,
+  buildFallbackTerminalChartData,
   buildSyntheticTerminalCandles,
   getConfirmationAckCopy,
   getTerminalEligibilityStatus,
   getTicketSource,
+  normalizeTerminalCandlesResponse,
   paperOrderEndpoint,
   paperOrderFailureMessage,
+  terminalChartLabel,
 } from "../lib/agent-trade/terminal";
 import type { PaperAccountSnapshot } from "../lib/agent-trade/types";
 
@@ -216,6 +219,48 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(candles.every((candle) => candle.high >= Math.max(candle.open, candle.close))).toBe(true);
     expect(candles.every((candle) => candle.low <= Math.min(candle.open, candle.close))).toBe(true);
     expect(candles[1].time - candles[0].time).toBe(900);
+  });
+
+  it("distinguishes real Hyperliquid candles from fallback synthetic chart data", () => {
+    vi.setSystemTime(new Date("2026-06-24T12:00:12Z"));
+    const real = normalizeTerminalCandlesResponse(
+      {
+        symbol: "BTC-USD",
+        interval: "15m",
+        source: "hyperliquid",
+        fetchedAt: Date.now() - 12_000,
+        candles: [
+          {
+            time: 1_720_000_000,
+            open: 60000,
+            high: 61000,
+            low: 59000,
+            close: 60500,
+            volume: 12.345,
+          },
+        ],
+      },
+      MOCK_TRADING_SNAPSHOT.market,
+      "15m",
+    );
+    const fallback = buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "Candle API unavailable.");
+
+    expect(real.source).toBe("hyperliquid");
+    expect(real.isFallback).toBe(false);
+    expect(terminalChartLabel(real, Date.now())).toBe("Hyperliquid candles · 15m · updated 12s ago");
+    expect(fallback.source).toBe("synthetic");
+    expect(terminalChartLabel(fallback)).toBe("Synthetic fallback · 15m · chart data degraded");
+  });
+
+  it("falls back to synthetic chart data when the candle API fails", async () => {
+    vi.stubGlobal("fetch", async () => new Response("unavailable", { status: 503 }));
+
+    const result = await loadTerminalCandles(MOCK_TRADING_SNAPSHOT.market, "15m");
+
+    expect(result.source).toBe("synthetic");
+    expect(result.isFallback).toBe(true);
+    expect(result.error).toContain("503");
+    expect(result.candles).not.toHaveLength(0);
   });
 
   it("maps typed long/setup prompts to an agent order-draft response", async () => {

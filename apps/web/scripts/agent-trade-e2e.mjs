@@ -488,6 +488,7 @@ async function terminalDefaultSafety(page) {
   assert(/Paper mode only|Live trading unavailable|Paper mode active/i.test(text), "Missing paper/live eligibility banner");
   assert(/Paper/i.test(text), "Paper mode not visible");
   assert(/Ask Agent.trade/i.test(text), "Agent panel heading missing");
+  assert(/Hyperliquid candles|Synthetic fallback/i.test(text), "Chart candle source label missing");
   assert(/Manual/i.test(text), "Ticket did not show Manual source by default");
   assert(!await evaluate(page, `(() => {
     const live = [...document.querySelectorAll('.mode-control button')].find((button) => button.textContent.trim() === 'Live');

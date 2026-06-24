@@ -1078,6 +1078,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-size: 11px;
 }
 .chart-disclaimer strong { color: #cdd2ff; font-weight: 600; }
+.chart-degraded-note { color: #ffe3ad; }
 .chart-svg { display: block; width: 100%; height: 344px; padding: 8px; }
 .chart-grid-line { stroke: rgba(255,255,255,0.06); stroke-width: 1; }
 .chart-line { stroke: var(--green); stroke-width: 2.4; filter: drop-shadow(0 0 12px rgba(39,214,170,0.3)); }

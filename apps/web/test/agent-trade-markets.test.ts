@@ -15,6 +15,7 @@ const joined = joinPerpMarkets({
       { name: "BTC", assetIndex: 0, szDecimals: 5, maxLeverage: 40 },
       { name: "ETH", assetIndex: 1, szDecimals: 4, maxLeverage: 25 },
       { name: "SOL", assetIndex: 5, szDecimals: 2, maxLeverage: 20 },
+      { name: "kPEPE", assetIndex: 9, szDecimals: 0, maxLeverage: 10 },
     ],
   },
   stats: {
@@ -45,6 +46,15 @@ const joined = joinPerpMarkets({
         dayNtlVlm: "100000000",
         openInterest: "100000",
         funding: "0.00001",
+      },
+      {
+        name: "kPEPE",
+        assetIndex: 9,
+        markPx: "0.013",
+        prevDayPx: "0.012",
+        dayNtlVlm: "20000000",
+        openInterest: "1000000000",
+        funding: "0.00002",
       },
     ],
   },
@@ -90,6 +100,23 @@ describe("Agent.trade market scanner helpers", () => {
     const resolved = resolveSelectedMarket({ symbol: "NOTREAL", markets: joined, fallbackSymbol: "BTC" });
     expect(resolved?.symbol).toBe("BTC");
     expect(resolved?.assetIndex).toBe(0);
+  });
+
+  it("resolves non-BTC/ETH and mixed-case markets through market metadata", () => {
+    const sol = resolveSelectedMarket({ symbol: "SOL-USD", markets: joined, fallbackSymbol: "BTC" });
+    const pepe = resolveSelectedMarket({ symbol: "KPEPE-USD", markets: joined, fallbackSymbol: "BTC" });
+    const filtered = filterAndSortMarkets({
+      markets: joined,
+      query: "kpepe",
+      filter: "all",
+      sort: "symbol",
+    });
+
+    expect(sol?.symbol).toBe("SOL");
+    expect(sol?.assetIndex).toBe(5);
+    expect(pepe?.symbol).toBe("kPEPE");
+    expect(pepe?.assetIndex).toBe(9);
+    expect(filtered.map((market) => market.symbol)).toEqual(["kPEPE"]);
   });
 
   it("preserves unknown OI change through terminal market snapshots", () => {

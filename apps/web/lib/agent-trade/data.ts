@@ -12,6 +12,13 @@ import {
 } from "./markets";
 import { MOCK_TRADING_SNAPSHOT, buildFallbackOrderBook } from "./mock-data";
 import { loadPaperAccount, mergePaperAccount } from "./paper";
+import {
+  buildFallbackTerminalChartData,
+  normalizeTerminalCandlesResponse,
+  type TerminalCandlesWireResponse,
+  type TerminalChartData,
+  type TerminalChartInterval,
+} from "./terminal";
 import type { SharedTradingSnapshot } from "./types";
 
 export interface SelectedMarketResult {
@@ -186,6 +193,34 @@ export async function loadTradingSnapshot(symbol?: string | null): Promise<Selec
     };
   } catch {
     return await fallbackResult(requestedSymbol);
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
+
+export async function loadTerminalCandles(
+  market: SharedTradingSnapshot["market"],
+  interval: TerminalChartInterval,
+): Promise<TerminalChartData> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), 2500);
+
+  try {
+    const res = await fetch(
+      `${API_BASE_URL}/agent-trade/candles?symbol=${encodeURIComponent(market.symbol)}&interval=${encodeURIComponent(interval)}`,
+      { cache: "no-store", signal: controller.signal },
+    );
+    if (!res.ok) {
+      return buildFallbackTerminalChartData(market, interval, `Candle API returned ${res.status}.`);
+    }
+
+    const wire = (await res.json()) as TerminalCandlesWireResponse;
+    return normalizeTerminalCandlesResponse(wire, market, interval);
+  } catch (err) {
+    const message = err instanceof Error && err.name === "AbortError"
+      ? "Candle API timed out."
+      : "Candle API unavailable.";
+    return buildFallbackTerminalChartData(market, interval, message);
   } finally {
     globalThis.clearTimeout(timeout);
   }

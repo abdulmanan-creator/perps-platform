@@ -23,7 +23,7 @@ The script launches a temporary headless Chrome session through the Chrome DevTo
 ## What It Checks
 
 - Route render health for `/`, `/terminal`, `/terminal?symbol=ETH`, `/markets`, `/portfolio`, `/onboarding`, `/connectors`, `/connect/claude`, `/connect/chatgpt`, `/approve`, `/oauth/authorize`, and `/restricted`.
-- Terminal default safety state: paper mode visible, live disabled under unknown/default eligibility, agent panel visible, manual ticket source by default.
+- Terminal default safety state: paper mode visible, live disabled under unknown/default eligibility, agent panel visible, manual ticket source by default, and chart candle source labelled as Hyperliquid or degraded fallback.
 - Manual paper market order: modal copy does not claim an agent draft, paper copy says orders never call `/exchange`, fills and positions update.
 - Repeat paper orders: same-side paper orders increase the netted position, opposite-side paper orders reduce/close/flip using the simplified ledger.
 - Agent-drafted paper order: deterministic response appears, Send to ticket works, confirmation copy states the agent drafted and the user confirms.
@@ -45,3 +45,4 @@ Use `AGENT_TRADE_E2E_ARTIFACT_DIR=/path` to change the output directory.
 - The web build currently prints the MetaMask SDK optional dependency warning for `@react-native-async-storage/async-storage`; this is expected if the build still succeeds.
 - If Next throws a missing chunk or fallback chunk `500`, stop dev servers, delete `apps/web/.next`, and restart dev.
 - Do not run `next dev` and `next build` concurrently. Both write `apps/web/.next`.
+- Terminal candles use `GET /agent-trade/candles?symbol=BTC-USD&interval=15m` backed by Hyperliquid `candleSnapshot`. During manual QA, check BTC and ETH labels, interval switching, and the synthetic fallback label by temporarily stopping the API or forcing the candle route to fail.
