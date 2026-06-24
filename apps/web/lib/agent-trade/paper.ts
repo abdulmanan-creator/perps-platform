@@ -62,6 +62,7 @@ export function mergePaperAccount(
       sourceLabel: snapshot.account.liveAccountDataLoaded
         ? "Read-only account plus paper ledger"
         : "Simulated paper account",
+      updatedAt: paperAccount.updatedAt ?? snapshot.account.updatedAt,
       equityUsd,
       availableUsd,
       marginUsedUsd,

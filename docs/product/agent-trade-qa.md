@@ -23,10 +23,10 @@ The script launches a temporary headless Chrome session through the Chrome DevTo
 ## What It Checks
 
 - Route render health for `/`, `/terminal`, `/terminal?symbol=ETH`, `/markets`, `/portfolio`, `/onboarding`, `/connectors`, `/connect/claude`, `/connect/chatgpt`, `/approve`, `/oauth/authorize`, and `/restricted`.
-- Terminal default safety state: paper mode visible, live disabled under unknown/default eligibility, paper/simulated account values labelled clearly, agent panel visible, manual ticket source by default, and chart candle source labelled as Hyperliquid or degraded fallback.
+- Terminal default safety state: paper mode visible, live disabled under unknown/default eligibility, paper/simulated account values labelled clearly, compact freshness labelled from market/candle/account timestamps, agent panel visible, manual ticket source by default, and chart candle source labelled as Hyperliquid or degraded fallback.
 - Manual paper market order: modal copy does not claim an agent draft, paper copy says orders never call `/exchange`, fills and positions update.
 - Repeat paper orders: same-side paper orders increase the netted position, opposite-side paper orders reduce/close/flip using the simplified ledger.
-- Agent-drafted paper order: deterministic response appears, Send to ticket works, confirmation copy states the agent drafted and the user confirms.
+- Agent-drafted paper orders: deterministic long and short fixture responses appear, Send to ticket works, confirmation copy states the agent drafted and the user confirms.
 - Portfolio reflection: paper positions/fills are visible and labelled as simulated, not live Hyperliquid exposure. Disconnected/local sessions must not present demo balances as real funds.
 - Session isolation: a second browser context gets a separate local paper ledger.
 - Legacy fail-closed behavior: `/approve` and `/oauth/authorize` do not expose approval, Bridge2 deposit, Get USDC, or `/exchange` compatibility calls by default.

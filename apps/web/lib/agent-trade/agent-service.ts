@@ -6,19 +6,21 @@ import {
 } from "./portfolio";
 import type { AgentResponse, SharedTradingSnapshot } from "./types";
 
-export type AgentScenario = "long" | "explain" | "noTrade" | "marketRead" | "capability";
+export type AgentScenario = "long" | "short" | "explain" | "noTrade" | "marketRead" | "capability";
 
 export interface AgentService {
   run(args: {
     scenario: AgentScenario;
     snapshot: SharedTradingSnapshot;
     isStale: boolean;
+    accountFreshnessWarning?: string;
     mode: "paper" | "live";
   }): Promise<AgentResponse>;
   runPrompt(args: {
     prompt: string;
     snapshot: SharedTradingSnapshot;
     isStale: boolean;
+    accountFreshnessWarning?: string;
     mode: "paper" | "live";
   }): Promise<AgentResponse>;
 }
@@ -34,11 +36,11 @@ export class DeterministicAgentService implements AgentService {
     if (/^\s*(hi|hello|hey|yo|gm|good morning|good afternoon|good evening)[!.?\s]*$/u.test(normalized)) {
       return "capability";
     }
+    if (/\b(short|sell|bearish)\b/u.test(normalized)) {
+      return "short";
+    }
     if (/\b(long|setup|buy|bullish)\b/u.test(normalized)) {
       return "long";
-    }
-    if (/\b(short|sell|bearish)\b/u.test(normalized)) {
-      return "noTrade";
     }
     if (/\b(funding|oi|open interest|order book|book|liquidation|liq)\b/u.test(normalized)) {
       return "explain";
@@ -57,16 +59,20 @@ export class DeterministicAgentService implements AgentService {
     scenario: AgentScenario;
     snapshot: SharedTradingSnapshot;
     isStale: boolean;
+    accountFreshnessWarning?: string;
     mode: "paper" | "live";
   }): Promise<AgentResponse> {
     await new Promise((resolve) => setTimeout(resolve, 700));
 
-    if (args.isStale) {
+    if (args.isStale && (args.scenario === "long" || args.scenario === "short")) {
       return this.stale(args.snapshot);
     }
 
     if (args.scenario === "long") {
-      return this.long(args.snapshot, args.mode);
+      return this.withAccountFreshnessWarning(this.long(args.snapshot, args.mode), args.accountFreshnessWarning);
+    }
+    if (args.scenario === "short") {
+      return this.withAccountFreshnessWarning(this.short(args.snapshot, args.mode), args.accountFreshnessWarning);
     }
     if (args.scenario === "explain") {
       return this.explain(args.snapshot);
@@ -88,6 +94,7 @@ export class DeterministicAgentService implements AgentService {
     prompt: string;
     snapshot: SharedTradingSnapshot;
     isStale: boolean;
+    accountFreshnessWarning?: string;
     mode: "paper" | "live";
   }): Promise<AgentResponse> {
     const scenario = this.classifyPrompt(args.prompt);
@@ -95,12 +102,24 @@ export class DeterministicAgentService implements AgentService {
       scenario,
       snapshot: args.snapshot,
       isStale: args.isStale,
+      accountFreshnessWarning: args.accountFreshnessWarning,
       mode: args.mode,
     });
 
     return {
       ...response,
       question: args.prompt,
+    };
+  }
+
+  private withAccountFreshnessWarning(response: AgentResponse, warning?: string): AgentResponse {
+    if (!warning || !response.orderDraft) {
+      return response;
+    }
+
+    return {
+      ...response,
+      riskNote: `${response.riskNote} ${warning}`,
     };
   }
 
@@ -180,6 +199,84 @@ export class DeterministicAgentService implements AgentService {
         },
         {
           id: "est-liq",
+          kind: "liquidationCluster",
+          price: liquidation,
+          label: "Est. liq",
+          tone: "blue",
+        },
+      ],
+    };
+  }
+
+  private short(snapshot: SharedTradingSnapshot, mode: "paper" | "live"): AgentResponse {
+    const { market, account } = snapshot;
+    const sizeBtc = Number(
+      Math.max(1 / 10 ** market.szDecimals, Math.min(0.05, account.availableUsd * 0.07 / market.markPrice))
+        .toFixed(market.szDecimals),
+    );
+    const stopLoss = Number((market.markPrice * 1.028).toFixed(1));
+    const takeProfit = Number((market.markPrice * 0.948).toFixed(1));
+    const liquidation = Number((market.markPrice * 1.236).toFixed(1));
+    const draft = {
+      symbol: market.symbol,
+      side: "short" as const,
+      orderType: "market" as const,
+      sizeBtc,
+      leverage: 3,
+      marginMode: "isolated" as const,
+      reduceOnly: false,
+      takeProfit,
+      stopLoss,
+      fromAgent: true,
+      scenarioId: `${market.base.toLowerCase()}-rejection-short`,
+    };
+    const impact = calculateDraftImpact({ account, market, draft });
+    const exposure = calculatePortfolioExposure(account, market.symbol);
+    const riskLabels = classifyPortfolioRisk({ account, exposure, selectedSymbol: market.symbol, mode });
+    const existingExposure = exposure.selectedMarketNotionalUsd > 0
+      ? `${fmtCompactUsd(exposure.selectedMarketNotionalUsd)} current ${market.base} exposure`
+      : `no current ${market.base} exposure`;
+    const concentrationNote = impact.selectedMarketConcentrationPct >= 55
+      ? `This would concentrate ${fmtPct(impact.selectedMarketConcentrationPct, 1)} of gross exposure in ${market.base}.`
+      : `Post-trade ${market.base} concentration stays near ${fmtPct(impact.selectedMarketConcentrationPct, 1)}.`;
+
+    return {
+      id: `${market.base.toLowerCase()}-rejection-short`,
+      state: "tradeProposal",
+      question: `Should I short ${market.base} here for the next 4-8 hours?`,
+      thesis:
+        `${market.base} is trading below the intraday reference while OI remains elevated and funding is not deeply negative at ${fmtPct(market.fundingRatePct)}. ` +
+        `Available balance is ${fmtUsd(account.availableUsd, 0)} with ${existingExposure}. ` +
+        `I would only draft this as a controlled ${mode} short with a defined invalidation above the rejection level.`,
+      receipts: [
+        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
+        receipt("Open interest", fmtCompactUsd(market.openInterestUsd), snapshot),
+        receipt("24h volume", fmtCompactUsd(market.volume24hUsd), snapshot),
+        receipt("Margin impact", fmtUsd(impact.marginRequiredUsd, 2), snapshot),
+      ],
+      riskNote:
+        `The risk is a squeeze back through ${fmtUsd(stopLoss, 1)}. ${concentrationNote} Current labels: ${riskLabels.join(", ")}.`,
+      whyWrong:
+        "If price reclaims the rejection level while OI stays elevated, trapped shorts can fuel a squeeze instead of continuation lower.",
+      orderDraft: draft,
+      annotations: [
+        {
+          id: "short-invalidation",
+          kind: "invalidation",
+          price: stopLoss,
+          label: "Short invalidation",
+          tone: "red",
+        },
+        {
+          id: "short-target",
+          kind: "target",
+          price: takeProfit,
+          label: "Short target",
+          tone: "green",
+        },
+        {
+          id: "short-liq",
           kind: "liquidationCluster",
           price: liquidation,
           label: "Est. liq",
@@ -304,8 +401,8 @@ export class DeterministicAgentService implements AgentService {
       ],
       followUps: [
         `Should I long ${market.base}?`,
+        `Should I short ${market.base}?`,
         "Explain funding + OI",
-        "Find cleaner setup",
       ],
     };
   }
@@ -342,7 +439,7 @@ export class DeterministicAgentService implements AgentService {
       state: "staleRefusal",
       question: "Should I trade this?",
       thesis:
-        `I will not draft a live trade because market data is ${snapshot.market.dataAgeSeconds}s old. Refresh the stream or switch to paper mode.`,
+        "I won’t draft a trade from stale data. Refreshing market data first.",
       receipts: [receipt("Data age", `${snapshot.market.dataAgeSeconds}s`, snapshot)],
       riskNote: "Stale prices can make entries, liquidation estimates, and stops materially wrong.",
       whyWrong: "The setup could still be valid after refresh, but the current snapshot is not safe enough to draft from.",

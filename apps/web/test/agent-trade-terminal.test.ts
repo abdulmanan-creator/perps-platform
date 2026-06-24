@@ -11,11 +11,16 @@ import {
   buildSyntheticTerminalCandles,
   getConfirmationAckCopy,
   getTerminalEligibilityStatus,
+  getTerminalFreshness,
   getTicketSource,
   normalizeTerminalCandlesResponse,
   paperOrderEndpoint,
   paperOrderFailureMessage,
+  resolveTypedPromptMarket,
   terminalChartLabel,
+  TERMINAL_ACCOUNT_STALE_MS,
+  TERMINAL_CANDLES_STALE_MS,
+  TERMINAL_MARKET_STALE_MS,
 } from "../lib/agent-trade/terminal";
 import type { PaperAccountSnapshot } from "../lib/agent-trade/types";
 
@@ -273,6 +278,132 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(terminalChartLabel(fallback)).toBe("Synthetic fallback · 15m · chart data degraded");
   });
 
+  it("splits market draft safety from account freshness context", () => {
+    const now = Date.now();
+    const fresh = getTerminalFreshness({
+      now,
+      marketAsOf: now - 8_000,
+      candlesFetchedAt: now - 12_000,
+      accountUpdatedAt: now - 20_000,
+      apiStatus: "ok",
+    });
+    const staleMarket = getTerminalFreshness({
+      now,
+      marketAsOf: now - TERMINAL_MARKET_STALE_MS - 1_000,
+      candlesFetchedAt: now - 12_000,
+      accountUpdatedAt: now - 20_000,
+      apiStatus: "ok",
+    });
+    const staleCandles = getTerminalFreshness({
+      now,
+      marketAsOf: now - 8_000,
+      candlesFetchedAt: now - TERMINAL_CANDLES_STALE_MS - 1_000,
+      accountUpdatedAt: now - 20_000,
+      apiStatus: "ok",
+    });
+    const staleAccount = getTerminalFreshness({
+      now,
+      marketAsOf: now - 8_000,
+      candlesFetchedAt: now - 12_000,
+      accountUpdatedAt: now - TERMINAL_ACCOUNT_STALE_MS - 1_000,
+      apiStatus: "ok",
+    });
+
+    expect(fresh).toMatchObject({ state: "fresh", label: "Live market data", isDraftSafe: true });
+    expect(fresh.marketFreshness).toMatchObject({ state: "fresh", isDraftSafe: true });
+    expect(fresh.accountFreshness).toMatchObject({ state: "fresh" });
+    expect(staleMarket).toMatchObject({ state: "degraded", isDraftSafe: false });
+    expect(staleMarket.label).toBe("Market data stale");
+    expect(staleCandles).toMatchObject({ state: "degraded", label: "Candles stale", isDraftSafe: false });
+    expect(staleAccount).toMatchObject({ state: "fresh", label: "Live market data", isDraftSafe: true });
+    expect(staleAccount.accountFreshness).toMatchObject({
+      state: "stale",
+      warning: "Portfolio impact may use stale account values.",
+    });
+  });
+
+  it("treats fallback candles, loading, and API outage as not draft-safe", () => {
+    const now = Date.now();
+    const fallback = getTerminalFreshness({
+      now,
+      marketAsOf: now - 8_000,
+      candlesFetchedAt: now - 10_000,
+      candlesFallback: true,
+      apiStatus: "ok",
+    });
+    const warming = getTerminalFreshness({
+      now,
+      marketAsOf: now - 8_000,
+      apiStatus: "checking",
+    });
+    const apiUnavailable = getTerminalFreshness({
+      now,
+      marketAsOf: now - 8_000,
+      candlesFetchedAt: now - 10_000,
+      apiStatus: "unavailable",
+    });
+
+    expect(fallback).toMatchObject({ state: "degraded", isDraftSafe: false });
+    expect(warming).toMatchObject({ state: "warming", label: "Refreshing...", isDraftSafe: false });
+    expect(apiUnavailable).toMatchObject({ state: "apiUnavailable", label: "API unavailable", isDraftSafe: false });
+  });
+
+  it("resolves explicit typed prompt market symbols against supported markets", () => {
+    const supportedSymbols = ["BTC", "ETH", "SOL", "HYPE"];
+    const cases = [
+      ["sell ETH", "BTC-USD", { mentionedSymbol: "ETH", resolvedSymbol: "ETH", unsupported: false, isCurrentMarket: false }],
+      ["Can you sell ETH?", "BTC-USD", { mentionedSymbol: "ETH", resolvedSymbol: "ETH", unsupported: false, isCurrentMarket: false }],
+      ["Should we short SOL here?", "BTC-USD", { mentionedSymbol: "SOL", resolvedSymbol: "SOL", unsupported: false, isCurrentMarket: false }],
+      ["Please long HYPE", "BTC-USD", { mentionedSymbol: "HYPE", resolvedSymbol: "HYPE", unsupported: false, isCurrentMarket: false }],
+      ["thoughts on HYPE?", "BTC-USD", { mentionedSymbol: "HYPE", resolvedSymbol: "HYPE", unsupported: false, isCurrentMarket: false }],
+      ["Hyperliquid", "BTC-USD", { mentionedSymbol: "HYPE", resolvedSymbol: "HYPE", unsupported: false, isCurrentMarket: false }],
+      ["thoughts on Hyperliquid?", "BTC-USD", { mentionedSymbol: "HYPE", resolvedSymbol: "HYPE", unsupported: false, isCurrentMarket: false }],
+      ["buy Hyperliquid", "BTC-USD", { mentionedSymbol: "HYPE", resolvedSymbol: "HYPE", unsupported: false, isCurrentMarket: false }],
+      ["short Ethereum", "BTC-USD", { mentionedSymbol: "ETH", resolvedSymbol: "ETH", unsupported: false, isCurrentMarket: false }],
+      ["sell Bitcoin", "ETH-USD", { mentionedSymbol: "BTC", resolvedSymbol: "BTC", unsupported: false, isCurrentMarket: false }],
+      ["sell ETH", "ETH-USD", { mentionedSymbol: "ETH", resolvedSymbol: "ETH", unsupported: false, isCurrentMarket: true }],
+      ["Should I short BTC?", "BTC-USD", { mentionedSymbol: "BTC", resolvedSymbol: "BTC", unsupported: false, isCurrentMarket: true }],
+      ["sell FAKECOIN", "ETH-USD", { mentionedSymbol: "FAKECOIN", unsupported: true, isCurrentMarket: false }],
+    ] as const;
+
+    for (const [prompt, currentSymbol, expected] of cases) {
+      expect(resolveTypedPromptMarket({ prompt, currentSymbol, supportedSymbols })).toMatchObject(expected);
+    }
+
+    for (const prompt of ["Can you explain funding?", "thoughts?", "thoughts on FAKECOIN?"]) {
+      const result = resolveTypedPromptMarket({
+        prompt,
+        currentSymbol: "BTC-USD",
+        supportedSymbols,
+      });
+      expect(result.mentionedSymbol).toBeUndefined();
+      expect(result).toMatchObject({
+        unsupported: false,
+        isCurrentMarket: true,
+      });
+    }
+  });
+
+  it("only reports unsupported aliases on clear trade intent when alias target is unsupported", () => {
+    expect(resolveTypedPromptMarket({
+      prompt: "Hyperliquid",
+      currentSymbol: "BTC-USD",
+      supportedSymbols: ["BTC", "ETH", "SOL"],
+    })).toMatchObject({
+      unsupported: false,
+      isCurrentMarket: true,
+    });
+    expect(resolveTypedPromptMarket({
+      prompt: "buy Hyperliquid",
+      currentSymbol: "BTC-USD",
+      supportedSymbols: ["BTC", "ETH", "SOL"],
+    })).toMatchObject({
+      mentionedSymbol: "HYPE",
+      unsupported: true,
+      isCurrentMarket: false,
+    });
+  });
+
   it("falls back to synthetic chart data when the candle API fails", async () => {
     vi.stubGlobal("fetch", async () => new Response("unavailable", { status: 503 }));
 
@@ -294,6 +425,20 @@ describe("Agent.trade terminal product-loop helpers", () => {
       side: "long",
       fromAgent: true,
     });
+  });
+
+  it("maps typed short prompts to an agent order-draft response", async () => {
+    for (const prompt of ["Should I short BTC?", "bearish BTC setup", "sell ETH", "short this"]) {
+      const response = await runTypedPrompt(prompt);
+
+      expect(response.question).toBe(prompt);
+      expect(response.state).toBe("tradeProposal");
+      expect(response.orderDraft).toMatchObject({
+        symbol: "BTC-USD",
+        side: "short",
+        fromAgent: true,
+      });
+    }
   });
 
   it("maps typed funding and OI prompts to an explain response without an order draft", async () => {
@@ -323,12 +468,35 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(response.whyWrong).toContain("will not infer a buy or sell direction");
   });
 
-  it("refuses typed trade drafts when market data is stale", async () => {
-    const response = await runTypedPrompt("Should I long BTC here?", true);
+  it("refuses typed long and short trade drafts when market data is stale", async () => {
+    const long = await runTypedPrompt("Should I long BTC here?", true);
+    const short = await runTypedPrompt("Should I short BTC here?", true);
 
-    expect(response.state).toBe("staleRefusal");
+    expect(long.state).toBe("staleRefusal");
+    expect(long.orderDraft).toBeUndefined();
+    expect(long.thesis).toBe("I won’t draft a trade from stale data. Refreshing market data first.");
+    expect(short.state).toBe("staleRefusal");
+    expect(short.orderDraft).toBeUndefined();
+  });
+
+  it("allows paper short proposals when only account freshness is stale", async () => {
+    const response = await runTypedPrompt(
+      "Should I short BTC here?",
+      false,
+      "Portfolio impact may use stale account values.",
+    );
+
+    expect(response.state).toBe("tradeProposal");
+    expect(response.orderDraft).toMatchObject({ side: "short" });
+    expect(response.riskNote).toContain("Portfolio impact may use stale account values.");
+  });
+
+  it("still answers non-order market reads when data is stale", async () => {
+    const response = await runTypedPrompt("Explain funding and OI", true);
+
+    expect(response.state).toBe("answered");
     expect(response.orderDraft).toBeUndefined();
-    expect(response.thesis).toMatch(/will not draft/i);
+    expect(response.receipts.map((receipt) => receipt.label)).toContain("Funding");
   });
 
   it("keeps typed-chat proposals agent-sourced until a manual edit resets source", async () => {
@@ -343,7 +511,7 @@ describe("Agent.trade terminal product-loop helpers", () => {
   });
 });
 
-async function runTypedPrompt(prompt: string, isStale = false) {
+async function runTypedPrompt(prompt: string, isStale = false, accountFreshnessWarning?: string) {
   vi.useFakeTimers();
   const service = new DeterministicAgentService();
   const promise = service.runPrompt({
@@ -355,6 +523,7 @@ async function runTypedPrompt(prompt: string, isStale = false) {
         }
       : MOCK_TRADING_SNAPSHOT,
     isStale,
+    accountFreshnessWarning,
     mode: "paper",
   });
   await vi.advanceTimersByTimeAsync(700);

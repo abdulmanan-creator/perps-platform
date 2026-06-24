@@ -490,6 +490,7 @@ async function terminalDefaultSafety(page) {
   assert(/Simulated account values|Paper equity|Paper account/i.test(text), "Terminal did not label local account values as simulated/paper");
   assert(/Ask Agent.trade/i.test(text), "Agent panel heading missing");
   assert(/Hyperliquid candles|Synthetic fallback/i.test(text), "Chart candle source label missing");
+  assert(/Live market data|Refreshing|Market data stale|Candles stale|API unavailable/i.test(text), "Terminal compact freshness label missing");
   assert(/Manual/i.test(text), "Ticket did not show Manual source by default");
   assert(!await evaluate(page, `(() => {
     const live = [...document.querySelectorAll('.mode-control button')].find((button) => button.textContent.trim() === 'Live');
@@ -542,6 +543,7 @@ async function paperLoop(page) {
   const reducedPaperSize = extractFirstPaperPositionSize(reducedPositions);
   assert(reducedPaperSize < secondPaperSize, "Opposite-side paper order did not reduce/close/flip the netted position");
 
+  await waitFor(page, "document.body.innerText.includes('Live market data')", 20_000);
   await typeAgentPrompt(page, "Should I long BTC here?");
   await clickButton(page, "Send", ".agent-panel");
   await waitFor(page, "document.querySelector('.agent-user-message')?.innerText.includes('Should I long BTC here?')", 10_000);
@@ -556,6 +558,43 @@ async function paperLoop(page) {
   await clickButton(page, "Positions", ".bottom-panel");
   const agentPositions = await visibleText(page, ".bottom-panel");
   assert(/Paper/i.test(agentPositions), "Agent-drafted paper order did not leave a visible paper position");
+
+  await waitFor(page, "document.body.innerText.includes('Live market data')", 20_000);
+  await typeAgentPrompt(page, "sell ETH");
+  await clickButton(page, "Send", ".agent-panel");
+  await waitFor(page, "document.querySelector('.agent-user-message')?.innerText.includes('sell ETH')", 10_000);
+  await waitFor(page, "[...document.querySelectorAll('.agent-panel button')].some((button) => button.textContent.includes('Send to ticket'))", 20_000);
+  const shortAgentText = await visibleText(page, ".agent-panel");
+  assert(/Market read/i.test(shortAgentText), "Short deterministic agent response did not render");
+  await clickButton(page, "Send to ticket", ".agent-panel");
+  await waitFor(page, "document.querySelector('.ticket-panel')?.innerText.includes('From Agent')", 10_000);
+  await waitFor(page, "document.querySelector('.ticket-panel')?.innerText.includes('ETH-USD')", 10_000);
+  const shortSelected = await evaluate(page, `(() => {
+    const buttons = [...document.querySelectorAll('.ticket-panel .segmented button')];
+    return buttons.some((button) => button.textContent.trim() === "Short" && button.classList.contains("active"));
+  })()`);
+  assert(shortSelected, "Short agent proposal did not set ticket side to short");
+  const ethTicket = await visibleText(page, ".ticket-panel");
+  assert(/ETH-USD/i.test(ethTicket), "Typed sell ETH did not switch the ticket to ETH");
+  const shortProposalScreenshot = await capture(page, "agent-trade-8c-short-proposal.png");
+  await submitPaper(page, { expectAgentCopy: true });
+
+  await clickButton(page, "Fills", ".bottom-panel");
+  const shortFills = await visibleText(page, ".bottom-panel");
+  assert(/Paper/i.test(shortFills), "Short agent-drafted paper fill was not visible");
+
+  const marketsBody = await waitForJson(`${API_URL}/markets`);
+  const hypeSupported = Boolean(marketsBody.perps?.some((market) => market.name === "HYPE"));
+  await waitFor(page, "document.body.innerText.includes('Live market data')", 20_000);
+  await typeAgentPrompt(page, "thoughts on Hyperliquid");
+  await clickButton(page, "Send", ".agent-panel");
+  await waitFor(page, "document.querySelector('.agent-user-message')?.innerText.includes('thoughts on Hyperliquid')", 10_000);
+  await waitFor(page, "Boolean(document.querySelector('.agent-panel .agent-answer'))", 20_000);
+  const aliasAgentText = await visibleText(page, ".agent-panel");
+  assert(!/HYPERLIQUID is not available|THOUGHTS is not available/i.test(aliasAgentText), "Hyperliquid alias produced an unsupported generic-word response");
+  if (hypeSupported) {
+    await waitFor(page, "document.body.innerText.includes('HYPE-USD')", 20_000);
+  }
 
   const exchangeCalls = networkUrls
     .slice(networkStart)
@@ -601,8 +640,10 @@ async function paperLoop(page) {
   return {
     sessionId,
     terminalScreenshot,
+    shortProposalScreenshot,
     portfolioScreenshot,
     privateScreenshot,
+    hypeSupported,
   };
 }
 
@@ -671,7 +712,7 @@ async function main() {
 
     await check("Manual, repeat, opposite-side, and agent paper loop", async () => {
       const artifacts = await paperLoop(page);
-      return `session=${artifacts.sessionId}; screenshots=${artifacts.terminalScreenshot}, ${artifacts.portfolioScreenshot}, ${artifacts.privateScreenshot}`;
+      return `session=${artifacts.sessionId}; hypeSupported=${artifacts.hypeSupported}; screenshots=${artifacts.terminalScreenshot}, ${artifacts.shortProposalScreenshot}, ${artifacts.portfolioScreenshot}, ${artifacts.privateScreenshot}`;
     });
 
     await check("Legacy approval/OAuth fail closed", async () => {

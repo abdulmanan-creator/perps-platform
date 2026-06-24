@@ -1,3 +1,4 @@
+import { normalizeSymbol } from "./markets";
 import type { ChartAnnotation, EligibilityMode, MarketSnapshot, OrderDraft } from "./types";
 
 export type TicketSource = "manual" | "agent";
@@ -25,6 +26,171 @@ export function getConfirmationAckCopy(source: TicketSource): string {
   }
 
   return "I understand this is a leveraged perpetual order. I am confirming this paper order.";
+}
+
+const PROMPT_SYMBOL_STOP_WORDS = new Set([
+  "ABOUT",
+  "AGAIN",
+  "AGENT",
+  "AND",
+  "ASK",
+  "BEARISH",
+  "BTCUSD",
+  "BULLISH",
+  "BUY",
+  "CAN",
+  "CLEAN",
+  "DO",
+  "EXPLAIN",
+  "FIND",
+  "FOR",
+  "FROM",
+  "FUNDING",
+  "HERE",
+  "HOW",
+  "INTEREST",
+  "LONG",
+  "MARKET",
+  "ME",
+  "OI",
+  "OPEN",
+  "ON",
+  "OR",
+  "ORDER",
+  "PLEASE",
+  "READ",
+  "RISK",
+  "SELL",
+  "SETUP",
+  "SHORT",
+  "SHOULD",
+  "THE",
+  "THIS",
+  "THOUGHTS",
+  "TO",
+  "TRADE",
+  "TERM",
+  "WITH",
+  "USD",
+  "USDC",
+  "WHAT",
+  "WE",
+  "YOU",
+]);
+
+const PROMPT_TRADE_INTENT_WORDS = new Set(["buy", "long", "sell", "short"]);
+
+const PROMPT_MARKET_ALIASES: Record<string, string> = {
+  bitcoin: "BTC",
+  btc: "BTC",
+  ether: "ETH",
+  ethereum: "ETH",
+  eth: "ETH",
+  hype: "HYPE",
+  hyperliquid: "HYPE",
+  sol: "SOL",
+  solana: "SOL",
+};
+
+interface PromptToken {
+  raw: string;
+  lower: string;
+  normalized?: string;
+}
+
+export interface TypedPromptMarketResolution {
+  mentionedSymbol?: string;
+  resolvedSymbol?: string;
+  unsupported: boolean;
+  isCurrentMarket: boolean;
+}
+
+export function resolveTypedPromptMarket(args: {
+  prompt: string;
+  currentSymbol: string;
+  supportedSymbols: string[];
+}): TypedPromptMarketResolution {
+  const currentSymbol = normalizeSymbol(args.currentSymbol);
+  const supportedSymbols = new Set(args.supportedSymbols.map((symbol) => normalizeSymbol(symbol)));
+  const tokens = tokenizePrompt(args.prompt);
+
+  for (const token of tokens) {
+    if (token.normalized && supportedSymbols.has(token.normalized)) {
+      return {
+        mentionedSymbol: token.normalized,
+        resolvedSymbol: token.normalized,
+        unsupported: false,
+        isCurrentMarket: token.normalized === currentSymbol,
+      };
+    }
+  }
+
+  const mentionedSymbol = extractUnsupportedTradeIntentSymbol(tokens);
+
+  if (!mentionedSymbol) {
+    return { unsupported: false, isCurrentMarket: true };
+  }
+
+  return {
+    mentionedSymbol,
+    unsupported: true,
+    isCurrentMarket: false,
+  };
+}
+
+export function extractPromptMarketSymbol(prompt: string): string | undefined {
+  return tokenizePrompt(prompt).find((token) => token.normalized)?.normalized;
+}
+
+function tokenizePrompt(prompt: string): PromptToken[] {
+  const matches = prompt.match(/\b[A-Z][A-Z0-9]*(?:[-/](?:USD|USDC|PERP))?\b/giu) ?? [];
+  return matches.map((raw) => {
+    const lower = raw.toLowerCase();
+    return {
+      raw,
+      lower,
+      normalized: normalizePromptToken(raw),
+    };
+  });
+}
+
+function extractUnsupportedTradeIntentSymbol(tokens: PromptToken[]): string | undefined {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!PROMPT_TRADE_INTENT_WORDS.has(token.lower)) {
+      continue;
+    }
+
+    for (let offset = 1; offset <= 3; offset += 1) {
+      const candidate = tokens[index + offset];
+      if (!candidate?.normalized || isPromptSymbolStopWord(candidate.normalized)) {
+        continue;
+      }
+      return candidate.normalized;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizePromptToken(token: string): string | undefined {
+  const compact = token.toLowerCase().replace(/[^a-z0-9]/gu, "");
+  const alias = PROMPT_MARKET_ALIASES[compact];
+  if (alias) {
+    return alias;
+  }
+
+  const normalized = normalizeSymbol(token)
+    .replace(/(?:USDC|USD|PERP)$/u, "")
+    .trim();
+  if (!normalized || isPromptSymbolStopWord(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function isPromptSymbolStopWord(symbol: string): boolean {
+  return PROMPT_SYMBOL_STOP_WORDS.has(symbol);
 }
 
 export function getTerminalEligibilityStatus(state: EligibilityMode): TerminalEligibilityStatus {
@@ -146,6 +312,10 @@ export interface TerminalCandle {
 export const TERMINAL_CHART_INTERVALS = ["1m", "5m", "15m", "1h", "4h"] as const;
 export type TerminalChartInterval = (typeof TERMINAL_CHART_INTERVALS)[number];
 
+export const TERMINAL_MARKET_STALE_MS = 60_000;
+export const TERMINAL_CANDLES_STALE_MS = 120_000;
+export const TERMINAL_ACCOUNT_STALE_MS = 120_000;
+
 export interface TerminalCandlesWireResponse {
   symbol: string;
   interval: TerminalChartInterval;
@@ -162,6 +332,208 @@ export interface TerminalChartData {
   fetchedAt: number;
   isFallback: boolean;
   error?: string;
+}
+
+export type TerminalFreshnessState = "fresh" | "warming" | "degraded" | "apiUnavailable";
+export type TerminalAccountFreshnessState = "fresh" | "stale" | "unavailable";
+
+export interface TerminalFreshnessInput {
+  now?: number;
+  marketAsOf: number;
+  marketDataAgeSeconds?: number;
+  candlesFetchedAt?: number;
+  candlesFallback?: boolean;
+  candlesError?: string;
+  accountUpdatedAt?: number;
+  accountUnavailable?: boolean;
+  isLoadingMarket?: boolean;
+  isLoadingCandles?: boolean;
+  apiStatus: "checking" | "ok" | "unavailable";
+}
+
+export interface TerminalFreshness {
+  state: TerminalFreshnessState;
+  label: string;
+  detail: string;
+  isDraftSafe: boolean;
+  marketAgeSeconds: number;
+  candleAgeSeconds?: number;
+  accountAgeSeconds?: number;
+  marketFreshness: {
+    state: TerminalFreshnessState;
+    label: string;
+    detail: string;
+    isDraftSafe: boolean;
+    marketAgeSeconds: number;
+    candleAgeSeconds?: number;
+  };
+  accountFreshness: {
+    state: TerminalAccountFreshnessState;
+    label: string;
+    detail: string;
+    warning?: string;
+    accountAgeSeconds?: number;
+  };
+}
+
+export function getTerminalFreshness(input: TerminalFreshnessInput): TerminalFreshness {
+  const now = input.now ?? Date.now();
+  const marketAgeSeconds = Math.max(
+    0,
+    input.marketDataAgeSeconds ?? Math.floor((now - input.marketAsOf) / 1000),
+  );
+  const candleAgeSeconds = input.candlesFetchedAt == null
+    ? undefined
+    : Math.max(0, Math.floor((now - input.candlesFetchedAt) / 1000));
+  const accountAgeSeconds = input.accountUpdatedAt == null
+    ? undefined
+    : Math.max(0, Math.floor((now - input.accountUpdatedAt) / 1000));
+  const accountFreshness = getTerminalAccountFreshness({
+    accountAgeSeconds,
+    accountUnavailable: input.accountUnavailable,
+  });
+
+  if (input.apiStatus === "unavailable") {
+    return combineTerminalFreshness({
+      state: "apiUnavailable",
+      label: "API unavailable",
+      detail: "API unavailable",
+      isDraftSafe: false,
+      marketAgeSeconds,
+      candleAgeSeconds,
+      accountFreshness,
+    });
+  }
+
+  if (input.apiStatus === "checking" || input.isLoadingMarket || input.isLoadingCandles || input.candlesFetchedAt == null) {
+    return combineTerminalFreshness({
+      state: "warming",
+      label: "Refreshing...",
+      detail: "Refreshing market data",
+      isDraftSafe: false,
+      marketAgeSeconds,
+      candleAgeSeconds,
+      accountFreshness,
+    });
+  }
+
+  if (input.candlesFallback || input.candlesError) {
+    return combineTerminalFreshness({
+      state: "degraded",
+      label: "Candles stale",
+      detail: input.candlesError ?? "Candle data is using a degraded fallback",
+      isDraftSafe: false,
+      marketAgeSeconds,
+      candleAgeSeconds,
+      accountFreshness,
+    });
+  }
+
+  if (marketAgeSeconds * 1000 > TERMINAL_MARKET_STALE_MS) {
+    return combineTerminalFreshness({
+      state: "degraded",
+      label: "Market data stale",
+      detail: `Market data is ${formatFreshnessAge(marketAgeSeconds)} old`,
+      isDraftSafe: false,
+      marketAgeSeconds,
+      candleAgeSeconds,
+      accountFreshness,
+    });
+  }
+
+  if (candleAgeSeconds != null && candleAgeSeconds * 1000 > TERMINAL_CANDLES_STALE_MS) {
+    return combineTerminalFreshness({
+      state: "degraded",
+      label: "Candles stale",
+      detail: `Candle data is ${formatFreshnessAge(candleAgeSeconds)} old`,
+      isDraftSafe: false,
+      marketAgeSeconds,
+      candleAgeSeconds,
+      accountFreshness,
+    });
+  }
+
+  return combineTerminalFreshness({
+    state: "fresh",
+    label: "Live market data",
+    detail: "Live market data is fresh",
+    isDraftSafe: true,
+    marketAgeSeconds,
+    candleAgeSeconds,
+    accountFreshness,
+  });
+}
+
+function getTerminalAccountFreshness({
+  accountAgeSeconds,
+  accountUnavailable,
+}: {
+  accountAgeSeconds?: number;
+  accountUnavailable?: boolean;
+}): TerminalFreshness["accountFreshness"] {
+  if (accountUnavailable) {
+    return {
+      state: "unavailable",
+      label: "Account unavailable",
+      detail: "Read-only account data is unavailable; paper mode remains available.",
+      warning: "Portfolio impact uses the last paper/account snapshot.",
+      accountAgeSeconds,
+    };
+  }
+
+  if (accountAgeSeconds != null && accountAgeSeconds * 1000 > TERMINAL_ACCOUNT_STALE_MS) {
+    return {
+      state: "stale",
+      label: "Account values may be stale",
+      detail: `Portfolio impact uses account values from ${formatFreshnessAge(accountAgeSeconds)} ago.`,
+      warning: "Portfolio impact may use stale account values.",
+      accountAgeSeconds,
+    };
+  }
+
+  return {
+    state: "fresh",
+    label: "Account values current",
+    detail: "Paper/account values are current.",
+    accountAgeSeconds,
+  };
+}
+
+function combineTerminalFreshness(input: {
+  state: TerminalFreshnessState;
+  label: string;
+  detail: string;
+  isDraftSafe: boolean;
+  marketAgeSeconds: number;
+  candleAgeSeconds?: number;
+  accountFreshness: TerminalFreshness["accountFreshness"];
+}): TerminalFreshness {
+  return {
+    state: input.state,
+    label: input.label,
+    detail: input.detail,
+    isDraftSafe: input.isDraftSafe,
+    marketAgeSeconds: input.marketAgeSeconds,
+    candleAgeSeconds: input.candleAgeSeconds,
+    accountAgeSeconds: input.accountFreshness.accountAgeSeconds,
+    marketFreshness: {
+      state: input.state,
+      label: input.label,
+      detail: input.detail,
+      isDraftSafe: input.isDraftSafe,
+      marketAgeSeconds: input.marketAgeSeconds,
+      candleAgeSeconds: input.candleAgeSeconds,
+    },
+    accountFreshness: input.accountFreshness,
+  };
+}
+
+export function formatFreshnessAge(ageSeconds: number): string {
+  if (ageSeconds < 60) {
+    return `${ageSeconds}s`;
+  }
+  const minutes = Math.floor(ageSeconds / 60);
+  return `${minutes}m`;
 }
 
 export function buildSyntheticTerminalCandles(market: MarketSnapshot, count = 72, interval: TerminalChartInterval = "15m"): TerminalCandle[] {

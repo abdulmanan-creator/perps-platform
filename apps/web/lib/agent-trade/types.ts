@@ -96,6 +96,7 @@ export interface AccountSnapshot {
   sourceLabel?: string;
   liveAccountDataLoaded?: boolean;
   liveAccountDataUnavailable?: boolean;
+  updatedAt?: number;
   equityUsd: number;
   availableUsd: number;
   marginUsedUsd: number;

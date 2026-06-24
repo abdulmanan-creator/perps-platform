@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { hexToSignature } from "viem";
 import type { Time } from "lightweight-charts";
@@ -17,7 +17,7 @@ import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
-import { normalizeSymbol } from "@/lib/agent-trade/markets";
+import { loadMarketDiscoverySnapshot, normalizeSymbol } from "@/lib/agent-trade/markets";
 import { buildHlOrderAction } from "@/lib/agent-trade/orders";
 import { paperSessionHeaders } from "@/lib/agent-trade/paper";
 import {
@@ -34,13 +34,16 @@ import {
   buildFallbackTerminalChartData,
   getConfirmationAckCopy,
   getLiveDisabledReason,
+  getTerminalFreshness,
   getTerminalEligibilityStatus,
   getTicketSource,
   paperOrderEndpoint,
   paperOrderFailureMessage,
+  resolveTypedPromptMarket,
   terminalChartLabel,
   TERMINAL_CHART_INTERVALS,
   type TerminalChartData,
+  type TerminalFreshness,
   type TerminalChartInterval,
 } from "@/lib/agent-trade/terminal";
 import type {
@@ -123,7 +126,31 @@ function useTerminalWalletSummary(): WalletReadinessSummary {
   return { status: "not-connected" };
 }
 
+function buildUnsupportedPromptMarketResponse(
+  prompt: string,
+  mentionedSymbol: string,
+  snapshot: SharedTradingSnapshot,
+): AgentResponse {
+  return {
+    id: `unsupported-${mentionedSymbol.toLowerCase()}-typed-market`,
+    state: "noTrade",
+    question: prompt,
+    thesis:
+      `${mentionedSymbol} is not available in the supported Hyperliquid market list for this terminal session. ` +
+      `I am staying on ${snapshot.market.symbol} and will not draft an order for an unsupported symbol.`,
+    receipts: [
+      { label: "Requested market", value: mentionedSymbol, timestamp: snapshot.asOf },
+      { label: "Active market", value: snapshot.market.symbol, timestamp: snapshot.asOf },
+    ],
+    riskNote: "No ticket draft was created. Open Markets or ask about the currently selected market.",
+    whyWrong: "Ticker symbols can be ambiguous; Agent.trade only drafts against markets resolved from the shared market metadata.",
+    annotations: [],
+    followUps: [`Should I long ${snapshot.market.base}?`, `Should I short ${snapshot.market.base}?`, "Open Markets"],
+  };
+}
+
 function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSymbol = normalizeSymbol(searchParams.get("symbol"));
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
@@ -137,7 +164,7 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     dailyNotionalCapUsd: 1000,
   });
   const [mode, setMode] = useState<"paper" | "live">("paper");
-  const [isStale, setIsStale] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState<OrderDraft>(() => buildDefaultDraft(MOCK_TRADING_SNAPSHOT));
   const [agent, setAgent] = useState<AgentResponse | undefined>();
   const [agentQuestion, setAgentQuestion] = useState<string | undefined>();
@@ -151,6 +178,15 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   const [apiStatus, setApiStatus] = useState<"checking" | "ok" | "unavailable">("checking");
   const [marketNotice, setMarketNotice] = useState<string | undefined>();
   const [bottomTab, setBottomTab] = useState<"positions" | "orders" | "fills">("positions");
+  const [chartData, setChartData] = useState<TerminalChartData>(() =>
+    buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "Waiting for Hyperliquid candles."),
+  );
+  const [isLoadingCandles, setIsLoadingCandles] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,7 +259,33 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     entryPrice,
     leverage: draft.leverage,
   });
-  const canLiveTrade = mode === "live" && eligibility.state === "liveEligible" && !isStale;
+  const freshness = useMemo(
+    () => getTerminalFreshness({
+      now,
+      marketAsOf: snapshot.asOf,
+      candlesFetchedAt: chartData.fetchedAt,
+      candlesFallback: chartData.isFallback,
+      candlesError: chartData.error,
+      accountUpdatedAt: snapshot.account.updatedAt,
+      accountUnavailable: snapshot.account.liveAccountDataUnavailable,
+      isLoadingMarket: isLoadingData,
+      isLoadingCandles,
+      apiStatus,
+    }),
+    [
+      apiStatus,
+      chartData.error,
+      chartData.fetchedAt,
+      chartData.isFallback,
+      isLoadingCandles,
+      isLoadingData,
+      now,
+      snapshot.account.liveAccountDataUnavailable,
+      snapshot.account.updatedAt,
+      snapshot.asOf,
+    ],
+  );
+  const canLiveTrade = mode === "live" && eligibility.state === "liveEligible" && freshness.isDraftSafe;
   const eligibilityStatus = getTerminalEligibilityStatus(eligibility.state);
   const draftImpact = useMemo(
     () => calculateDraftImpact({ account: snapshot.account, market: snapshot.market, draft, entryPrice }),
@@ -255,13 +317,12 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     setAnnotations([]);
     const response = await agentService.run({
       scenario,
-      snapshot: isStale
-        ? {
-            ...snapshot,
-            market: { ...snapshot.market, dataAgeSeconds: 46 },
-          }
-        : snapshot,
-      isStale,
+      snapshot: {
+        ...snapshot,
+        market: { ...snapshot.market, dataAgeSeconds: freshness.marketAgeSeconds },
+      },
+      isStale: !freshness.isDraftSafe,
+      accountFreshnessWarning: freshness.accountFreshness.warning,
       mode,
     });
     setAgent(response);
@@ -280,15 +341,89 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     setAgent(undefined);
     setAgentQuestion(trimmed);
     setAnnotations([]);
+    setMarketNotice(undefined);
+    let agentSnapshot = snapshot;
+    let agentFreshness = freshness;
+
+    try {
+      const discovery = await loadMarketDiscoverySnapshot();
+      const promptMarket = resolveTypedPromptMarket({
+        prompt: trimmed,
+        currentSymbol: snapshot.market.symbol,
+        supportedSymbols: discovery.markets.map((market) => market.symbol),
+      });
+
+      if (promptMarket.unsupported && promptMarket.mentionedSymbol) {
+        setAgent(buildUnsupportedPromptMarketResponse(trimmed, promptMarket.mentionedSymbol, snapshot));
+        setAnnotations([]);
+        setIsThinking(false);
+        return;
+      }
+
+      if (promptMarket.resolvedSymbol && !promptMarket.isCurrentMarket) {
+        setIsLoadingData(true);
+        const result = await loadTradingSnapshot(promptMarket.resolvedSymbol, {
+          accountAddress: wallet.status === "connected" ? wallet.address : undefined,
+        });
+        if (result.usedFallback || normalizeSymbol(result.resolvedSymbol) !== promptMarket.resolvedSymbol) {
+          setAgent(buildUnsupportedPromptMarketResponse(trimmed, promptMarket.resolvedSymbol, snapshot));
+          setAnnotations([]);
+          setIsLoadingData(false);
+          setIsThinking(false);
+          return;
+        }
+
+        const nextSnapshot = result.snapshot;
+        setIsLoadingCandles(true);
+        const nextChartData = await loadTerminalCandles(nextSnapshot.market, chartData.interval);
+        const nextNow = Date.now();
+        agentSnapshot = nextSnapshot;
+        agentFreshness = getTerminalFreshness({
+          now: nextNow,
+          marketAsOf: nextSnapshot.asOf,
+          candlesFetchedAt: nextChartData.fetchedAt,
+          candlesFallback: nextChartData.isFallback,
+          candlesError: nextChartData.error,
+          accountUpdatedAt: nextSnapshot.account.updatedAt,
+          accountUnavailable: nextSnapshot.account.liveAccountDataUnavailable,
+          apiStatus: "ok",
+        });
+
+        setNow(nextNow);
+        setSnapshot(nextSnapshot);
+        setChartData(nextChartData);
+        setDraft(buildDefaultDraft(nextSnapshot));
+        setApiStatus("ok");
+        setIsLoadingData(false);
+        setIsLoadingCandles(false);
+        router.replace(`/terminal?symbol=${encodeURIComponent(result.resolvedSymbol)}`, { scroll: false });
+      }
+    } catch {
+      const mentionedSymbol = resolveTypedPromptMarket({
+        prompt: trimmed,
+        currentSymbol: snapshot.market.symbol,
+        supportedSymbols: [snapshot.market.base],
+      }).mentionedSymbol;
+      if (mentionedSymbol) {
+        setAgent(buildUnsupportedPromptMarketResponse(trimmed, mentionedSymbol, snapshot));
+        setAnnotations([]);
+        setIsLoadingData(false);
+        setIsLoadingCandles(false);
+        setIsThinking(false);
+        return;
+      }
+      setIsLoadingData(false);
+      setIsLoadingCandles(false);
+    }
+
     const response = await agentService.runPrompt({
       prompt: trimmed,
-      snapshot: isStale
-        ? {
-            ...snapshot,
-            market: { ...snapshot.market, dataAgeSeconds: 46 },
-          }
-        : snapshot,
-      isStale,
+      snapshot: {
+        ...agentSnapshot,
+        market: { ...agentSnapshot.market, dataAgeSeconds: agentFreshness.marketAgeSeconds },
+      },
+      isStale: !agentFreshness.isDraftSafe,
+      accountFreshnessWarning: agentFreshness.accountFreshness.warning,
       mode,
     });
     setAgent(response);
@@ -430,8 +565,7 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
           mode={mode}
           setMode={setMode}
           apiStatus={apiStatus}
-          isStale={isStale}
-          setIsStale={setIsStale}
+          freshness={freshness}
           isLoadingData={isLoadingData}
           marketNotice={marketNotice}
           accountReadiness={accountReadiness}
@@ -446,7 +580,14 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
 
         <section className="terminal-grid">
           <div className="terminal-chart-stack">
-            <ChartPanel snapshot={snapshot} annotations={annotations} />
+            <ChartPanel
+              snapshot={snapshot}
+              annotations={annotations}
+              chartData={chartData}
+              setChartData={setChartData}
+              isLoadingCandles={isLoadingCandles}
+              setIsLoadingCandles={setIsLoadingCandles}
+            />
             <BottomPanel
               snapshot={snapshot}
               bottomTab={bottomTab}
@@ -498,7 +639,7 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
               runAgent={runAgent}
               runTypedAgent={runTypedAgent}
               sendToTicket={sendToTicket}
-              isStale={isStale}
+              freshness={freshness}
             />
           </div>
         </section>
@@ -570,8 +711,7 @@ function TerminalMarketHeader({
   mode,
   setMode,
   apiStatus,
-  isStale,
-  setIsStale,
+  freshness,
   isLoadingData,
   marketNotice,
   accountReadiness,
@@ -582,8 +722,7 @@ function TerminalMarketHeader({
   mode: "paper" | "live";
   setMode: (mode: "paper" | "live") => void;
   apiStatus: "checking" | "ok" | "unavailable";
-  isStale: boolean;
-  setIsStale: (updater: (value: boolean) => boolean) => void;
+  freshness: TerminalFreshness;
   isLoadingData: boolean;
   marketNotice: string | undefined;
   accountReadiness: AccountReadinessDisplay;
@@ -639,9 +778,17 @@ function TerminalMarketHeader({
         ))}
       </div>
       <div className="terminal-header-actions">
-        <button className={isStale ? "state-pill stale" : "state-pill live"} onClick={() => setIsStale((value) => !value)}>
-          {isStale ? "Stale data: 46s" : `${snapshot.market.dataAgeSeconds}s fresh`}
-        </button>
+        <span
+          className={freshness.marketFreshness.state === "fresh" ? "state-pill live" : "state-pill stale"}
+          title={freshness.marketFreshness.detail}
+        >
+          {freshness.label}
+        </span>
+        {freshness.accountFreshness.warning ? (
+          <span className="state-pill account-warning" title={freshness.accountFreshness.detail}>
+            Account values may be stale
+          </span>
+        ) : null}
         <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
         <span className={`terminal-eligibility-pill ${eligibilityStatus.tone}`}>
           {apiStatus === "unavailable" ? "API unavailable" : accountReadiness.summary}
@@ -756,16 +903,20 @@ function StatsStrip({ snapshot, isLoading }: { snapshot: SharedTradingSnapshot; 
 function ChartPanel({
   snapshot,
   annotations,
+  chartData,
+  setChartData,
+  isLoadingCandles,
+  setIsLoadingCandles,
 }: {
   snapshot: SharedTradingSnapshot;
   annotations: ChartAnnotation[];
+  chartData: TerminalChartData;
+  setChartData: (data: TerminalChartData) => void;
+  isLoadingCandles: boolean;
+  setIsLoadingCandles: (value: boolean) => void;
 }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
   const [interval, setInterval] = useState<TerminalChartInterval>("15m");
-  const [chartData, setChartData] = useState<TerminalChartData>(() =>
-    buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "Waiting for Hyperliquid candles."),
-  );
-  const [isLoadingCandles, setIsLoadingCandles] = useState(false);
   const candles = chartData.candles;
 
   useEffect(() => {
@@ -1135,7 +1286,7 @@ function AgentPanel(props: {
   runAgent: (scenario: AgentScenario) => void;
   runTypedAgent: (prompt: string) => void;
   sendToTicket: (draft: OrderDraft) => void;
-  isStale: boolean;
+  freshness: TerminalFreshness;
 }) {
   const [prompt, setPrompt] = useState("");
 
@@ -1153,11 +1304,12 @@ function AgentPanel(props: {
       <div className="panel-head">
         <div>
           <span>{AGENT_PANEL_HEADING}</span>
-          <strong>{props.isStale ? "Stale-data guard active" : "Agent market read"}</strong>
+          <strong>{props.freshness.isDraftSafe ? "Agent market read" : "Drafting paused for market refresh"}</strong>
         </div>
       </div>
       <div className="prompt-chips">
         <button onClick={() => props.runAgent("long")}>Should I long {props.base}?</button>
+        <button onClick={() => props.runAgent("short")}>Should I short {props.base}?</button>
         <button onClick={() => props.runAgent("explain")}>Explain funding + OI</button>
         <button onClick={() => props.runAgent("noTrade")}>Find cleaner setup</button>
       </div>
