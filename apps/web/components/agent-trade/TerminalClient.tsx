@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { hexToSignature } from "viem";
+import type { Time } from "lightweight-charts";
 
 import { API_BASE_URL } from "@/lib/api";
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
@@ -22,8 +24,12 @@ import {
 import {
   AGENT_PANEL_HEADING,
   applyManualDraftPatch,
+  annotationPriceLineTitle,
+  buildSyntheticTerminalCandles,
   getConfirmationAckCopy,
+  getLiveDisabledReason,
   getTerminalEligibilityStatus,
+  getTerminalHeaderStatusText,
   getTicketSource,
   paperOrderEndpoint,
   paperOrderFailureMessage,
@@ -359,91 +365,86 @@ export function TerminalClient() {
   }
 
   return (
-    <main className="terminal-page">
-      <section className="terminal-head">
-        <div>
-          <p className="at-kicker">Hyperliquid terminal</p>
-          <h1>{snapshot.market.symbol}</h1>
-          <div className="terminal-market-line">
-            <strong>{fmtUsd(snapshot.market.markPrice, 1)}</strong>
-            <span className={snapshot.market.change24hPct >= 0 ? "pos" : "neg"}>
-              {fmtPct(snapshot.market.change24hPct, 2)} ({fmtUsd(snapshot.market.change24hAbs, 1)})
-            </span>
-            <span>{snapshot.market.venue}</span>
-          </div>
-          {marketNotice ? <p className="market-notice">{marketNotice}</p> : null}
-        </div>
-        <div className="terminal-state-row">
-          <button className={isStale ? "state-pill stale" : "state-pill live"} onClick={() => setIsStale((value) => !value)}>
-            {isStale ? "Stale data: 46s" : `${snapshot.market.source === "live-mainnet" ? "Live mainnet read" : "Mock snapshot"}: ${snapshot.market.dataAgeSeconds}s`}
-          </button>
-          <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
-        </div>
-      </section>
-      {eligibilityStatus.visible || apiStatus !== "ok" ? (
-        <TerminalStatusBanner
+    <div className="terminal-shell">
+      <TerminalRail />
+      <main className="terminal-workspace">
+        <TerminalMarketHeader
+          snapshot={snapshot}
+          eligibility={eligibility}
           eligibilityStatus={eligibilityStatus}
+          mode={mode}
+          setMode={setMode}
           apiStatus={apiStatus}
-          apiBaseUrl={API_BASE_URL}
+          isStale={isStale}
+          setIsStale={setIsStale}
+          isLoadingData={isLoadingData}
+          marketNotice={marketNotice}
         />
-      ) : null}
-
-      <section className="terminal-grid">
-        <div className="terminal-left">
-          <StatsStrip snapshot={snapshot} isLoading={isLoadingData} />
-          <ChartPanel snapshot={snapshot} annotations={annotations} />
-          <BottomPanel
-            snapshot={snapshot}
-            bottomTab={bottomTab}
-            setBottomTab={setBottomTab}
-          />
-        </div>
-        <div className="terminal-mid">
-          <BookPanel snapshot={snapshot} maxBookSize={maxBookSize} />
-          <TradesPanel snapshot={snapshot} />
-        </div>
-        <div className="terminal-right">
-          <AgentPanel
-            base={snapshot.market.base}
-            agent={agent}
-            agentQuestion={agentQuestion}
-            isThinking={isThinking}
-            runAgent={runAgent}
-            runTypedAgent={runTypedAgent}
-            sendToTicket={sendToTicket}
-            isStale={isStale}
-          />
-          <TicketPanel
-            base={snapshot.market.base}
-            symbol={snapshot.market.symbol}
-            szDecimals={snapshot.market.szDecimals}
-            maxLeverage={Math.min(10, snapshot.market.maxLeverage)}
-            draft={draft}
-            updateDraft={updateDraft}
-            entryPrice={entryPrice}
-            notional={notional}
-            marginRequired={marginRequired}
-            fees={fees}
-            liquidation={liquidation}
-            canLiveTrade={canLiveTrade}
-            mode={mode}
-            eligibility={eligibility}
+        {apiStatus !== "ok" ? (
+          <TerminalStatusBanner
+            eligibilityStatus={eligibilityStatus}
             apiStatus={apiStatus}
-            simulatedBalanceUsd={snapshot.account.simulatedBalanceUsd}
-            openModal={() => {
-              setIsAcked(false);
-              setModalError(undefined);
-              setModalOpen(true);
-            }}
+            apiBaseUrl={API_BASE_URL}
           />
-          <ImpactPanel
-            base={snapshot.market.base}
-            impact={draftImpact}
-            exposureLabels={portfolioRiskLabels}
-          />
-          {submitState ? <div className="submit-state">{submitState}</div> : null}
-        </div>
-      </section>
+        ) : null}
+
+        <section className="terminal-grid">
+          <div className="terminal-chart-stack">
+            <ChartPanel snapshot={snapshot} annotations={annotations} />
+            <BottomPanel
+              snapshot={snapshot}
+              bottomTab={bottomTab}
+              setBottomTab={setBottomTab}
+            />
+          </div>
+          <div className="terminal-book-stack">
+            <BookPanel snapshot={snapshot} maxBookSize={maxBookSize} />
+            <TradesPanel snapshot={snapshot} />
+          </div>
+          <div className="terminal-ticket-stack">
+            <TicketPanel
+              base={snapshot.market.base}
+              symbol={snapshot.market.symbol}
+              szDecimals={snapshot.market.szDecimals}
+              maxLeverage={Math.min(10, snapshot.market.maxLeverage)}
+              draft={draft}
+              updateDraft={updateDraft}
+              entryPrice={entryPrice}
+              notional={notional}
+              marginRequired={marginRequired}
+              fees={fees}
+              liquidation={liquidation}
+              canLiveTrade={canLiveTrade}
+              mode={mode}
+              eligibility={eligibility}
+              apiStatus={apiStatus}
+              simulatedBalanceUsd={snapshot.account.simulatedBalanceUsd}
+              openModal={() => {
+                setIsAcked(false);
+                setModalError(undefined);
+                setModalOpen(true);
+              }}
+            />
+            <ImpactPanel
+              base={snapshot.market.base}
+              impact={draftImpact}
+              exposureLabels={portfolioRiskLabels}
+            />
+            {submitState ? <div className="submit-state">{submitState}</div> : null}
+          </div>
+          <div className="terminal-agent-stack">
+            <AgentPanel
+              base={snapshot.market.base}
+              agent={agent}
+              agentQuestion={agentQuestion}
+              isThinking={isThinking}
+              runAgent={runAgent}
+              runTypedAgent={runTypedAgent}
+              sendToTicket={sendToTicket}
+              isStale={isStale}
+            />
+          </div>
+        </section>
 
       {modalOpen ? (
         <ConfirmModal
@@ -469,7 +470,118 @@ export function TerminalClient() {
           isConfirming={isConfirming}
         />
       ) : null}
-    </main>
+      </main>
+    </div>
+  );
+}
+
+function TerminalRail() {
+  const items = [
+    { href: "/terminal", label: "Terminal", active: true },
+    { href: "/markets", label: "Markets" },
+    { href: "/portfolio", label: "Portfolio" },
+    { href: "/rewards", label: "Strategy Builder" },
+    { href: "/settings", label: "Settings" },
+  ];
+
+  return (
+    <aside className="terminal-rail" aria-label="Agent.trade terminal navigation">
+      <Link href="/" className="terminal-rail-brand">
+        <span>AT</span>
+        <strong>Agent.trade</strong>
+      </Link>
+      <nav>
+        {items.map((item) => (
+          <Link key={item.label} href={item.href} className={item.active ? "active" : ""}>
+            {item.label}
+          </Link>
+        ))}
+      </nav>
+      <div className="terminal-rail-note">
+        <span>Execution</span>
+        <strong>Testnet default</strong>
+        <p>Mainnet execution remains disabled unless explicitly enabled and allowlisted.</p>
+      </div>
+    </aside>
+  );
+}
+
+function TerminalMarketHeader({
+  snapshot,
+  eligibility,
+  eligibilityStatus,
+  mode,
+  setMode,
+  apiStatus,
+  isStale,
+  setIsStale,
+  isLoadingData,
+  marketNotice,
+}: {
+  snapshot: SharedTradingSnapshot;
+  eligibility: EligibilityResponse;
+  eligibilityStatus: ReturnType<typeof getTerminalEligibilityStatus>;
+  mode: "paper" | "live";
+  setMode: (mode: "paper" | "live") => void;
+  apiStatus: "checking" | "ok" | "unavailable";
+  isStale: boolean;
+  setIsStale: (updater: (value: boolean) => boolean) => void;
+  isLoadingData: boolean;
+  marketNotice: string | undefined;
+}) {
+  const marketStats = [
+    ["Mark", fmtUsd(snapshot.market.markPrice, 1)],
+    ["Oracle", fmtUsd(snapshot.market.oraclePrice, 1)],
+    ["24h", `${fmtPct(snapshot.market.change24hPct, 2)} ${fmtUsd(snapshot.market.change24hAbs, 1)}`],
+    ["Volume", fmtCompactUsd(snapshot.market.volume24hUsd)],
+    ["Open interest", fmtCompactUsd(snapshot.market.openInterestUsd)],
+    ["OI 24h", snapshot.market.openInterestChangePct === null ? "--" : fmtPct(snapshot.market.openInterestChangePct, 1)],
+    ["Funding", fmtPct(snapshot.market.fundingRatePct, 4)],
+    ["Next", `${snapshot.market.nextFundingMinutes}m`],
+  ];
+  const accountStats = [
+    ["Equity", fmtUsd(snapshot.account.equityUsd, 2)],
+    ["Available", fmtUsd(snapshot.account.availableUsd, 2)],
+    ["Unrealized", fmtUsd(snapshot.account.unrealizedPnlUsd, 2)],
+  ];
+
+  return (
+    <header className="terminal-market-header">
+      <div className="terminal-pair-block">
+        <span className="terminal-venue">{snapshot.market.venue}</span>
+        <h1>{snapshot.market.symbol}</h1>
+        <div className="terminal-pair-subline">
+          <span className={snapshot.market.change24hPct >= 0 ? "pos" : "neg"}>{fmtPct(snapshot.market.change24hPct, 2)} 24h</span>
+          <span>{snapshot.market.source === "live-mainnet" ? "Mainnet read-only market data" : "Deterministic market snapshot"}</span>
+        </div>
+        {marketNotice ? <p className="market-notice">{marketNotice}</p> : null}
+      </div>
+      <div className="terminal-header-stats" aria-label="Market stats">
+        {marketStats.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{isLoadingData ? "..." : value}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="terminal-account-strip" aria-label="Account state">
+        {accountStats.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong className={label === "Unrealized" && snapshot.account.unrealizedPnlUsd < 0 ? "neg" : ""}>{value}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="terminal-header-actions">
+        <button className={isStale ? "state-pill stale" : "state-pill live"} onClick={() => setIsStale((value) => !value)}>
+          {isStale ? "Stale data: 46s" : `${snapshot.market.dataAgeSeconds}s fresh`}
+        </button>
+        <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
+        <span className={`terminal-eligibility-pill ${eligibilityStatus.tone}`}>
+          {apiStatus === "unavailable" ? "API unavailable" : getTerminalHeaderStatusText(eligibility.state, mode)}
+        </span>
+      </div>
+    </header>
   );
 }
 
@@ -492,11 +604,10 @@ function ModeControl({
         className={mode === "live" ? "active" : ""}
         disabled={liveDisabled}
         onClick={() => setMode("live")}
-        title={liveDisabled ? `Live blocked: ${eligibility.state}` : "Live eligible"}
+        title={liveDisabled ? getLiveDisabledReason(eligibility.state) : "Live eligible"}
       >
         Live
       </button>
-      <span>{eligibility.state}</span>
     </div>
   );
 }
@@ -564,38 +675,114 @@ function ChartPanel({
   snapshot: SharedTradingSnapshot;
   annotations: ChartAnnotation[];
 }) {
-  const mark = snapshot.market.markPrice;
-  const prices = [
-    mark * 0.982,
-    mark * 0.988,
-    mark * 0.984,
-    mark * 0.996,
-    mark * 0.992,
-    mark * 1.004,
-    mark * 1.009,
-    mark * 1.001,
-    mark * 1.015,
-    mark * 1.011,
-    mark * 1.022,
-    mark * 1.018,
-  ];
-  const allPrices = [...prices, ...annotations.map((a) => a.price)];
-  const min = Math.min(...allPrices) * 0.998;
-  const max = Math.max(...allPrices) * 1.002;
-  const points = prices
-    .map((price, index) => {
-      const x = 24 + index * 62;
-      const y = 260 - ((price - min) / (max - min)) * 210;
-      return `${x},${y}`;
-    })
-    .join(" ");
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const candles = useMemo(() => buildSyntheticTerminalCandles(snapshot.market), [snapshot.market]);
+
+  useEffect(() => {
+    let disposed = false;
+    let cleanup = () => {};
+
+    async function renderChart() {
+      const container = chartRef.current;
+      if (!container) {
+        return;
+      }
+      const { createChart, CrosshairMode } = await import("lightweight-charts");
+      if (disposed || !chartRef.current) {
+        return;
+      }
+
+      const chart = createChart(container, {
+        width: container.clientWidth,
+        height: container.clientHeight,
+        autoSize: true,
+        layout: {
+          background: { color: "#070a12" },
+          textColor: "#8f9bb7",
+          fontFamily: "Inter, system-ui, sans-serif",
+          attributionLogo: false,
+        },
+        grid: {
+          vertLines: { color: "rgba(255,255,255,0.045)" },
+          horzLines: { color: "rgba(255,255,255,0.06)" },
+        },
+        crosshair: {
+          mode: CrosshairMode.Normal,
+          vertLine: { color: "rgba(180,190,255,0.35)", labelBackgroundColor: "#1c2440" },
+          horzLine: { color: "rgba(180,190,255,0.35)", labelBackgroundColor: "#1c2440" },
+        },
+        rightPriceScale: {
+          borderColor: "rgba(255,255,255,0.08)",
+          scaleMargins: { top: 0.08, bottom: 0.24 },
+        },
+        timeScale: {
+          borderColor: "rgba(255,255,255,0.08)",
+          timeVisible: true,
+          secondsVisible: false,
+        },
+      });
+
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: "#27d6aa",
+        downColor: "#ff5c6c",
+        borderUpColor: "#27d6aa",
+        borderDownColor: "#ff5c6c",
+        wickUpColor: "#27d6aa",
+        wickDownColor: "#ff5c6c",
+      });
+      candleSeries.setData(
+        candles.map((candle) => ({
+          time: candle.time as Time,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        })),
+      );
+      annotations.forEach((annotation) => {
+        candleSeries.createPriceLine({
+          price: annotation.price,
+          color: annotationToneColor(annotation.tone),
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: annotationPriceLineTitle(annotation),
+        });
+      });
+
+      const volumeSeries = chart.addHistogramSeries({
+        color: "rgba(91,99,255,0.32)",
+        priceFormat: { type: "volume" },
+        priceScaleId: "",
+      });
+      volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.78, bottom: 0 },
+      });
+      volumeSeries.setData(
+        candles.map((candle) => ({
+          time: candle.time as Time,
+          value: candle.volume,
+          color: candle.close >= candle.open ? "rgba(39,214,170,0.24)" : "rgba(255,92,108,0.24)",
+        })),
+      );
+
+      chart.timeScale().fitContent();
+      cleanup = () => chart.remove();
+    }
+
+    void renderChart();
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [annotations, candles]);
 
   return (
     <div className="panel chart-panel">
       <div className="panel-head">
         <div>
           <span>{snapshot.market.base} perpetual</span>
-          <strong>Agent annotated chart</strong>
+          <strong>15m synthetic candles</strong>
         </div>
         <div className="timeframes">
           {["1m", "5m", "15m", "1h", "4h"].map((tf) => (
@@ -603,32 +790,27 @@ function ChartPanel({
           ))}
         </div>
       </div>
-      <svg className="chart-svg" viewBox="0 0 760 300" role="img" aria-label={`${snapshot.market.base} chart with agent annotations`}>
-        <defs>
-          <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="rgba(39, 214, 170, 0.28)" />
-            <stop offset="100%" stopColor="rgba(39, 214, 170, 0)" />
-          </linearGradient>
-        </defs>
-        {[0, 1, 2, 3].map((line) => (
-          <line key={line} x1="20" x2="735" y1={60 + line * 55} y2={60 + line * 55} className="chart-grid-line" />
-        ))}
-        <polyline points={`24,275 ${points} 706,250`} fill="url(#chartFill)" stroke="none" />
-        <polyline points={points} fill="none" className="chart-line" />
-        {annotations.map((annotation) => {
-          const y = 260 - ((annotation.price - min) / (max - min)) * 210;
-          return (
-            <g key={annotation.id}>
-              <line x1="24" x2="725" y1={y} y2={y} className={`annotation-line ${annotation.tone}`} />
-              <text x="575" y={y - 7} className={`annotation-label ${annotation.tone}`}>
-                {annotation.label} {fmtUsd(annotation.price, 0)}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
+      <div className="chart-canvas" ref={chartRef} role="img" aria-label={`${snapshot.market.base} candlestick chart with agent annotations`} />
+      <div className="chart-disclaimer">
+        <span>Visual OHLC is deterministic from the current market snapshot.</span>
+        {annotations.length > 0 ? <strong>{annotations.length} agent annotation{annotations.length === 1 ? "" : "s"}</strong> : null}
+      </div>
     </div>
   );
+}
+
+function annotationToneColor(tone: ChartAnnotation["tone"]): string {
+  switch (tone) {
+    case "green":
+      return "#27d6aa";
+    case "red":
+      return "#ff5c6c";
+    case "amber":
+      return "#f0a23a";
+    case "blue":
+    default:
+      return "#5b63ff";
+  }
 }
 
 function BookPanel({
@@ -703,8 +885,8 @@ function TicketPanel(props: {
 }) {
   const blocked = props.mode === "live" && !props.canLiveTrade;
   const source = getTicketSource(props.draft);
-  const paperOnly = props.mode === "paper" || props.eligibility.state !== "liveEligible";
   const largePaperOrder = props.mode === "paper" && props.notional > props.simulatedBalanceUsd;
+  const liveDisabledReason = getLiveDisabledReason(props.eligibility.state);
   return (
     <div className={`panel ticket-panel ${source === "agent" ? "from-agent" : ""}`}>
       <div className="panel-head">
@@ -714,11 +896,6 @@ function TicketPanel(props: {
         </div>
         <span className={props.mode === "paper" ? "paper-badge" : "live-badge"}>{props.mode}</span>
       </div>
-      {paperOnly ? (
-        <p className="ticket-mode-note">
-          Paper mode active. Live trading is disabled until eligibility is confirmed.
-        </p>
-      ) : null}
       <div className="segmented">
         <button className={props.draft.side === "long" ? "active long" : ""} onClick={() => props.updateDraft({ side: "long" })}>Long</button>
         <button className={props.draft.side === "short" ? "active short" : ""} onClick={() => props.updateDraft({ side: "short" })}>Short</button>
@@ -730,13 +907,25 @@ function TicketPanel(props: {
       </div>
       <label className="field">
         <span>Size ({props.base})</span>
-        <input
-          value={props.draft.sizeBtc}
-          type="number"
-          min="0"
-          step={1 / 10 ** props.szDecimals}
-          onChange={(event) => props.updateDraft({ sizeBtc: Number(event.target.value) })}
-        />
+        <div className="input-with-action">
+          <input
+            value={props.draft.sizeBtc}
+            type="number"
+            min="0"
+            step={1 / 10 ** props.szDecimals}
+            onChange={(event) => props.updateDraft({ sizeBtc: Number(event.target.value) })}
+          />
+          <button
+            type="button"
+            onClick={() =>
+              props.updateDraft({
+                sizeBtc: Number(Math.max(1 / 10 ** props.szDecimals, props.simulatedBalanceUsd / props.entryPrice / props.draft.leverage).toFixed(props.szDecimals)),
+              })
+            }
+          >
+            Max
+          </button>
+        </div>
         <small>Base asset amount, not USD. Preview: {fmtUsd(props.notional, 2)} notional on {props.symbol}.</small>
       </label>
       {props.draft.orderType === "limit" ? (
@@ -776,7 +965,7 @@ function TicketPanel(props: {
         <span>Est. liq <strong>{fmtUsd(props.liquidation, 1)}</strong></span>
         <span>Fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
       </div>
-      {blocked ? <p className="block-note">Live blocked by {props.eligibility.state}. Use paper mode.</p> : null}
+      {blocked ? <p className="block-note">{liveDisabledReason} Use paper mode.</p> : null}
       {largePaperOrder ? (
         <p className="paper-note">
           Large paper size: this order is above the simulated balance of {fmtUsd(props.simulatedBalanceUsd, 2)}.
@@ -909,7 +1098,7 @@ function AgentPanel(props: {
         </div>
       ) : null}
       {!props.isThinking && !props.agent ? (
-        <p className="agent-empty">Type a question or use a prompt chip for a setup, market explanation, or no-trade read. Outputs are structured and can drive chart annotations plus ticket prefill.</p>
+        <p className="agent-empty">Ask about setups, funding, OI, liquidations, or risk. I can annotate the chart and prefill the ticket.</p>
       ) : null}
     </div>
   );
@@ -1045,7 +1234,7 @@ function ConfirmModal(props: {
           {getConfirmationAckCopy(source)}
         </label>
         {props.mode === "paper" ? <p className="paper-note">Paper orders are simulated and never call /exchange.</p> : null}
-        {liveBlocked ? <p className="block-note">Live blocked by {props.eligibility.state}.</p> : null}
+        {liveBlocked ? <p className="block-note">{getLiveDisabledReason(props.eligibility.state)}</p> : null}
         {props.modalError ? <p className="modal-error">{props.modalError}</p> : null}
         <div className="modal-actions">
           <button className="secondary-action" onClick={props.close}>Cancel</button>

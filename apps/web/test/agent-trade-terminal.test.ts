@@ -7,6 +7,7 @@ import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../li
 import {
   AGENT_PANEL_HEADING,
   applyManualDraftPatch,
+  buildSyntheticTerminalCandles,
   getConfirmationAckCopy,
   getTerminalEligibilityStatus,
   getTicketSource,
@@ -85,7 +86,7 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(unknown.visible).toBe(true);
     expect(unknown.message).toBe("Paper mode only. Live eligibility has not been confirmed.");
     expect(restricted.visible).toBe(true);
-    expect(restricted.message).toBe("Live trading unavailable in this region. Paper trading remains available.");
+    expect(restricted.message).toBe("Live trading unavailable in your region. Paper trading remains available.");
   });
 
   it("uses the simulated paper-order endpoint instead of exchange", () => {
@@ -205,6 +206,18 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(result.snapshot.account.fills[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
   });
 
+  it("builds deterministic synthetic OHLC candles from the selected market snapshot", () => {
+    vi.setSystemTime(new Date("2026-06-24T12:00:00Z"));
+
+    const candles = buildSyntheticTerminalCandles(MOCK_TRADING_SNAPSHOT.market, 12);
+
+    expect(candles).toHaveLength(12);
+    expect(candles.at(-1)?.close).toBe(MOCK_TRADING_SNAPSHOT.market.markPrice);
+    expect(candles.every((candle) => candle.high >= Math.max(candle.open, candle.close))).toBe(true);
+    expect(candles.every((candle) => candle.low <= Math.min(candle.open, candle.close))).toBe(true);
+    expect(candles[1].time - candles[0].time).toBe(900);
+  });
+
   it("maps typed long/setup prompts to an agent order-draft response", async () => {
     const response = await runTypedPrompt("Should I long BTC here?");
 
@@ -233,6 +246,15 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(response.orderDraft).toBeUndefined();
     expect(response.thesis).toContain("market read");
     expect(response.followUps?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("answers typed greetings with capabilities instead of a fake market read", async () => {
+    const response = await runTypedPrompt("hi");
+
+    expect(response.state).toBe("answered");
+    expect(response.orderDraft).toBeUndefined();
+    expect(response.thesis).toContain("Ask me about funding, open interest, liquidation levels, portfolio risk, or a trade setup.");
+    expect(response.whyWrong).toContain("will not infer a buy or sell direction");
   });
 
   it("refuses typed trade drafts when market data is stale", async () => {

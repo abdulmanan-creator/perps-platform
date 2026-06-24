@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
 import { Providers } from "./providers-client";
@@ -8,6 +8,11 @@ export const metadata: Metadata = {
   title: "Agent.trade",
   description:
     "A Hyperliquid-first, agent-native trading terminal for market reads, ticket drafting, and controlled execution.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

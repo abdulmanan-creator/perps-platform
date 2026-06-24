@@ -6,7 +6,7 @@ import {
 } from "./portfolio";
 import type { AgentResponse, SharedTradingSnapshot } from "./types";
 
-export type AgentScenario = "long" | "explain" | "noTrade" | "marketRead";
+export type AgentScenario = "long" | "explain" | "noTrade" | "marketRead" | "capability";
 
 export interface AgentService {
   run(args: {
@@ -31,6 +31,9 @@ export class DeterministicAgentService implements AgentService {
   classifyPrompt(prompt: string): AgentScenario {
     const normalized = prompt.toLowerCase();
 
+    if (/^\s*(hi|hello|hey|yo|gm|good morning|good afternoon|good evening)[!.?\s]*$/u.test(normalized)) {
+      return "capability";
+    }
     if (/\b(long|setup|buy|bullish)\b/u.test(normalized)) {
       return "long";
     }
@@ -73,6 +76,9 @@ export class DeterministicAgentService implements AgentService {
     }
     if (args.scenario === "marketRead") {
       return this.marketRead(args.snapshot, args.mode);
+    }
+    if (args.scenario === "capability") {
+      return this.capability(args.snapshot);
     }
 
     throw new Error(`Unsupported agent scenario: ${args.scenario}`);
@@ -296,6 +302,32 @@ export class DeterministicAgentService implements AgentService {
           tone: "amber",
         },
       ],
+      followUps: [
+        `Should I long ${market.base}?`,
+        "Explain funding + OI",
+        "Find cleaner setup",
+      ],
+    };
+  }
+
+  private capability(snapshot: SharedTradingSnapshot): AgentResponse {
+    const { market } = snapshot;
+    return {
+      id: `${market.base.toLowerCase()}-agent-capabilities`,
+      state: "answered",
+      question: "What can Agent.trade help with?",
+      thesis:
+        "Ask me about funding, open interest, liquidation levels, portfolio risk, or a trade setup. I use the current terminal snapshot and can draft a paper proposal for your review when the setup is clean.",
+      receipts: [
+        receipt("Market", market.symbol, snapshot),
+        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Data age", `${market.dataAgeSeconds}s`, snapshot),
+      ],
+      riskNote:
+        "Today this is deterministic MVP guidance. Orders still return to Agent.trade for ticket review, risk acknowledgement, and confirmation.",
+      whyWrong:
+        "A greeting does not contain a trading intent, so I will not infer a buy or sell direction from it.",
+      annotations: [],
       followUps: [
         `Should I long ${market.base}?`,
         "Explain funding + OI",
