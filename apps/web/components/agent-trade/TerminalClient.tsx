@@ -18,6 +18,14 @@ import {
   estimateDraftLiquidation,
   type DraftImpact,
 } from "@/lib/agent-trade/portfolio";
+import {
+  AGENT_PANEL_HEADING,
+  getConfirmationAckCopy,
+  getTerminalEligibilityStatus,
+  getTicketSource,
+  paperOrderEndpoint,
+  paperOrderFailureMessage,
+} from "@/lib/agent-trade/terminal";
 import type {
   AgentResponse,
   ChartAnnotation,
@@ -87,6 +95,8 @@ export function TerminalClient() {
   const [isAcked, setIsAcked] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitState, setSubmitState] = useState<string | undefined>();
+  const [modalError, setModalError] = useState<string | undefined>();
+  const [apiStatus, setApiStatus] = useState<"checking" | "ok" | "unavailable">("checking");
   const [marketNotice, setMarketNotice] = useState<string | undefined>();
   const [bottomTab, setBottomTab] = useState<"positions" | "orders" | "fills">("positions");
 
@@ -132,11 +142,13 @@ export function TerminalClient() {
         const next = (await res.json()) as EligibilityResponse;
         if (!cancelled) {
           setEligibility(next);
+          setApiStatus("ok");
           setMode(next.state === "liveEligible" ? "live" : "paper");
         }
       } catch {
         if (!cancelled) {
           setEligibility((current) => ({ ...current, state: "unknown" }));
+          setApiStatus("unavailable");
           setMode("paper");
         }
       }
@@ -158,6 +170,7 @@ export function TerminalClient() {
     leverage: draft.leverage,
   });
   const canLiveTrade = mode === "live" && eligibility.state === "liveEligible" && !isStale;
+  const eligibilityStatus = getTerminalEligibilityStatus(eligibility.state);
   const draftImpact = useMemo(
     () => calculateDraftImpact({ account: snapshot.account, market: snapshot.market, draft, entryPrice }),
     [snapshot.account, snapshot.market, draft, entryPrice],
@@ -202,25 +215,41 @@ export function TerminalClient() {
   }
 
   function sendToTicket(orderDraft: OrderDraft) {
-    setDraft(orderDraft);
+    setDraft({ ...orderDraft, fromAgent: true });
     setSubmitState("Agent proposal copied into the ticket.");
+    setModalError(undefined);
   }
 
   function updateDraft(patch: Partial<OrderDraft>) {
     setDraft((current) => ({ ...current, ...patch, fromAgent: false }));
+    setModalError(undefined);
   }
 
   async function submitPaperOrder() {
-    const res = await fetch(`${API_BASE_URL}/agent-trade/paper-orders`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ draft, estimatedEntry: entryPrice }),
-    });
-    if (!res.ok) {
-      throw new Error("paper order failed");
+    const endpoint = paperOrderEndpoint(API_BASE_URL);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ draft, estimatedEntry: entryPrice }),
+      });
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try {
+          const error = (await res.json()) as { message?: string; guidance?: string };
+          message = error.guidance ?? error.message ?? message;
+        } catch {
+          // Response was not JSON; keep status-based message.
+        }
+        throw new Error(message);
+      }
+      const json = (await res.json()) as { id: string; notionalUsd: number };
+      setApiStatus("ok");
+      setSubmitState(`Paper order accepted: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
+    } catch (err) {
+      setApiStatus("unavailable");
+      throw new Error(paperOrderFailureMessage(err, endpoint));
     }
-    const json = (await res.json()) as { id: string; notionalUsd: number };
-    setSubmitState(`Paper order accepted: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
   }
 
   async function submitLiveOrder() {
@@ -279,6 +308,7 @@ export function TerminalClient() {
     }
     setIsConfirming(true);
     setSubmitState(undefined);
+    setModalError(undefined);
     try {
       if (mode === "paper") {
         await submitPaperOrder();
@@ -287,7 +317,9 @@ export function TerminalClient() {
       }
       setModalOpen(false);
     } catch (err) {
-      setSubmitState(err instanceof Error ? err.message : "Order submission failed.");
+      const message = err instanceof Error ? err.message : "Order submission failed.";
+      setModalError(message);
+      setSubmitState(message);
     } finally {
       setIsConfirming(false);
     }
@@ -315,6 +347,13 @@ export function TerminalClient() {
           <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
         </div>
       </section>
+      {eligibilityStatus.visible || apiStatus !== "ok" ? (
+        <TerminalStatusBanner
+          eligibilityStatus={eligibilityStatus}
+          apiStatus={apiStatus}
+          apiBaseUrl={API_BASE_URL}
+        />
+      ) : null}
 
       <section className="terminal-grid">
         <div className="terminal-left">
@@ -331,8 +370,17 @@ export function TerminalClient() {
           <TradesPanel snapshot={snapshot} />
         </div>
         <div className="terminal-right">
+          <AgentPanel
+            base={snapshot.market.base}
+            agent={agent}
+            isThinking={isThinking}
+            runAgent={runAgent}
+            sendToTicket={sendToTicket}
+            isStale={isStale}
+          />
           <TicketPanel
             base={snapshot.market.base}
+            symbol={snapshot.market.symbol}
             szDecimals={snapshot.market.szDecimals}
             maxLeverage={Math.min(10, snapshot.market.maxLeverage)}
             draft={draft}
@@ -345,8 +393,11 @@ export function TerminalClient() {
             canLiveTrade={canLiveTrade}
             mode={mode}
             eligibility={eligibility}
+            apiStatus={apiStatus}
+            simulatedBalanceUsd={snapshot.account.simulatedBalanceUsd}
             openModal={() => {
               setIsAcked(false);
+              setModalError(undefined);
               setModalOpen(true);
             }}
           />
@@ -356,14 +407,6 @@ export function TerminalClient() {
             exposureLabels={portfolioRiskLabels}
           />
           {submitState ? <div className="submit-state">{submitState}</div> : null}
-          <AgentPanel
-            base={snapshot.market.base}
-            agent={agent}
-            isThinking={isThinking}
-            runAgent={runAgent}
-            sendToTicket={sendToTicket}
-            isStale={isStale}
-          />
         </div>
       </section>
 
@@ -380,9 +423,13 @@ export function TerminalClient() {
           liquidation={liquidation}
           canLiveTrade={canLiveTrade}
           eligibility={eligibility}
+          modalError={modalError}
           isAcked={isAcked}
           setIsAcked={setIsAcked}
-          close={() => setModalOpen(false)}
+          close={() => {
+            setModalError(undefined);
+            setModalOpen(false);
+          }}
           confirm={confirmOrder}
           isConfirming={isConfirming}
         />
@@ -416,6 +463,41 @@ function ModeControl({
       </button>
       <span>{eligibility.state}</span>
     </div>
+  );
+}
+
+function TerminalStatusBanner({
+  eligibilityStatus,
+  apiStatus,
+  apiBaseUrl,
+}: {
+  eligibilityStatus: ReturnType<typeof getTerminalEligibilityStatus>;
+  apiStatus: "checking" | "ok" | "unavailable";
+  apiBaseUrl: string;
+}) {
+  const showApi = apiStatus !== "ok";
+  return (
+    <section className={`terminal-status-banner ${eligibilityStatus.tone}`}>
+      <div>
+        {eligibilityStatus.visible ? (
+          <>
+            <strong>{eligibilityStatus.label}</strong>
+            <span>{eligibilityStatus.message}</span>
+          </>
+        ) : (
+          <>
+            <strong>Terminal status</strong>
+            <span>Live trading is available only after Agent.trade confirms eligibility and order confirmation.</span>
+          </>
+        )}
+      </div>
+      {showApi ? (
+        <div className={`api-status ${apiStatus}`}>
+          <strong>{apiStatus === "checking" ? "API checking" : "API unavailable"}</strong>
+          <span>{apiBaseUrl}</span>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -567,6 +649,7 @@ function TradesPanel({ snapshot }: { snapshot: SharedTradingSnapshot }) {
 
 function TicketPanel(props: {
   base: string;
+  symbol: string;
   szDecimals: number;
   maxLeverage: number;
   draft: OrderDraft;
@@ -579,18 +662,28 @@ function TicketPanel(props: {
   canLiveTrade: boolean;
   mode: "paper" | "live";
   eligibility: EligibilityResponse;
+  apiStatus: "checking" | "ok" | "unavailable";
+  simulatedBalanceUsd: number;
   openModal: () => void;
 }) {
   const blocked = props.mode === "live" && !props.canLiveTrade;
+  const source = getTicketSource(props.draft);
+  const paperOnly = props.mode === "paper" || props.eligibility.state !== "liveEligible";
+  const largePaperOrder = props.mode === "paper" && props.notional > props.simulatedBalanceUsd;
   return (
-    <div className={`panel ticket-panel ${props.draft.fromAgent ? "from-agent" : ""}`}>
+    <div className={`panel ticket-panel ${source === "agent" ? "from-agent" : ""}`}>
       <div className="panel-head">
         <div>
           <span>Order ticket</span>
-          <strong>{props.draft.fromAgent ? "From Agent" : "Manual"}</strong>
+          <strong>{source === "agent" ? "From Agent" : "Manual"}</strong>
         </div>
         <span className={props.mode === "paper" ? "paper-badge" : "live-badge"}>{props.mode}</span>
       </div>
+      {paperOnly ? (
+        <p className="ticket-mode-note">
+          Paper mode active. Live trading is disabled until eligibility is confirmed.
+        </p>
+      ) : null}
       <div className="segmented">
         <button className={props.draft.side === "long" ? "active long" : ""} onClick={() => props.updateDraft({ side: "long" })}>Long</button>
         <button className={props.draft.side === "short" ? "active short" : ""} onClick={() => props.updateDraft({ side: "short" })}>Short</button>
@@ -601,7 +694,7 @@ function TicketPanel(props: {
         ))}
       </div>
       <label className="field">
-        <span>Size {props.base}</span>
+        <span>Size ({props.base})</span>
         <input
           value={props.draft.sizeBtc}
           type="number"
@@ -609,6 +702,7 @@ function TicketPanel(props: {
           step={1 / 10 ** props.szDecimals}
           onChange={(event) => props.updateDraft({ sizeBtc: Number(event.target.value) })}
         />
+        <small>Base asset amount, not USD. Preview: {fmtUsd(props.notional, 2)} notional on {props.symbol}.</small>
       </label>
       {props.draft.orderType === "limit" ? (
         <label className="field">
@@ -640,6 +734,7 @@ function TicketPanel(props: {
         </label>
       </div>
       <div className="ticket-summary">
+        <span>Source <strong>{source === "agent" ? "Agent draft" : "Manual input"}</strong></span>
         <span>Entry <strong>{fmtUsd(props.entryPrice, 1)}</strong></span>
         <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
         <span>Margin <strong>{fmtUsd(props.marginRequired, 2)}</strong></span>
@@ -647,6 +742,14 @@ function TicketPanel(props: {
         <span>Fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
       </div>
       {blocked ? <p className="block-note">Live blocked by {props.eligibility.state}. Use paper mode.</p> : null}
+      {largePaperOrder ? (
+        <p className="paper-note">
+          Large paper size: this order is above the simulated balance of {fmtUsd(props.simulatedBalanceUsd, 2)}.
+        </p>
+      ) : null}
+      {props.apiStatus === "unavailable" ? (
+        <p className="block-note">API unavailable. Paper submit will retry {API_BASE_URL}.</p>
+      ) : null}
       <button className="primary-action" disabled={props.draft.sizeBtc <= 0 || blocked} onClick={props.openModal}>
         Review {props.mode} order
       </button>
@@ -696,8 +799,8 @@ function AgentPanel(props: {
     <div className="panel agent-panel">
       <div className="panel-head">
         <div>
-          <span>Embedded agent</span>
-          <strong>{props.isStale ? "Stale-data guard active" : "Deterministic AgentService"}</strong>
+          <span>{AGENT_PANEL_HEADING}</span>
+          <strong>{props.isStale ? "Stale-data guard active" : "Agent market read"}</strong>
         </div>
       </div>
       <div className="prompt-chips">
@@ -812,6 +915,7 @@ function ConfirmModal(props: {
   liquidation: number;
   canLiveTrade: boolean;
   eligibility: EligibilityResponse;
+  modalError: string | undefined;
   isAcked: boolean;
   setIsAcked: (value: boolean) => void;
   close: () => void;
@@ -819,6 +923,7 @@ function ConfirmModal(props: {
   isConfirming: boolean;
 }) {
   const liveBlocked = props.mode === "live" && !props.canLiveTrade;
+  const source = getTicketSource(props.draft);
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm order">
       <div className={`confirm-modal ${props.mode}`}>
@@ -827,11 +932,12 @@ function ConfirmModal(props: {
             <span>{props.mode === "paper" ? "Paper confirmation" : "Live confirmation"}</span>
             <strong>{props.draft.symbol} {props.draft.side}</strong>
           </div>
-          {props.draft.fromAgent ? <span className="from-agent-badge">From Agent</span> : null}
+          {source === "agent" ? <span className="from-agent-badge">From Agent</span> : null}
         </div>
         <div className="confirm-grid">
           <span>Market <strong>{props.draft.symbol}</strong></span>
           <span>Side <strong>{props.draft.side}</strong></span>
+          <span>Source <strong>{source === "agent" ? "Agent draft" : "Manual input"}</strong></span>
           <span>Size <strong>{fmtNumber(props.draft.sizeBtc, props.szDecimals)} {props.base}</strong></span>
           <span>Order type <strong>{props.draft.orderType}</strong></span>
           <span>Leverage <strong>{props.draft.leverage}x</strong></span>
@@ -845,10 +951,11 @@ function ConfirmModal(props: {
         </div>
         <label className="ack-row">
           <input type="checkbox" checked={props.isAcked} onChange={(event) => props.setIsAcked(event.target.checked)} />
-          I understand this is a leveraged perpetual order. The agent drafted, but I am confirming.
+          {getConfirmationAckCopy(source)}
         </label>
         {props.mode === "paper" ? <p className="paper-note">Paper orders are simulated and never call /exchange.</p> : null}
         {liveBlocked ? <p className="block-note">Live blocked by {props.eligibility.state}.</p> : null}
+        {props.modalError ? <p className="modal-error">{props.modalError}</p> : null}
         <div className="modal-actions">
           <button className="secondary-action" onClick={props.close}>Cancel</button>
           <button className="primary-action" disabled={!props.isAcked || liveBlocked || props.isConfirming} onClick={props.confirm}>
