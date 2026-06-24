@@ -698,6 +698,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   padding: 9px 0;
   border-bottom: 1px solid rgba(255,255,255,0.045);
 }
+.readiness-row > * { min-width: 0; }
+.readiness-row strong { text-align: right; overflow-wrap: anywhere; }
 .readiness-row:last-child { border-bottom: 0; }
 .wallet-summary {
   grid-template-columns: 120px 1fr;
@@ -722,9 +724,37 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   padding: 0 14px 14px;
 }
 .compact-button { width: auto; margin: 0; }
+.funding-status {
+  margin: 14px 14px 0;
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 7px;
+  background: rgba(255,255,255,0.025);
+}
+.funding-status div:first-child {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.funding-status span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.funding-status strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.funding-status p {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+.funding-status .card-actions { padding: 0; }
 .funding-methods {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   padding: 14px;
 }
@@ -1089,7 +1119,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .at-topbar { align-items: flex-start; flex-direction: column; max-width: 100vw; overflow: hidden; padding: 14px; gap: 12px; }
   .at-brand { min-width: 0; }
   .at-nav { width: 100%; max-width: calc(100vw - 28px); flex-wrap: wrap; overflow-x: visible; padding-bottom: 2px; }
-  .at-top-actions { justify-content: flex-start; }
+  .at-top-actions { justify-content: flex-start; max-width: calc(100vw - 28px); flex-wrap: wrap; }
+  .at-top-actions .mode-pill { white-space: normal; }
   .terminal-page, .markets-page, .portfolio-page, .onboarding-page, .connectors-page {
     width: 100%;
     max-width: 100vw;
@@ -1103,7 +1134,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .markets-toolbar { grid-template-columns: 1fr; }
   .portfolio-grid, .portfolio-tables { grid-template-columns: 1fr; }
   .onboarding-grid, .onboarding-grid.wide { grid-template-columns: 1fr; }
+  .onboarding-grid, .onboarding-head, .onboarding-next { width: 100%; max-width: 100%; min-width: 0; }
+  .onboarding-card { min-width: 0; }
   .funding-methods, .next-action-grid { grid-template-columns: 1fr; }
+  .funding-status div:first-child { grid-template-columns: 1fr; gap: 4px; }
+  .readiness-row { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .readiness-row strong { text-align: left; }
   .overview-grid, .exposure-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .terminal-head { align-items: flex-start; flex-direction: column; }
   .terminal-state-row { justify-content: flex-start; }
@@ -1111,6 +1147,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .panel, .chart-panel { max-width: 100%; min-width: 0; }
   .panel-head { align-items: flex-start; flex-wrap: wrap; }
   .panel-head > * { min-width: 0; }
+  .readiness-pill { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
   .timeframes { max-width: 100%; flex-wrap: wrap; }
   .stats-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .confirm-grid, .ticket-two { grid-template-columns: 1fr; }

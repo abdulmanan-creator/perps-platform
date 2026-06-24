@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { usePrivy, useWallets } from "@privy-io/react-auth";
+import { useFundWallet, usePrivy, useWallets } from "@privy-io/react-auth";
 
 import { API_BASE_URL } from "@/lib/api";
+import { getFundingDisplay } from "@/lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
 import type { EligibilityMode } from "@/lib/agent-trade/types";
 
@@ -26,6 +27,7 @@ interface WalletSummary {
 }
 
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
+const PRIVY_FUNDING_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING === "true";
 
 export function OnboardingClient() {
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
@@ -87,7 +89,7 @@ export function OnboardingClient() {
       </section>
 
       <section className="onboarding-grid wide">
-        <FundingCard eligibility={eligibility} />
+        <FundingCardShell eligibility={eligibility} />
         <RiskCard state={eligibility.state} />
       </section>
 
@@ -150,7 +152,7 @@ function StatusCard({ eligibility }: { eligibility: EligibilityResponse }) {
       <div className="readiness-list">
         <ReadinessRow label="Paper mode" value={display.paperAvailable ? "Available" : "Unavailable"} ok={display.paperAvailable} />
         <ReadinessRow label="Live trading" value={display.liveTradingEnabled ? "Eligible" : "Disabled"} ok={display.liveTradingEnabled} />
-        <ReadinessRow label="Live funding CTA" value={display.liveFundingEnabled ? "Enabled" : "Disabled"} ok={display.liveFundingEnabled} />
+        <ReadinessRow label="Server funding eligibility" value={display.liveFundingEnabled ? "Eligible" : "Disabled"} ok={display.liveFundingEnabled} />
         <ReadinessRow label="Execution policy" value={executionPolicy} ok={!eligibility.mainnetExecutionEnabled} />
         <ReadinessRow label="Kill switch" value={eligibility.killSwitchEnabled ? "Active" : "Clear"} ok={!eligibility.killSwitchEnabled} />
         <ReadinessRow label="Mainnet execution" value={eligibility.mainnetExecutionEnabled ? "Enabled by env" : "Disabled by default"} ok={!eligibility.mainnetExecutionEnabled} />
@@ -183,6 +185,28 @@ function PrivyWalletCard() {
 
 function LocalDevWalletCard() {
   return <WalletCard wallet={{ status: "local-dev" }} />;
+}
+
+function useWalletSummary(): WalletSummary {
+  const { ready, authenticated, login, logout } = usePrivy();
+  const { wallets } = useWallets();
+  const activeWallet = useMemo(() => {
+    const embedded = wallets.find((wallet) => wallet.walletClientType === "privy");
+    return embedded ?? wallets[0];
+  }, [wallets]);
+
+  if (!ready) {
+    return { status: "loading" };
+  }
+  if (authenticated && activeWallet) {
+    return {
+      status: "connected",
+      address: activeWallet.address,
+      walletType: activeWallet.walletClientType,
+      logout,
+    };
+  }
+  return { status: "not-connected", login };
 }
 
 function WalletCard({ wallet }: { wallet: WalletSummary }) {
@@ -230,41 +254,153 @@ function WalletCard({ wallet }: { wallet: WalletSummary }) {
   );
 }
 
-function FundingCard({ eligibility }: { eligibility: EligibilityResponse }) {
-  const display = getEligibilityDisplay(eligibility.state);
+function FundingCardShell({ eligibility }: { eligibility: EligibilityResponse }) {
+  if (!HAS_PRIVY) {
+    return (
+      <FundingCard
+        eligibility={eligibility}
+        wallet={{ status: "local-dev" }}
+        providerEnabled={PRIVY_FUNDING_ENABLED}
+        providerAvailable={false}
+      />
+    );
+  }
+  return <PrivyFundingCard eligibility={eligibility} />;
+}
+
+function PrivyFundingCard({ eligibility }: { eligibility: EligibilityResponse }) {
+  const wallet = useWalletSummary();
+  const { fundWallet } = useFundWallet();
+  const [opening, setOpening] = useState(false);
+  const [providerError, setProviderError] = useState<string | null>(null);
+
+  async function openProvider() {
+    if (
+      wallet.status !== "connected" ||
+      !wallet.address ||
+      eligibility.state !== "liveEligible" ||
+      !PRIVY_FUNDING_ENABLED ||
+      typeof fundWallet !== "function"
+    ) {
+      return;
+    }
+
+    setOpening(true);
+    setProviderError(null);
+    try {
+      await fundWallet(wallet.address);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The funding provider could not be opened.";
+      setProviderError(message);
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  return (
+    <FundingCard
+      eligibility={eligibility}
+      wallet={wallet}
+      providerEnabled={PRIVY_FUNDING_ENABLED}
+      providerAvailable={PRIVY_FUNDING_ENABLED && typeof fundWallet === "function"}
+      providerOpening={opening}
+      providerError={providerError}
+      onOpenProvider={openProvider}
+    />
+  );
+}
+
+function FundingCard(props: {
+  eligibility: EligibilityResponse;
+  wallet: WalletSummary;
+  providerEnabled: boolean;
+  providerAvailable: boolean;
+  providerOpening?: boolean;
+  providerError?: string | null;
+  onOpenProvider?: () => void;
+}) {
+  const display = getFundingDisplay({
+    eligibilityState: props.eligibility.state,
+    hasPrivyEnv: HAS_PRIVY,
+    walletConnected: props.wallet.status === "connected",
+    providerEnabled: props.providerEnabled,
+    providerAvailable: props.providerAvailable,
+    providerOpening: props.providerOpening,
+    providerError: props.providerError,
+  });
+  const eligibilityDisplay = getEligibilityDisplay(props.eligibility.state);
+  const liveEligible = eligibilityDisplay.liveFundingEnabled;
+  const walletAddress = formatWalletAddress(props.wallet.address);
+
+  const primaryAction =
+    display.primaryCtaKind === "paper" ? (
+      <Link className="primary-action compact-button" href="/terminal">{display.primaryCtaLabel}</Link>
+    ) : display.primaryCtaKind === "connect_wallet" && props.wallet.login ? (
+      <button className="primary-action compact-button" onClick={props.wallet.login}>{display.primaryCtaLabel}</button>
+    ) : display.primaryCtaKind === "open_provider" ? (
+      <button className="primary-action compact-button" disabled={!display.primaryCtaEnabled} onClick={props.onOpenProvider}>
+        {display.primaryCtaLabel}
+      </button>
+    ) : (
+      <button className="primary-action compact-button" disabled>{display.primaryCtaLabel}</button>
+    );
+
   return (
     <div className="panel onboarding-card funding-card">
       <div className="panel-head">
         <div>
-          <span>Funding shell</span>
-          <strong>Deposit readiness</strong>
+          <span>Funding</span>
+          <strong>{display.title}</strong>
         </div>
-        <span className={`readiness-pill ${display.liveFundingEnabled ? "green" : "amber"}`}>
-          {display.liveFundingEnabled ? "Live funding ready" : "Paper first"}
+        <span className={`readiness-pill ${display.tone}`}>
+          {display.liveFundingEnabled ? "Provider ready" : "Paper first"}
         </span>
+      </div>
+      <div className="funding-status">
+        <div>
+          <span>Destination wallet</span>
+          <strong>{walletAddress}</strong>
+        </div>
+        <p>{display.summary}</p>
+        <div className="card-actions">
+          {primaryAction}
+          <Link className="secondary-action compact-button" href="/markets">Scan markets</Link>
+        </div>
       </div>
       <div className="funding-methods">
         <FundingMethod
-          title="Crypto deposit"
-          body="Fund Hyperliquid with USDC on Arbitrum, then return to Agent.trade to trade from the terminal."
-          status={display.liveFundingEnabled ? "Eligible account" : "Disabled until live eligible"}
+          title="Provider wallet funding"
+          body="Open Privy's supported funding flow for the connected wallet when eligibility, wallet, and provider configuration are all ready."
+          status={
+            display.liveFundingEnabled
+              ? "Provider available"
+              : props.providerEnabled
+                ? "Disabled until ready"
+                : "Not enabled in this environment"
+          }
           enabled={display.liveFundingEnabled}
+        />
+        <FundingMethod
+          title="Crypto deposit to Hyperliquid"
+          body="Funding a wallet is not the same as depositing into Hyperliquid. Live trading also requires Hyperliquid account readiness and Agent.trade confirmation."
+          status={liveEligible ? "Eligible after account readiness" : "Disabled until live eligible"}
+          enabled={liveEligible}
         />
         <FundingMethod
           title="Testnet funds"
           body="MVP execution defaults to Hyperliquid testnet. Internal testers should use the configured testnet funding path before live order smoke tests."
-          status="Internal tester guidance"
+          status={props.eligibility.mainnetExecutionEnabled ? "Mainnet env enabled" : "Testnet default"}
           enabled
         />
         <FundingMethod
-          title="Bank/card on-ramp"
-          body="Planned provider-dependent entry point. Apple Pay, PayPal, Venmo, and cards stay placeholders until provider/legal review."
-          status="Not integrated"
-          enabled={false}
+          title="Card, bank, and wallet methods"
+          body="Payment methods are provider-dependent and may require KYC, regional support, and provider configuration. Agent.trade does not process card details."
+          status={display.status === "provider_ready" ? "Provider-dependent" : "Not available in this state"}
+          enabled={display.status === "provider_ready"}
         />
       </div>
       <p className="onboarding-note">
-        Restricted or unknown eligibility disables live funding CTAs. Use paper mode for product testing.
+        Funding does not bypass Agent.trade eligibility, caps, acknowledgements, or order confirmation. Restricted or unknown eligibility disables live funding CTAs.
       </p>
     </div>
   );
