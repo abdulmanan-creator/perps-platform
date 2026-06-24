@@ -1,4 +1,4 @@
-import { normalizeSymbol } from "./markets";
+import { marketSearchAliases, normalizeSymbol } from "./markets";
 import type { ChartAnnotation, EligibilityMode, MarketSnapshot, OrderDraft } from "./types";
 
 export type TicketSource = "manual" | "agent";
@@ -80,17 +80,9 @@ const PROMPT_SYMBOL_STOP_WORDS = new Set([
 
 const PROMPT_TRADE_INTENT_WORDS = new Set(["buy", "long", "sell", "short"]);
 
-const PROMPT_MARKET_ALIASES: Record<string, string> = {
-  bitcoin: "BTC",
-  btc: "BTC",
-  ether: "ETH",
-  ethereum: "ETH",
-  eth: "ETH",
-  hype: "HYPE",
-  hyperliquid: "HYPE",
-  sol: "SOL",
-  solana: "SOL",
-};
+const PROMPT_MARKET_ALIASES = new Map(
+  ["BTC", "ETH", "HYPE", "SOL"].flatMap((symbol) => marketSearchAliases(symbol).map((alias) => [alias, symbol] as const)),
+);
 
 interface PromptToken {
   raw: string;
@@ -175,7 +167,7 @@ function extractUnsupportedTradeIntentSymbol(tokens: PromptToken[]): string | un
 
 function normalizePromptToken(token: string): string | undefined {
   const compact = token.toLowerCase().replace(/[^a-z0-9]/gu, "");
-  const alias = PROMPT_MARKET_ALIASES[compact];
+  const alias = PROMPT_MARKET_ALIASES.get(compact);
   if (alias) {
     return alias;
   }
@@ -309,8 +301,33 @@ export interface TerminalCandle {
   volume: number;
 }
 
-export const TERMINAL_CHART_INTERVALS = ["1m", "5m", "15m", "1h", "4h"] as const;
+export const TERMINAL_CHART_INTERVALS = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "8h",
+  "12h",
+  "1d",
+  "3d",
+  "1w",
+  "1M",
+] as const;
 export type TerminalChartInterval = (typeof TERMINAL_CHART_INTERVALS)[number];
+export const TERMINAL_QUICK_CHART_INTERVALS: TerminalChartInterval[] = ["1m", "5m", "15m", "1h", "4h"];
+export const TERMINAL_CHART_INTERVAL_GROUPS: Array<{ label: string; intervals: TerminalChartInterval[] }> = [
+  { label: "Minutes", intervals: ["1m", "3m", "5m", "15m", "30m"] },
+  { label: "Hours", intervals: ["1h", "2h", "4h", "8h", "12h"] },
+  { label: "Days", intervals: ["1d", "3d", "1w", "1M"] },
+];
+
+export function isTerminalChartInterval(input: string): input is TerminalChartInterval {
+  return (TERMINAL_CHART_INTERVALS as readonly string[]).includes(input);
+}
 
 export const TERMINAL_MARKET_STALE_MS = 60_000;
 export const TERMINAL_CANDLES_STALE_MS = 120_000;
@@ -573,12 +590,30 @@ export function terminalIntervalSeconds(interval: TerminalChartInterval): number
   switch (interval) {
     case "1m":
       return 60;
+    case "3m":
+      return 3 * 60;
     case "5m":
       return 5 * 60;
+    case "30m":
+      return 30 * 60;
     case "1h":
       return 60 * 60;
+    case "2h":
+      return 2 * 60 * 60;
     case "4h":
       return 4 * 60 * 60;
+    case "8h":
+      return 8 * 60 * 60;
+    case "12h":
+      return 12 * 60 * 60;
+    case "1d":
+      return 24 * 60 * 60;
+    case "3d":
+      return 3 * 24 * 60 * 60;
+    case "1w":
+      return 7 * 24 * 60 * 60;
+    case "1M":
+      return 30 * 24 * 60 * 60;
     case "15m":
     default:
       return 15 * 60;

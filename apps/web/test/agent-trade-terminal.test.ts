@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
 import { loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
+import { filterMarketsForSelector, sortMarketsForSelector, type JoinedMarket } from "../lib/agent-trade/markets";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
@@ -18,9 +19,12 @@ import {
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
   terminalChartLabel,
+  TERMINAL_CHART_INTERVAL_GROUPS,
+  TERMINAL_QUICK_CHART_INTERVALS,
   TERMINAL_ACCOUNT_STALE_MS,
   TERMINAL_CANDLES_STALE_MS,
   TERMINAL_MARKET_STALE_MS,
+  isTerminalChartInterval,
 } from "../lib/agent-trade/terminal";
 import type { PaperAccountSnapshot } from "../lib/agent-trade/types";
 
@@ -276,6 +280,32 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(terminalChartLabel(real, Date.now())).toBe("Hyperliquid candles · 15m · updated 12s ago");
     expect(fallback.source).toBe("synthetic");
     expect(terminalChartLabel(fallback)).toBe("Synthetic fallback · 15m · chart data degraded");
+  });
+
+  it("exposes supported terminal interval groups without unsupported intervals", () => {
+    const intervals = TERMINAL_CHART_INTERVAL_GROUPS.flatMap((group) => group.intervals);
+
+    expect(intervals).toContain("30m");
+    expect(intervals).toContain("1M");
+    expect(TERMINAL_QUICK_CHART_INTERVALS).toEqual(["1m", "5m", "15m", "1h", "4h"]);
+    expect(isTerminalChartInterval("30m")).toBe(true);
+    expect(isTerminalChartInterval("2m")).toBe(false);
+    expect(isTerminalChartInterval("6h")).toBe(false);
+  });
+
+  it("sorts terminal selector markets by 24h volume", () => {
+    const markets = selectorMarkets();
+
+    expect(sortMarketsForSelector(markets).map((market) => market.symbol)).toEqual(["ETH", "BTC", "HYPE", "SOL"]);
+  });
+
+  it("filters terminal selector markets by symbol, base, and aliases", () => {
+    const markets = selectorMarkets();
+
+    expect(filterMarketsForSelector(markets, "eth").map((market) => market.symbol)).toEqual(["ETH"]);
+    expect(filterMarketsForSelector(markets, "Ethereum").map((market) => market.symbol)).toEqual(["ETH"]);
+    expect(filterMarketsForSelector(markets, "Hyperliquid").map((market) => market.symbol)).toEqual(["HYPE"]);
+    expect(filterMarketsForSelector(markets, "nothing")).toEqual([]);
   });
 
   it("splits market draft safety from account freshness context", () => {
@@ -546,4 +576,31 @@ function createLocalStorage(): Storage {
       values.set(key, value);
     },
   };
+}
+
+function selectorMarkets(): JoinedMarket[] {
+  const base = {
+    displaySymbol: "BTC-USD",
+    base: "BTC",
+    assetIndex: 0,
+    szDecimals: 5,
+    maxLeverage: 40,
+    markPrice: 100,
+    midPrice: 100,
+    prevDayPrice: 99,
+    change24hPct: 1,
+    change24hAbs: 1,
+    fundingRatePct: 0.01,
+    openInterestUsd: 1_000_000,
+    openInterestChangePct: null,
+    volume24hUsd: 1_000,
+    opportunityLabels: ["watch only" as const],
+  };
+
+  return [
+    { ...base, symbol: "BTC", displaySymbol: "BTC-USD", base: "BTC", volume24hUsd: 3_000 },
+    { ...base, symbol: "ETH", displaySymbol: "ETH-USD", base: "ETH", volume24hUsd: 5_000 },
+    { ...base, symbol: "SOL", displaySymbol: "SOL-USD", base: "SOL", volume24hUsd: 1_000 },
+    { ...base, symbol: "HYPE", displaySymbol: "HYPE-USD", base: "HYPE", volume24hUsd: 2_000 },
+  ];
 }

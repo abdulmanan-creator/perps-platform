@@ -496,6 +496,37 @@ async function terminalDefaultSafety(page) {
     const live = [...document.querySelectorAll('.mode-control button')].find((button) => button.textContent.trim() === 'Live');
     return Boolean(live && !live.disabled);
   })()`), "Live mode was selectable under local default eligibility");
+
+  await evaluate(page, `(() => {
+    const trigger = document.querySelector(".market-selector-trigger");
+    if (!trigger) throw new Error("Missing terminal market selector");
+    trigger.click();
+    return true;
+  })()`);
+  await waitFor(page, "Boolean(document.querySelector('.market-selector-popover input'))", 10_000);
+  await evaluate(page, `(() => {
+    const input = document.querySelector(".market-selector-popover input");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setter.call(input, "ETH");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return input.value;
+  })()`);
+  await waitFor(page, "[...document.querySelectorAll('.market-selector-list button')].some((button) => button.innerText.includes('ETH-USD'))", 10_000);
+  await evaluate(page, `(() => {
+    const button = [...document.querySelectorAll(".market-selector-list button")].find((el) => el.innerText.includes("ETH-USD"));
+    if (!button) throw new Error("Missing ETH selector row");
+    button.click();
+    return true;
+  })()`);
+  await waitFor(page, "document.body.innerText.includes('ETH-USD')", 20_000);
+  await evaluate(page, `(() => {
+    const select = document.querySelector(".interval-menu select");
+    if (!select) throw new Error("Missing chart interval dropdown");
+    select.value = "30m";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    return select.value;
+  })()`);
+  await waitFor(page, "document.body.innerText.includes('30m Hyperliquid candles') || document.body.innerText.includes('30m fallback candles')", 20_000);
 }
 
 async function paperLoop(page) {

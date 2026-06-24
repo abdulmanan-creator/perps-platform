@@ -83,6 +83,18 @@ export function normalizeSymbol(input: string | null | undefined): string {
   return raw.replace(/-USD$|\/USD$|USDC$/u, "") || "BTC";
 }
 
+export const MARKET_SYMBOL_ALIASES: Record<string, string[]> = {
+  BTC: ["bitcoin", "btc"],
+  ETH: ["ethereum", "ether", "eth"],
+  HYPE: ["hyperliquid", "hype"],
+  SOL: ["solana", "sol"],
+};
+
+export function marketSearchAliases(symbol: string): string[] {
+  const normalized = normalizeSymbol(symbol);
+  return MARKET_SYMBOL_ALIASES[normalized] ?? [];
+}
+
 export function joinPerpMarkets(args: {
   markets: MarketsWireResponse;
   stats: MarketStatsWireResponse;
@@ -194,6 +206,31 @@ export function filterAndSortMarkets(args: {
       }
       return b.volume24hUsd - a.volume24hUsd;
     });
+}
+
+export function sortMarketsForSelector(markets: JoinedMarket[]): JoinedMarket[] {
+  return [...markets].sort((a, b) => b.volume24hUsd - a.volume24hUsd || a.symbol.localeCompare(b.symbol));
+}
+
+export function filterMarketsForSelector(markets: JoinedMarket[], query: string): JoinedMarket[] {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return sortMarketsForSelector(markets);
+  }
+
+  const rawQuery = trimmed.toLowerCase();
+  const symbolQuery = normalizeSymbol(trimmed).toLowerCase();
+
+  return sortMarketsForSelector(markets).filter((market) => {
+    const haystack = [
+      market.symbol,
+      market.displaySymbol,
+      market.base,
+      ...marketSearchAliases(market.symbol),
+    ].map((value) => value.toLowerCase());
+
+    return haystack.some((value) => value.includes(rawQuery) || value.includes(symbolQuery));
+  });
 }
 
 export function resolveSelectedMarket(args: {

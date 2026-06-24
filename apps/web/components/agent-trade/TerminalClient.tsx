@@ -17,7 +17,13 @@ import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
-import { loadMarketDiscoverySnapshot, normalizeSymbol } from "@/lib/agent-trade/markets";
+import {
+  filterMarketsForSelector,
+  loadMarketDiscoverySnapshot,
+  normalizeSymbol,
+  sortMarketsForSelector,
+  type JoinedMarket,
+} from "@/lib/agent-trade/markets";
 import { buildHlOrderAction } from "@/lib/agent-trade/orders";
 import { paperSessionHeaders } from "@/lib/agent-trade/paper";
 import {
@@ -41,7 +47,8 @@ import {
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
   terminalChartLabel,
-  TERMINAL_CHART_INTERVALS,
+  TERMINAL_CHART_INTERVAL_GROUPS,
+  TERMINAL_QUICK_CHART_INTERVALS,
   type TerminalChartData,
   type TerminalFreshness,
   type TerminalChartInterval,
@@ -177,7 +184,9 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   const [modalError, setModalError] = useState<string | undefined>();
   const [apiStatus, setApiStatus] = useState<"checking" | "ok" | "unavailable">("checking");
   const [marketNotice, setMarketNotice] = useState<string | undefined>();
+  const [marketOptions, setMarketOptions] = useState<JoinedMarket[]>([]);
   const [bottomTab, setBottomTab] = useState<"positions" | "orders" | "fills">("positions");
+  const [chartInterval, setChartInterval] = useState<TerminalChartInterval>("15m");
   const [chartData, setChartData] = useState<TerminalChartData>(() =>
     buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "Waiting for Hyperliquid candles."),
   );
@@ -220,6 +229,30 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
       window.clearInterval(timer);
     };
   }, [requestedSymbol, wallet.address, wallet.status]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMarkets() {
+      try {
+        const discovery = await loadMarketDiscoverySnapshot();
+        if (!cancelled) {
+          setMarketOptions(sortMarketsForSelector(discovery.markets));
+        }
+      } catch {
+        if (!cancelled) {
+          setMarketOptions([]);
+        }
+      }
+    }
+
+    void loadMarkets();
+    const timer = window.setInterval(loadMarkets, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -310,6 +343,37 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     return Math.max(...sizes, 1);
   }, [snapshot.orderBook]);
 
+  async function switchTerminalMarket(symbol: string, options: { question?: string } = {}) {
+    const resolved = normalizeSymbol(symbol);
+    setIsLoadingData(true);
+    setIsLoadingCandles(true);
+    setMarketNotice(undefined);
+    try {
+      const result = await loadTradingSnapshot(resolved, {
+        accountAddress: wallet.status === "connected" ? wallet.address : undefined,
+      });
+      if (result.usedFallback || normalizeSymbol(result.resolvedSymbol) !== resolved) {
+        setMarketNotice(`${resolved} is not available from /markets yet. Showing ${result.snapshot.market.base} instead.`);
+        setSnapshot(result.snapshot);
+        setDraft(buildDefaultDraft(result.snapshot));
+        setAgent(options.question ? buildUnsupportedPromptMarketResponse(options.question, resolved, snapshot) : undefined);
+        setAnnotations([]);
+        return { snapshot: result.snapshot, chartData, supported: false };
+      }
+
+      const nextChartData = await loadTerminalCandles(result.snapshot.market, chartInterval);
+      setSnapshot(result.snapshot);
+      setChartData(nextChartData);
+      setDraft(buildDefaultDraft(result.snapshot));
+      setApiStatus("ok");
+      router.replace(`/terminal?symbol=${encodeURIComponent(result.resolvedSymbol)}`, { scroll: false });
+      return { snapshot: result.snapshot, chartData: nextChartData, supported: true };
+    } finally {
+      setIsLoadingData(false);
+      setIsLoadingCandles(false);
+    }
+  }
+
   async function runAgent(scenario: AgentScenario) {
     setIsThinking(true);
     setAgent(undefined);
@@ -361,42 +425,27 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
       }
 
       if (promptMarket.resolvedSymbol && !promptMarket.isCurrentMarket) {
-        setIsLoadingData(true);
-        const result = await loadTradingSnapshot(promptMarket.resolvedSymbol, {
-          accountAddress: wallet.status === "connected" ? wallet.address : undefined,
-        });
-        if (result.usedFallback || normalizeSymbol(result.resolvedSymbol) !== promptMarket.resolvedSymbol) {
-          setAgent(buildUnsupportedPromptMarketResponse(trimmed, promptMarket.resolvedSymbol, snapshot));
+        const switched = await switchTerminalMarket(promptMarket.resolvedSymbol, { question: trimmed });
+        if (!switched.supported) {
           setAnnotations([]);
-          setIsLoadingData(false);
           setIsThinking(false);
           return;
         }
 
-        const nextSnapshot = result.snapshot;
-        setIsLoadingCandles(true);
-        const nextChartData = await loadTerminalCandles(nextSnapshot.market, chartData.interval);
         const nextNow = Date.now();
-        agentSnapshot = nextSnapshot;
+        agentSnapshot = switched.snapshot;
         agentFreshness = getTerminalFreshness({
           now: nextNow,
-          marketAsOf: nextSnapshot.asOf,
-          candlesFetchedAt: nextChartData.fetchedAt,
-          candlesFallback: nextChartData.isFallback,
-          candlesError: nextChartData.error,
-          accountUpdatedAt: nextSnapshot.account.updatedAt,
-          accountUnavailable: nextSnapshot.account.liveAccountDataUnavailable,
+          marketAsOf: switched.snapshot.asOf,
+          candlesFetchedAt: switched.chartData.fetchedAt,
+          candlesFallback: switched.chartData.isFallback,
+          candlesError: switched.chartData.error,
+          accountUpdatedAt: switched.snapshot.account.updatedAt,
+          accountUnavailable: switched.snapshot.account.liveAccountDataUnavailable,
           apiStatus: "ok",
         });
 
         setNow(nextNow);
-        setSnapshot(nextSnapshot);
-        setChartData(nextChartData);
-        setDraft(buildDefaultDraft(nextSnapshot));
-        setApiStatus("ok");
-        setIsLoadingData(false);
-        setIsLoadingCandles(false);
-        router.replace(`/terminal?symbol=${encodeURIComponent(result.resolvedSymbol)}`, { scroll: false });
       }
     } catch {
       const mentionedSymbol = resolveTypedPromptMarket({
@@ -569,6 +618,13 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
           isLoadingData={isLoadingData}
           marketNotice={marketNotice}
           accountReadiness={accountReadiness}
+          marketOptions={marketOptions}
+          onSelectMarket={(symbol) => {
+            setAgent(undefined);
+            setAgentQuestion(undefined);
+            setAnnotations([]);
+            void switchTerminalMarket(symbol);
+          }}
         />
         {apiStatus !== "ok" ? (
           <TerminalStatusBanner
@@ -587,6 +643,8 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
               setChartData={setChartData}
               isLoadingCandles={isLoadingCandles}
               setIsLoadingCandles={setIsLoadingCandles}
+              interval={chartInterval}
+              setInterval={setChartInterval}
             />
             <BottomPanel
               snapshot={snapshot}
@@ -715,6 +773,8 @@ function TerminalMarketHeader({
   isLoadingData,
   marketNotice,
   accountReadiness,
+  marketOptions,
+  onSelectMarket,
 }: {
   snapshot: SharedTradingSnapshot;
   eligibility: EligibilityResponse;
@@ -726,6 +786,8 @@ function TerminalMarketHeader({
   isLoadingData: boolean;
   marketNotice: string | undefined;
   accountReadiness: AccountReadinessDisplay;
+  marketOptions: JoinedMarket[];
+  onSelectMarket: (symbol: string) => void;
 }) {
   const marketStats = [
     ["Mark", fmtUsd(snapshot.market.markPrice, 1)],
@@ -750,7 +812,12 @@ function TerminalMarketHeader({
     <header className="terminal-market-header">
       <div className="terminal-pair-block">
         <span className="terminal-venue">{snapshot.market.venue}</span>
-        <h1>{snapshot.market.symbol}</h1>
+        <MarketSelector
+          selectedSymbol={snapshot.market.symbol}
+          markets={marketOptions}
+          isLoading={isLoadingData}
+          onSelectMarket={onSelectMarket}
+        />
         <div className="terminal-pair-subline">
           <span className={snapshot.market.change24hPct >= 0 ? "pos" : "neg"}>{fmtPct(snapshot.market.change24hPct, 2)} 24h</span>
           <span>{snapshot.market.source === "live-mainnet" ? "Mainnet read-only market data" : "Deterministic market snapshot"}</span>
@@ -791,10 +858,119 @@ function TerminalMarketHeader({
         ) : null}
         <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
         <span className={`terminal-eligibility-pill ${eligibilityStatus.tone}`}>
-          {apiStatus === "unavailable" ? "API unavailable" : accountReadiness.summary}
+          <span className="terminal-status-copy-full">
+            {apiStatus === "unavailable" ? "API unavailable" : accountReadiness.summary}
+          </span>
+          <span className="terminal-status-copy-mobile">
+            {apiStatus === "unavailable" ? "API unavailable" : compactMobileStatus(accountReadiness, eligibility.state)}
+          </span>
         </span>
       </div>
     </header>
+  );
+}
+
+function compactMobileStatus(readiness: AccountReadinessDisplay, eligibilityState: EligibilityMode): string {
+  if (eligibilityState === "restricted") {
+    return "Paper mode active. Live unavailable.";
+  }
+  if (eligibilityState === "killSwitchDisabled") {
+    return "Paper mode active. Live disabled.";
+  }
+  if (readiness.accountValueKind === "real") {
+    return "Live account read-only.";
+  }
+  if (readiness.accountValueKind === "hybrid") {
+    return "Live account plus paper.";
+  }
+  return "Paper mode active. Account values simulated.";
+}
+
+function MarketSelector({
+  selectedSymbol,
+  markets,
+  isLoading,
+  onSelectMarket,
+}: {
+  selectedSymbol: string;
+  markets: JoinedMarket[];
+  isLoading: boolean;
+  onSelectMarket: (symbol: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selectedBase = normalizeSymbol(selectedSymbol);
+  const selectedMarket = markets.find((market) => normalizeSymbol(market.symbol) === selectedBase);
+  const visibleMarkets = useMemo(() => filterMarketsForSelector(markets, query).slice(0, 24), [markets, query]);
+
+  function selectMarket(symbol: string) {
+    setOpen(false);
+    setQuery("");
+    if (normalizeSymbol(symbol) !== selectedBase) {
+      onSelectMarket(symbol);
+    }
+  }
+
+  return (
+    <div className="market-selector">
+      <button
+        type="button"
+        className="market-selector-trigger"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+      >
+        <span>
+          <strong>{selectedSymbol}</strong>
+          <small>{selectedMarket ? `${fmtCompactUsd(selectedMarket.volume24hUsd)} 24h volume` : "Perpetual"}</small>
+        </span>
+        <b>{isLoading ? "..." : "v"}</b>
+      </button>
+      {open ? (
+        <div className="market-selector-popover" role="dialog" aria-label="Select terminal market">
+          <label>
+            <span>Search Hyperliquid perps</span>
+            <input
+              autoFocus
+              value={query}
+              placeholder="BTC, Ethereum, HYPE..."
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setOpen(false);
+                }
+              }}
+            />
+          </label>
+          <div className="market-selector-group">
+            <div className="market-selector-group-head">
+              <span>Perps</span>
+              <small>{visibleMarkets.length} shown</small>
+            </div>
+            <div className="market-selector-list">
+              {visibleMarkets.length > 0 ? visibleMarkets.map((market) => (
+                <button
+                  key={market.symbol}
+                  type="button"
+                  className={normalizeSymbol(market.symbol) === selectedBase ? "active" : ""}
+                  onClick={() => selectMarket(market.symbol)}
+                >
+                  <span>
+                    <strong>{market.displaySymbol}</strong>
+                    <small>{market.base}</small>
+                  </span>
+                  <span>{fmtUsd(market.markPrice, market.markPrice >= 100 ? 1 : 4)}</span>
+                  <span className={market.change24hPct >= 0 ? "pos" : "neg"}>{fmtPct(market.change24hPct, 2)}</span>
+                  <span>{fmtCompactUsd(market.volume24hUsd)}</span>
+                </button>
+              )) : (
+                <p>No supported perp matches this search.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -907,6 +1083,8 @@ function ChartPanel({
   setChartData,
   isLoadingCandles,
   setIsLoadingCandles,
+  interval,
+  setInterval,
 }: {
   snapshot: SharedTradingSnapshot;
   annotations: ChartAnnotation[];
@@ -914,9 +1092,10 @@ function ChartPanel({
   setChartData: (data: TerminalChartData) => void;
   isLoadingCandles: boolean;
   setIsLoadingCandles: (value: boolean) => void;
+  interval: TerminalChartInterval;
+  setInterval: (interval: TerminalChartInterval) => void;
 }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const [interval, setInterval] = useState<TerminalChartInterval>("15m");
   const candles = chartData.candles;
 
   useEffect(() => {
@@ -1045,12 +1224,29 @@ function ChartPanel({
           <span>{snapshot.market.base} perpetual</span>
           <strong>{chartData.source === "hyperliquid" ? `${interval} Hyperliquid candles` : `${interval} fallback candles`}</strong>
         </div>
-        <div className="timeframes">
-          {TERMINAL_CHART_INTERVALS.map((tf) => (
+        <div className="timeframes" aria-label="Chart interval">
+          {TERMINAL_QUICK_CHART_INTERVALS.map((tf) => (
             <button key={tf} className={tf === interval ? "active" : ""} onClick={() => setInterval(tf)}>
               {tf}
             </button>
           ))}
+          <div className="interval-menu">
+            <select
+              aria-label="More chart intervals"
+              value={interval}
+              onChange={(event) => setInterval(event.target.value as TerminalChartInterval)}
+            >
+              {TERMINAL_CHART_INTERVAL_GROUPS.map((group) => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.intervals.map((tf) => (
+                    <option key={tf} value={tf}>
+                      {tf}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
       <div className="chart-canvas" ref={chartRef} role="img" aria-label={`${snapshot.market.base} candlestick chart with agent annotations`} />

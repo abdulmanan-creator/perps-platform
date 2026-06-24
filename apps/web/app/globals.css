@@ -925,7 +925,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   display: grid;
   grid-template-columns: minmax(168px, 0.6fr) minmax(420px, 1.7fr) minmax(250px, 0.72fr) minmax(260px, 0.86fr);
   gap: 1px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 9px;
   background: rgba(255,255,255,0.08);
@@ -952,6 +952,146 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-family: var(--font-mono);
   font-size: 24px;
   line-height: 1;
+}
+.market-selector {
+  position: relative;
+  min-width: 0;
+}
+.market-selector-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.market-selector-trigger strong {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 24px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.market-selector-trigger small {
+  display: block;
+  margin-top: 5px;
+  color: var(--dim);
+  font-size: 11px;
+}
+.market-selector-trigger b {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.market-selector-popover {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 10px);
+  left: 0;
+  display: grid;
+  gap: 10px;
+  width: min(560px, calc(100vw - 36px));
+  max-height: min(560px, calc(100vh - 150px));
+  overflow: hidden;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  background: #080c16;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.42);
+}
+.market-selector-popover label {
+  display: grid;
+  gap: 6px;
+}
+.market-selector-popover label span,
+.market-selector-group-head {
+  color: var(--dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.market-selector-popover input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  background: #0d1322;
+  color: var(--text);
+  outline: none;
+}
+.market-selector-popover input:focus {
+  border-color: rgba(91,99,255,0.5);
+}
+.market-selector-group {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+.market-selector-group-head {
+  display: flex;
+  justify-content: space-between;
+}
+.market-selector-list {
+  display: grid;
+  gap: 2px;
+  max-height: 390px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.market-selector-list button {
+  display: grid;
+  grid-template-columns: minmax(112px, 1.2fr) minmax(76px, 0.75fr) minmax(58px, 0.55fr) minmax(84px, 0.75fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+}
+.market-selector-list button:hover,
+.market-selector-list button.active {
+  border-color: rgba(91,99,255,0.25);
+  background: rgba(91,99,255,0.1);
+  color: var(--text);
+}
+.market-selector-list button span:first-child {
+  min-width: 0;
+  text-align: left;
+}
+.market-selector-list button strong,
+.market-selector-list button small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.market-selector-list button small {
+  margin-top: 2px;
+  color: var(--dim);
+}
+.market-selector-list p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 .terminal-pair-subline {
   display: flex;
@@ -1025,6 +1165,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   line-height: 1.35;
 }
 .terminal-eligibility-pill.blue { border-color: rgba(91,99,255,0.35); color: #cdd2ff; background: rgba(91,99,255,0.09); }
+.terminal-status-copy-mobile { display: none; }
 
 .terminal-grid {
   display: grid;
@@ -1109,6 +1250,15 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-size: 12px;
 }
 .timeframes button.active { border-color: var(--line-strong); background: #171f33; color: var(--text); }
+.interval-menu select {
+  height: 28px;
+  min-width: 70px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  background: #0d1322;
+  color: var(--text);
+  font-size: 12px;
+}
 
 .compact-panel { overflow: hidden; }
 .book-table { display: grid; padding: 8px; gap: 2px; }
@@ -1623,6 +1773,20 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
     max-width: 100%;
   }
   .terminal-pair-block h1 { font-size: 22px; }
+  .market-selector-trigger strong { font-size: 22px; }
+  .market-selector-popover {
+    left: 0;
+    width: calc(100vw - 32px);
+    max-height: min(520px, calc(100vh - 120px));
+  }
+  .market-selector-list button {
+    grid-template-columns: minmax(0, 1fr) minmax(72px, auto);
+    text-align: right;
+  }
+  .market-selector-list button span:nth-child(3),
+  .market-selector-list button span:nth-child(4) {
+    display: none;
+  }
   .terminal-header-stats,
   .terminal-account-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1640,10 +1804,25 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .terminal-header-actions {
     gap: 8px;
   }
+  .terminal-header-actions .state-pill {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
   .terminal-eligibility-pill {
     display: block;
     width: 100%;
     word-break: normal;
+  }
+  .terminal-status-copy-full { display: none; }
+  .terminal-status-copy-mobile {
+    display: block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
   .terminal-account-strip div:nth-child(3) {
     grid-column: 1 / -1;
@@ -1656,6 +1835,14 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   }
   .chart-disclaimer {
     flex-direction: column;
+  }
+  .timeframes {
+    width: 100%;
+  }
+  .interval-menu,
+  .interval-menu select {
+    flex: 1 1 100%;
+    width: 100%;
   }
   .terminal-book-stack,
   .terminal-ticket-stack,

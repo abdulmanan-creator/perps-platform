@@ -49,13 +49,47 @@ describe("GET /agent-trade/candles", () => {
   });
 
   it("validates supported intervals", async () => {
+    for (const interval of ["2m", "6h"]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `/agent-trade/candles?symbol=BTC-USD&interval=${interval}`,
+      });
+
+      expect(res.statusCode).toBe(422);
+      expect(res.json()).toMatchObject({ error: "INVALID_PARAMS" });
+    }
+  });
+
+  it("accepts expanded Hyperliquid chart intervals", async () => {
+    const fetchSpy = mockInfo(
+      { universe: [{ name: "BTC" }] },
+      [
+        {
+          t: 1_720_000_000_000,
+          o: "60000",
+          h: "61000",
+          l: "59000",
+          c: "60500",
+          v: "12.345",
+        },
+      ],
+    );
+
     const res = await app.inject({
       method: "GET",
       url: "/agent-trade/candles?symbol=BTC-USD&interval=30m",
     });
 
-    expect(res.statusCode).toBe(422);
-    expect(res.json()).toMatchObject({ error: "INVALID_PARAMS" });
+    expect(res.statusCode).toBe(200);
+    const candleRequest = JSON.parse(String(fetchSpy.mock.calls.at(-1)?.[1]?.body)) as {
+      req: { interval: string };
+    };
+    expect(candleRequest.req.interval).toBe("30m");
+    expect(res.json()).toMatchObject({
+      symbol: "BTC-USD",
+      interval: "30m",
+      source: "hyperliquid",
+    });
   });
 
   it("rejects unsupported symbols after checking Hyperliquid meta", async () => {
