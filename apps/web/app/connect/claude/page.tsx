@@ -1,16 +1,15 @@
 /**
- * /connect/claude — step-by-step setup walkthrough for the Claude Web /
- * Claude desktop MCP connector.
+ * /connect/claude - safe connector setup walkthrough for Claude.
  *
- * Default flow assumes hosted MCP (agent-mode auth via Privy JWT). A footer
- * callout points power users to the local stdio install for hot-key signing.
+ * Agent.trade connectors are for research, sourced context, and draft handoff.
+ * Live orders still return to the Agent.trade terminal for all checks and
+ * explicit user confirmation.
  */
 
 import Link from "next/link";
 
-import { Nav } from "@/components/Nav";
+import { AppShell } from "@/components/agent-trade/AppShell";
 import { CodeBlock } from "@/components/CodeBlock";
-import { Footer } from "@/components/Footer";
 
 import { normalizeUrl } from "@/lib/api";
 
@@ -23,26 +22,64 @@ const MCP_URL = normalizeUrl(
 
 export default function ConnectClaudePage() {
   return (
-    <>
-      <Nav />
-      <main className="connect-shell">
-        <header className="connect-head">
-          <span className="eyebrow">AI Connector</span>
-          <h1>Trade with Claude</h1>
-          <p>
-            Add Hyperliquid trading tools to Claude — prices, positions,
-            orders, TP/SL, and more. Ask in natural
-            language; Claude calls the tools, our backend signs trades using
-            an agent key you authorized once.
-          </p>
+    <AppShell>
+      <main className="connectors-page connector-setup-page">
+        <header className="connectors-hero connector-setup-hero">
+          <div>
+            <span className="at-kicker">AI Connector</span>
+            <h1>Connect Claude to Agent.trade</h1>
+            <p>
+              Use Claude for Hyperliquid market reads, sourced context, and
+              draft trade proposals. In the current MVP connector flow, the
+              assistant researches, explains, and drafts. Orders return to
+              Agent.trade for confirmation.
+            </p>
+            <div className="public-cta-row">
+              <Link className="primary-link" href="/onboarding">
+                Check readiness
+              </Link>
+              <Link className="secondary-action compact-button" href="/connectors">
+                Connector overview
+              </Link>
+            </div>
+          </div>
+          <div className="connector-preview panel">
+            <div className="panel-head">
+              <div>
+                <span>Claude handoff</span>
+                <strong>Research and draft only</strong>
+              </div>
+            </div>
+            <div className="connector-chat">
+              <p>
+                <strong>User</strong> Read BTC funding, OI, and liquidity.
+              </p>
+              <p>
+                <strong>Claude</strong> I can explain the setup and draft a
+                proposal for Agent.trade review.
+              </p>
+              <p>
+                <strong>Agent.trade</strong> Eligibility, caps,
+                acknowledgement, and confirmation stay in the terminal.
+              </p>
+            </div>
+          </div>
         </header>
 
-        <div className="callout">
-          <strong>Prereqs:</strong> Hyperliquid account with USDC deposited.
-          If you haven&apos;t onboarded yet,{" "}
-          <Link href="/approve">/approve</Link> walks you through Privy
-          sign-in + builder approval + deposit.
-        </div>
+        <section className="connector-setup-callout panel">
+          <strong>Safety model:</strong> every order returns to the Agent.trade
+          terminal for review, risk acknowledgement, eligibility checks, caps,
+          and explicit confirmation. Restricted or unknown eligibility cannot
+          submit live orders; paper mode remains available where routing
+          permits.
+        </section>
+
+        <section className="connector-setup-callout panel">
+          <strong>Roadmap:</strong> permissioned agent execution is planned for
+          a later mode with user-defined scopes, caps, revocation, eligibility
+          checks, audit logs, and kill switches. Today&apos;s connector flow
+          does not authorize autonomous live trading.
+        </section>
 
         <Step n={1} title="Copy the MCP URL">
           <p>
@@ -82,63 +119,57 @@ export default function ConnectClaudePage() {
           </div>
         </Step>
 
-        <Step n={3} title='Set Name to "Alchemy Hyperliquid", paste the URL'>
+        <Step n={3} title='Set Name to "Agent.trade", paste the URL'>
           <p>
             Paste the URL from step 1 into &ldquo;Remote MCP server URL&rdquo;
-            and save. Claude fetches our tool list and shows the available
-            functions.
+            and save. Claude fetches the connector tool list for market
+            context and draft handoff.
           </p>
         </Step>
 
-        <Step n={4} title="Connect + authorize agent">
+        <Step n={4} title="Connect for research and draft handoff">
           <p>
             Click <strong>Connect</strong> next to the new connector. Claude
-            opens our auth page. Sign in with Privy (same account you use at{" "}
-            <Link href="/approve">/approve</Link>), then sign one{" "}
-            <code>approveAgent</code> action delegating trading authority to
-            our server-managed agent wallet. After this single signature,
-            Claude can trade on your behalf with no further prompts.
+            may open an Agent.trade auth or setup page depending on the
+            environment. Use <Link href="/onboarding">/onboarding</Link> to
+            check wallet readiness, paper/live mode, and eligibility before
+            attempting any live review flow.
           </p>
           <div className="callout">
-            <strong>What you&apos;re authorizing:</strong> a per-user agent
-            key derived deterministically from a server-side master seed. The
-            agent has <em>trade-only</em> authority &mdash; HL&apos;s protocol
-            enforces that agents can&apos;t withdraw your funds. You can
-            revoke any time by signing approveAgent again with the zero
-            address.
+            <strong>Connector boundary:</strong> Claude can ask for market
+            context, produce sourced reasoning, and draft a proposal. The
+            draft must open in Agent.trade before any paper or live order is
+            submitted.
           </div>
         </Step>
 
-        <Step n={5} title="Start trading">
+        <Step n={5} title="Ask for reads and proposals">
           <p>Open a new conversation in Claude and try:</p>
           <CodeBlock label="example prompts">
-            {`"What's the current BTC price on Hyperliquid?"
+            {`"Read BTC funding, OI, and liquidity. Is there a clean setup?"
 
-"Show me my Hyperliquid balance."
+"Explain why ETH is or is not worth trading here."
 
-"Buy $10 of BTC."
+"Draft a paper trade idea for SOL and send me to Agent.trade for review."
 
-"List my open orders and cancel any ETH orders."`}
+"Summarize my open risk and what would make this a no-trade."`}
           </CodeBlock>
         </Step>
 
-        <div className="callout soon" style={{ marginTop: 40 }}>
-          <strong>Power-user alternative (stdio mode):</strong> if you&apos;d
-          rather run the MCP server locally with a hot private key (single-user,
-          no hosted dependency), see <code>packages/mcp-server/README.md</code>
-          {" "}in the repo. More setup but no shared infra.
-        </div>
+        <section className="connector-setup-callout panel">
+          <strong>Preview status:</strong> connector setup is intended for
+          research and draft workflows in the MVP. Backend connector enforcement
+          and production policy hardening are still separate follow-up work.
+        </section>
 
-        <div className="callout" style={{ marginTop: 16 }}>
+        <section className="connector-setup-callout panel">
           <strong>Troubleshooting:</strong> if Claude can&apos;t reach the
           connector after &ldquo;Add,&rdquo; check the server is up at{" "}
-          <code>{MCP_URL}/healthz</code>. If your trades return{" "}
-          <code>NEEDS_DEPOSIT</code>, the wallet hasn&apos;t deposited USDC
-          into HL yet; visit <Link href="/approve">/approve</Link>.
-        </div>
+          <code>{MCP_URL}/healthz</code>. For wallet, funding, paper mode, or
+          eligibility state, visit <Link href="/onboarding">/onboarding</Link>.
+        </section>
       </main>
-      <Footer />
-    </>
+    </AppShell>
   );
 }
 
@@ -152,12 +183,12 @@ function Step({
   children: React.ReactNode;
 }) {
   return (
-    <div className="step">
-      <div className="step-num">{n}</div>
-      <div className="step-body">
+    <article className="connector-setup-step panel">
+      <div className="connector-step-num">{String(n).padStart(2, "0")}</div>
+      <div className="connector-step-body">
         <h3>{title}</h3>
         {children}
       </div>
-    </div>
+    </article>
   );
 }

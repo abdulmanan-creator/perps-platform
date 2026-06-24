@@ -1,15 +1,15 @@
 /**
- * /connect/chatgpt — ChatGPT Apps setup walkthrough.
+ * /connect/chatgpt - safe ChatGPT connector setup walkthrough.
  *
- * Same MCP server as Claude (HTTP transport), just registered through
- * ChatGPT's Apps SDK instead of Claude's connector flow.
+ * Same MCP server as Claude, framed for market reads, sourced context, and
+ * draft handoff back to Agent.trade. Today's connector flow does not authorize
+ * autonomous live trading.
  */
 
 import Link from "next/link";
 
-import { Nav } from "@/components/Nav";
+import { AppShell } from "@/components/agent-trade/AppShell";
 import { CodeBlock } from "@/components/CodeBlock";
-import { Footer } from "@/components/Footer";
 
 import { normalizeUrl } from "@/lib/api";
 
@@ -21,24 +21,64 @@ const MCP_URL = normalizeUrl(
 
 export default function ConnectChatGptPage() {
   return (
-    <>
-      <Nav />
-      <main className="connect-shell">
-        <header className="connect-head">
-          <span className="eyebrow">AI Connector</span>
-          <h1>Trade with ChatGPT</h1>
-          <p>
-            Add Hyperliquid trading tools to ChatGPT via its Apps SDK.
-            Same MCP server as the Claude connector &mdash; ChatGPT uses MCP
-            over HTTP, so one URL serves both.
-          </p>
+    <AppShell>
+      <main className="connectors-page connector-setup-page">
+        <header className="connectors-hero connector-setup-hero">
+          <div>
+            <span className="at-kicker">AI Connector</span>
+            <h1>Connect ChatGPT to Agent.trade</h1>
+            <p>
+              Use ChatGPT for Hyperliquid market reads, sourced context, and
+              draft trade proposals. In the current MVP connector flow, the
+              assistant researches, explains, and drafts. Orders return to
+              Agent.trade for confirmation.
+            </p>
+            <div className="public-cta-row">
+              <Link className="primary-link" href="/onboarding">
+                Check readiness
+              </Link>
+              <Link className="secondary-action compact-button" href="/connectors">
+                Connector overview
+              </Link>
+            </div>
+          </div>
+          <div className="connector-preview panel">
+            <div className="panel-head">
+              <div>
+                <span>ChatGPT handoff</span>
+                <strong>Research and draft only</strong>
+              </div>
+            </div>
+            <div className="connector-chat">
+              <p>
+                <strong>User</strong> Explain whether ETH has a clean setup.
+              </p>
+              <p>
+                <strong>ChatGPT</strong> I can return sourced context and
+                draft a proposal for Agent.trade review.
+              </p>
+              <p>
+                <strong>Agent.trade</strong> Eligibility, caps,
+                acknowledgement, and confirmation stay in the terminal.
+              </p>
+            </div>
+          </div>
         </header>
 
-        <div className="callout">
-          <strong>Prereqs:</strong> Hyperliquid account with USDC deposited.
-          If you haven&apos;t onboarded yet,{" "}
-          <Link href="/approve">/approve</Link> walks you through it.
-        </div>
+        <section className="connector-setup-callout panel">
+          <strong>Safety model:</strong> every order returns to the Agent.trade
+          terminal for review, risk acknowledgement, eligibility checks, caps,
+          and explicit confirmation. Restricted or unknown eligibility cannot
+          submit live orders; paper mode remains available where routing
+          permits.
+        </section>
+
+        <section className="connector-setup-callout panel">
+          <strong>Roadmap:</strong> permissioned agent execution is planned for
+          a later mode with user-defined scopes, caps, revocation, eligibility
+          checks, audit logs, and kill switches. Today&apos;s connector flow
+          does not authorize autonomous live trading.
+        </section>
 
         <Step n={1} title="Copy the MCP URL">
           <CodeBlock label="MCP server URL">{MCP_URL}</CodeBlock>
@@ -51,44 +91,50 @@ export default function ConnectChatGptPage() {
           </p>
         </Step>
 
-        <Step n={3} title='Create a new app named "Alchemy Hyperliquid"'>
+        <Step n={3} title='Create a new app named "Agent.trade"'>
           <p>
             Paste the URL into the Server URL field and save. ChatGPT does
-            an MCP handshake and discovers our tools.
+            an MCP handshake and discovers tools for market context and draft
+            handoff.
           </p>
         </Step>
 
-        <Step n={4} title="Connect + authorize agent">
+        <Step n={4} title="Connect for research and draft handoff">
           <p>
             Click <strong>Connect</strong>. ChatGPT opens our auth page in a
-            browser tab. Sign in with Privy, sign one{" "}
-            <code>approveAgent</code> action authorizing our agent wallet for
-            trading. ChatGPT now has scoped trading authority &mdash; the same
-            agent the Claude connector uses (one delegation, two AI clients).
+            browser tab if the environment requires setup. Use{" "}
+            <Link href="/onboarding">/onboarding</Link> to check wallet
+            readiness, paper/live mode, and eligibility before attempting any
+            live review flow.
           </p>
+          <div className="callout">
+            <strong>Connector boundary:</strong> ChatGPT can ask for market
+            context, produce sourced reasoning, and draft a proposal. The
+            draft must open in Agent.trade before any paper or live order is
+            submitted.
+          </div>
         </Step>
 
-        <Step n={5} title="Start trading">
+        <Step n={5} title="Ask for reads and proposals">
           <p>In ChatGPT, mention or @-tag the app:</p>
           <CodeBlock label="example prompts">
-            {`"@Alchemy Hyperliquid — what's the BTC price?"
+            {`"@Agent.trade read BTC funding, OI, and liquidity. Is there a clean setup?"
 
-"@Alchemy Hyperliquid — buy $10 of BTC."
+"@Agent.trade explain why ETH is or is not worth trading here."
 
-"@Alchemy Hyperliquid — show my open orders."`}
+"@Agent.trade draft a paper trade idea for SOL and send me to Agent.trade for review."
+
+"@Agent.trade summarize my open risk and what would make this a no-trade."`}
           </CodeBlock>
         </Step>
 
-        <div className="callout" style={{ marginTop: 40 }}>
-          <strong>One delegation, both connectors:</strong> the agent wallet
-          is per-user, not per-AI. If you&apos;ve already authorized Claude
-          via <Link href="/connect/claude">/connect/claude</Link>, ChatGPT
-          uses the same agent and won&apos;t prompt for a second approveAgent
-          signature. Revoking via either connector revokes both.
-        </div>
+        <section className="connector-setup-callout panel">
+          <strong>Preview status:</strong> connector setup is intended for
+          research and draft workflows in the MVP. Backend connector enforcement
+          and production policy hardening are still separate follow-up work.
+        </section>
       </main>
-      <Footer />
-    </>
+    </AppShell>
   );
 }
 
@@ -102,12 +148,12 @@ function Step({
   children: React.ReactNode;
 }) {
   return (
-    <div className="step">
-      <div className="step-num">{n}</div>
-      <div className="step-body">
+    <article className="connector-setup-step panel">
+      <div className="connector-step-num">{String(n).padStart(2, "0")}</div>
+      <div className="connector-step-body">
         <h3>{title}</h3>
         {children}
       </div>
-    </div>
+    </article>
   );
 }
