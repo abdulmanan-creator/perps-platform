@@ -1438,6 +1438,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   gap: 10px;
   flex-wrap: wrap;
 }
+.submit-state small {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .hypurrscan-link {
   display: inline-flex;
   align-items: center;
@@ -1569,6 +1575,29 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-variant-numeric: tabular-nums;
 }
 .data-row strong { color: var(--text); }
+.row-actions-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mini-action-button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 4px 7px;
+  font-size: 11px;
+  line-height: 1;
+}
+.mini-action-button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+}
+.mini-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .pos { color: var(--green) !important; }
 .neg { color: var(--red) !important; }
 

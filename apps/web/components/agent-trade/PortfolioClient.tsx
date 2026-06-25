@@ -155,6 +155,7 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   const hypurrscanUrl = accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid"
     ? hypurrscanAddressUrl(wallet.address)
     : null;
+  const hasRealAccountValues = accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid";
 
   return (
     <main className="portfolio-page">
@@ -178,15 +179,19 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
 
       <section className="portfolio-grid">
         <div className="overview-grid">
-          <Metric label={accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid" ? "Account equity" : "Paper equity"} value={fmtUsd(snapshot.account.equityUsd, 2)} detail={accountReadiness.accountValueLabel} />
-          <Metric label={accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid" ? "Account available" : "Paper available"} value={fmtUsd(snapshot.account.availableUsd, 2)} />
+          <Metric label={hasRealAccountValues ? "Account equity" : "Paper equity"} value={fmtUsd(snapshot.account.equityUsd, 2)} detail={accountReadiness.accountValueLabel} />
+          <Metric label={hasRealAccountValues ? "Account available" : "Paper available"} value={fmtUsd(snapshot.account.availableUsd, 2)} />
           <Metric label="Margin used" value={fmtUsd(snapshot.account.marginUsedUsd, 2)} detail={fmtPct(marginUsePct, 1)} />
           <Metric
             label="Unrealized PnL"
             value={fmtUsd(snapshot.account.unrealizedPnlUsd, 2)}
             tone={snapshot.account.unrealizedPnlUsd >= 0 ? "pos" : "neg"}
           />
-          <Metric label="Simulated balance" value={fmtUsd(snapshot.account.simulatedBalanceUsd, 2)} />
+          <Metric
+            label={hasRealAccountValues ? "Paper ledger" : "Paper balance"}
+            value={hasRealAccountValues ? "Separate" : fmtUsd(snapshot.account.simulatedBalanceUsd, 2)}
+            detail={hasRealAccountValues ? "Paper mode remains available but is not live exposure." : undefined}
+          />
           <Metric label="Daily live notional" value={fmtUsd(snapshot.account.dailyLiveNotionalUsedUsd, 2)} />
         </div>
 

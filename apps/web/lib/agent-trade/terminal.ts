@@ -24,6 +24,7 @@ export interface HyperliquidTypedData {
 export interface SubmitState {
   message: string;
   scannerUrl?: string;
+  detail?: string;
 }
 
 export const AGENT_PANEL_HEADING = "Ask Agent.trade";
@@ -86,15 +87,69 @@ export function getConfirmationAckCopy(source: TicketSource): string {
   return "I understand this is a leveraged perpetual order. I am confirming this paper order.";
 }
 
-export function liveOrderSubmitState(scannerUrl: string | null): SubmitState {
+export function liveOrderSubmitState(args: {
+  scannerUrl: string | null;
+  market: string;
+  side: string;
+  notionalUsd: number;
+  resultSummary?: string;
+}): SubmitState {
   return {
-    message: "Live order forwarded to Hyperliquid after wallet signature.",
-    scannerUrl: scannerUrl ?? undefined,
+    message: `Live order submitted: ${args.market} ${args.side} ${formatSubmitUsd(args.notionalUsd)} notional.`,
+    detail: args.resultSummary ?? "Refreshing live Hyperliquid account state.",
+    scannerUrl: args.scannerUrl ?? undefined,
   };
 }
 
 export function paperOrderSubmitState(message: string): SubmitState {
   return { message };
+}
+
+export function liveOrderErrorMessage(error: {
+  message?: string;
+  guidance?: string;
+  code?: string;
+}): string {
+  const raw = [error.code, error.guidance, error.message].filter(Boolean).join(" ");
+  const normalized = raw.toLowerCase();
+
+  if (/must deposit|needs_deposit|deposit before performing actions/u.test(normalized)) {
+    return liveError("Hyperliquid account needs a deposit before live orders can be placed.", raw);
+  }
+  if (/insufficient.*margin|margin.*insufficient|not enough margin|insufficient.*balance/u.test(normalized)) {
+    return liveError("Insufficient margin for this live order. Reduce size/leverage or add collateral.", raw);
+  }
+  if (/builder.*approval|builder.*fee|approvebuilderfee|maxbuilderfee/u.test(normalized)) {
+    return liveError("Builder fee approval appears incomplete. Refresh wallet readiness before retrying.", raw);
+  }
+  if (/(min|minimum).*(notional|order)|below.*\$?10|less than.*\$?10/u.test(normalized)) {
+    return liveError("Order is below Hyperliquid's $10 minimum notional.", raw);
+  }
+  if (/account.*unavailable|account state.*unavailable/u.test(normalized)) {
+    return liveError("Hyperliquid account state is unavailable. Refresh before live trading.", raw);
+  }
+  if (/wallet required|wallet disconnected|no connected wallet/u.test(normalized)) {
+    return liveError("Wallet disconnected. Reconnect before live trading.", raw);
+  }
+  if (/restricted|eligibility|jurisdiction|unknown/u.test(normalized)) {
+    return liveError("Live trading is unavailable until eligibility is confirmed.", raw);
+  }
+  if (/rejected|hl_exchange_rejected|hyperliquid/u.test(normalized)) {
+    return liveError("Hyperliquid rejected the live order.", raw);
+  }
+
+  return raw || "Live order failed. Check wallet, account readiness, and Hyperliquid response.";
+}
+
+function liveError(summary: string, raw: string): string {
+  return raw ? `${summary} Detail: ${raw}` : summary;
+}
+
+function formatSubmitUsd(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "$--";
+  }
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 const PROMPT_SYMBOL_STOP_WORDS = new Set([

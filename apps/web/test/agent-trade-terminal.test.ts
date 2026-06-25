@@ -17,6 +17,7 @@ import {
   getTerminalEligibilityStatus,
   getTerminalFreshness,
   getTicketSource,
+  liveOrderErrorMessage,
   liveOrderSubmitState,
   normalizeHexSignature,
   normalizeTerminalCandlesResponse,
@@ -139,12 +140,27 @@ describe("Agent.trade terminal product-loop helpers", () => {
   it("keeps paper success free of Hypurrscan links and adds links for live success", () => {
     const address = "0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43";
     const paper = paperOrderSubmitState("Paper fill recorded. Position updated.");
-    const live = liveOrderSubmitState(hypurrscanAddressUrl(address));
+    const live = liveOrderSubmitState({
+      scannerUrl: hypurrscanAddressUrl(address),
+      market: "HYPE-USD",
+      side: "long",
+      notionalUsd: 10.28,
+      resultSummary: "Hyperliquid returned ok (order).",
+    });
 
     expect(paper.message).toContain("Paper fill recorded");
     expect(paper.scannerUrl).toBeUndefined();
-    expect(live.message).toContain("Live order forwarded");
+    expect(live.message).toContain("Live order submitted: HYPE-USD long $10.28 notional.");
+    expect(live.detail).toBe("Hyperliquid returned ok (order).");
     expect(live.scannerUrl).toBe(`https://hypurrscan.io/address/${address}`);
+  });
+
+  it("maps common live order errors to actionable guidance while retaining detail", () => {
+    expect(liveOrderErrorMessage({ message: "Must deposit before performing actions" })).toContain("needs a deposit");
+    expect(liveOrderErrorMessage({ message: "Insufficient margin" })).toContain("Insufficient margin");
+    expect(liveOrderErrorMessage({ message: "builder fee approval missing" })).toContain("Builder fee approval");
+    expect(liveOrderErrorMessage({ message: "below $10 min notional" })).toContain("$10 minimum notional");
+    expect(liveOrderErrorMessage({ message: "HL_EXCHANGE_REJECTED: rejected" })).toContain("Hyperliquid rejected");
   });
 
   it("normalizes raw wallet signatures into JSON-safe Hyperliquid signatures", () => {
@@ -308,7 +324,19 @@ describe("Agent.trade terminal product-loop helpers", () => {
     });
     vi.spyOn(api, "positions").mockResolvedValue({ user, positions: [] });
     vi.spyOn(api, "userFills").mockResolvedValue({ user, fills: [] });
-    vi.spyOn(api, "openOrders").mockResolvedValue({ user, orders: [] });
+    vi.spyOn(api, "openOrders").mockResolvedValue({
+      user,
+      orders: [{
+        oid: 987,
+        assetIndex: 1,
+        side: "sell",
+        limitPx: "3200",
+        sz: "0.25",
+        origSz: "0.25",
+        timestamp: 1710000001000,
+        cancelAction: { type: "cancel", cancels: [{ a: 1, o: 987 }] },
+      }],
+    });
 
     const account = await loadReadOnlyHyperliquidAccount(user, MOCK_TRADING_SNAPSHOT);
 
@@ -359,7 +387,19 @@ describe("Agent.trade terminal product-loop helpers", () => {
         time: 1710000000000,
       }],
     });
-    vi.spyOn(api, "openOrders").mockResolvedValue({ user, orders: [] });
+    vi.spyOn(api, "openOrders").mockResolvedValue({
+      user,
+      orders: [{
+        oid: 987,
+        assetIndex: 1,
+        side: "sell",
+        limitPx: "3200",
+        sz: "0.25",
+        origSz: "0.25",
+        timestamp: 1710000001000,
+        cancelAction: { type: "cancel", cancels: [{ a: 1, o: 987 }] },
+      }],
+    });
 
     const account = await loadReadOnlyHyperliquidAccount(user, MOCK_TRADING_SNAPSHOT);
 
@@ -369,6 +409,26 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(account.positions[0]).toMatchObject({ symbol: "ETH-USD", mode: "live", size: 0.5 });
     expect(account.positions.some((position) => position.mode === "paper")).toBe(false);
     expect(account.fills[0]).toMatchObject({ symbol: "ETH-USD", mode: "live", feeUsd: 0.8 });
+    expect(account.openOrders[0]).toMatchObject({
+      oid: 987,
+      assetIndex: 1,
+      mode: "live",
+      cancelAction: { type: "cancel", cancels: [{ a: 1, o: 987 }] },
+    });
+  });
+
+  it("marks connected wallet account state unavailable instead of simulated when account fetch fails", async () => {
+    const user = "0x1234567890abcdef1234567890abcdef12345678";
+    vi.spyOn(api, "balance").mockRejectedValue(new Error("account read failed"));
+    vi.stubGlobal("fetch", async () => new Response("unavailable", { status: 503 }));
+
+    const result = await loadTradingSnapshot("BTC", { accountAddress: user });
+
+    expect(result.snapshot.account.valueKind).toBe("unavailable");
+    expect(result.snapshot.account.sourceLabel).toBe("Read-only Hyperliquid account unavailable");
+    expect(result.snapshot.account.liveAccountDataUnavailable).toBe(true);
+    expect(result.snapshot.account.positions).toEqual([]);
+    expect(result.snapshot.account.fills).toEqual([]);
   });
 
   it("provides portfolio-visible paper positions and exposure inputs", () => {
@@ -721,15 +781,24 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(response.whyWrong).toContain("will not infer a buy or sell direction");
   });
 
-  it("refuses typed long and short trade drafts when market data is stale", async () => {
+  it("warns but still drafts typed long and short trades when market data is stale", async () => {
     const long = await runTypedPrompt("Should I long BTC here?", true);
     const short = await runTypedPrompt("Should I short BTC here?", true);
 
-    expect(long.state).toBe("staleRefusal");
-    expect(long.orderDraft).toBeUndefined();
-    expect(long.thesis).toBe("I won’t draft a trade from stale data. Refreshing market data first.");
-    expect(short.state).toBe("staleRefusal");
-    expect(short.orderDraft).toBeUndefined();
+    expect(long.state).toBe("tradeProposal");
+    expect(long.orderDraft).toMatchObject({ side: "long" });
+    expect(long.riskNote).toContain("Market data may be delayed; confirm price in the ticket before submitting.");
+    expect(short.state).toBe("tradeProposal");
+    expect(short.orderDraft).toMatchObject({ side: "short" });
+    expect(short.riskNote).toContain("Market data may be delayed; confirm price in the ticket before submitting.");
+  });
+
+  it("refuses trade drafts when there is no usable price", async () => {
+    const response = await runTypedPrompt("Should I long BTC here?", false, undefined, { markPrice: 0 });
+
+    expect(response.state).toBe("staleRefusal");
+    expect(response.orderDraft).toBeUndefined();
+    expect(response.thesis).toContain("without a usable market price");
   });
 
   it("allows paper short proposals when only account freshness is stale", async () => {
@@ -764,17 +833,25 @@ describe("Agent.trade terminal product-loop helpers", () => {
   });
 });
 
-async function runTypedPrompt(prompt: string, isStale = false, accountFreshnessWarning?: string) {
+async function runTypedPrompt(
+  prompt: string,
+  isStale = false,
+  accountFreshnessWarning?: string,
+  marketPatch: Partial<typeof MOCK_TRADING_SNAPSHOT.market> = {},
+) {
   vi.useFakeTimers();
   const service = new DeterministicAgentService();
+  const snapshot = {
+    ...MOCK_TRADING_SNAPSHOT,
+    market: {
+      ...MOCK_TRADING_SNAPSHOT.market,
+      ...marketPatch,
+      dataAgeSeconds: isStale ? 46 : (marketPatch.dataAgeSeconds ?? MOCK_TRADING_SNAPSHOT.market.dataAgeSeconds),
+    },
+  };
   const promise = service.runPrompt({
     prompt,
-    snapshot: isStale
-      ? {
-          ...MOCK_TRADING_SNAPSHOT,
-          market: { ...MOCK_TRADING_SNAPSHOT.market, dataAgeSeconds: 46 },
-        }
-      : MOCK_TRADING_SNAPSHOT,
+    snapshot,
     isStale,
     accountFreshnessWarning,
     mode: "paper",

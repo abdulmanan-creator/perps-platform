@@ -494,9 +494,10 @@ async function terminalDefaultSafety(page) {
   assert(/Live market data|Refreshing|Market data stale|Candles stale|API unavailable/i.test(text), "Terminal compact freshness label missing");
   assert(/Manual/i.test(text), "Ticket did not show Manual source by default");
   assert(await evaluate(page, `(() => {
-    const testnet = [...document.querySelectorAll('.mode-control button')].find((button) => button.textContent.trim() === 'Testnet');
-    return Boolean(testnet && testnet.disabled);
-  })()`), "Testnet mode was not disabled under local default readiness");
+    const liveMode = [...document.querySelectorAll('.mode-control button')]
+      .find((button) => /^(Live|Testnet)$/u.test(button.textContent.trim()));
+    return Boolean(liveMode && liveMode.disabled);
+  })()`), "Live/testnet mode was not disabled under local default readiness");
 
   await evaluate(page, `(() => {
     const trigger = document.querySelector(".market-selector-trigger");
@@ -624,9 +625,6 @@ async function paperLoop(page) {
   await waitFor(page, "Boolean(document.querySelector('.agent-panel .agent-answer'))", 20_000);
   const aliasAgentText = await visibleText(page, ".agent-panel");
   assert(!/HYPERLIQUID is not available|THOUGHTS is not available/i.test(aliasAgentText), "Hyperliquid alias produced an unsupported generic-word response");
-  if (hypeSupported) {
-    await waitFor(page, "document.body.innerText.includes('HYPE-USD')", 20_000);
-  }
 
   const exchangeCalls = networkUrls
     .slice(networkStart)

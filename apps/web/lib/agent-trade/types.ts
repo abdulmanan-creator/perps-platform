@@ -68,6 +68,8 @@ export interface Position {
 }
 
 export interface OpenOrder {
+  oid?: number;
+  assetIndex?: number;
   symbol: string;
   side: "buy" | "sell";
   type: OrderType;
@@ -76,6 +78,10 @@ export interface OpenOrder {
   size: number;
   reduceOnly: boolean;
   timestamp: number;
+  cancelAction?: {
+    type: "cancel";
+    cancels: { a: number; o: number }[];
+  };
 }
 
 export interface Fill {

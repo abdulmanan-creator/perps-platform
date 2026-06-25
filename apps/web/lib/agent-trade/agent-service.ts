@@ -64,15 +64,25 @@ export class DeterministicAgentService implements AgentService {
   }): Promise<AgentResponse> {
     await new Promise((resolve) => setTimeout(resolve, 700));
 
-    if (args.isStale && (args.scenario === "long" || args.scenario === "short")) {
-      return this.stale(args.snapshot);
+    if ((args.scenario === "long" || args.scenario === "short") && !hasUsablePrice(args.snapshot)) {
+      return this.noUsablePrice(args.snapshot);
     }
 
+    const marketFreshnessWarning = args.isStale
+      ? "Market data may be delayed; confirm price in the ticket before submitting."
+      : undefined;
+
     if (args.scenario === "long") {
-      return this.withAccountFreshnessWarning(this.long(args.snapshot, args.mode), args.accountFreshnessWarning);
+      return this.withDraftWarnings(this.long(args.snapshot, args.mode), [
+        marketFreshnessWarning,
+        args.accountFreshnessWarning,
+      ]);
     }
     if (args.scenario === "short") {
-      return this.withAccountFreshnessWarning(this.short(args.snapshot, args.mode), args.accountFreshnessWarning);
+      return this.withDraftWarnings(this.short(args.snapshot, args.mode), [
+        marketFreshnessWarning,
+        args.accountFreshnessWarning,
+      ]);
     }
     if (args.scenario === "explain") {
       return this.explain(args.snapshot);
@@ -112,14 +122,15 @@ export class DeterministicAgentService implements AgentService {
     };
   }
 
-  private withAccountFreshnessWarning(response: AgentResponse, warning?: string): AgentResponse {
-    if (!warning || !response.orderDraft) {
+  private withDraftWarnings(response: AgentResponse, warnings: Array<string | undefined>): AgentResponse {
+    const nextWarnings = warnings.filter((warning): warning is string => Boolean(warning));
+    if (nextWarnings.length === 0 || !response.orderDraft) {
       return response;
     }
 
     return {
       ...response,
-      riskNote: `${response.riskNote} ${warning}`,
+      riskNote: `${response.riskNote} ${nextWarnings.join(" ")}`,
     };
   }
 
@@ -433,17 +444,21 @@ export class DeterministicAgentService implements AgentService {
     };
   }
 
-  private stale(snapshot: SharedTradingSnapshot): AgentResponse {
+  private noUsablePrice(snapshot: SharedTradingSnapshot): AgentResponse {
     return {
-      id: "stale-refusal",
+      id: "no-usable-price-refusal",
       state: "staleRefusal",
       question: "Should I trade this?",
       thesis:
-        "I won’t draft a trade from stale data. Refreshing market data first.",
-      receipts: [receipt("Data age", `${snapshot.market.dataAgeSeconds}s`, snapshot)],
-      riskNote: "Stale prices can make entries, liquidation estimates, and stops materially wrong.",
-      whyWrong: "The setup could still be valid after refresh, but the current snapshot is not safe enough to draft from.",
+        "I won’t draft a trade without a usable market price. Refresh market data before drafting an order.",
+      receipts: [receipt("Mark", fmtUsd(snapshot.market.markPrice, 1), snapshot)],
+      riskNote: "A missing or invalid price makes entries, liquidation estimates, and stops unreliable.",
+      whyWrong: "The setup could still be valid after a price refresh, but the current snapshot cannot produce a safe ticket.",
       annotations: [],
     };
   }
+}
+
+function hasUsablePrice(snapshot: SharedTradingSnapshot): boolean {
+  return Number.isFinite(snapshot.market.markPrice) && snapshot.market.markPrice > 0;
 }

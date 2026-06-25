@@ -154,7 +154,7 @@ export async function loadTradingSnapshot(
       fetch(`${API_BASE_URL}/marketStats`, { cache: "no-store", signal: controller.signal }),
     ]);
     if (!marketsRes.ok || !statsRes.ok) {
-      return await fallbackResult(requestedSymbol);
+      return await fallbackResult(requestedSymbol, options);
     }
 
     const [marketsWire, statsWire] = (await Promise.all([
@@ -164,7 +164,7 @@ export async function loadTradingSnapshot(
     const markets = joinPerpMarkets({ markets: marketsWire, stats: statsWire });
     const selected = resolveSelectedMarket({ symbol, markets, fallbackSymbol: "BTC" });
     if (!selected) {
-      return await fallbackResult(requestedSymbol);
+      return await fallbackResult(requestedSymbol, options);
     }
 
     const bookRes = await fetch(`${API_BASE_URL}/l2Book?coin=${encodeURIComponent(selected.symbol)}&nSigFigs=5`, {
@@ -345,6 +345,8 @@ export async function loadReadOnlyHyperliquidAccount(
       };
     }),
     openOrders: openOrders.orders.map((order) => ({
+      oid: order.oid,
+      assetIndex: order.assetIndex,
       symbol: `#${order.assetIndex}`,
       mode: "live",
       side: order.side,
@@ -353,6 +355,7 @@ export async function loadReadOnlyHyperliquidAccount(
       size: toNumber(order.sz),
       reduceOnly: false,
       timestamp: order.timestamp,
+      cancelAction: order.cancelAction,
     })),
     fills: fills.fills.map((fill) => ({
       symbol: `${fill.coin}-USD`,

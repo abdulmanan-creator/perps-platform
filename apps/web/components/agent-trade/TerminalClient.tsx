@@ -44,6 +44,7 @@ import {
   getTerminalFreshness,
   getTerminalEligibilityStatus,
   getTicketSource,
+  liveOrderErrorMessage,
   liveOrderSubmitState,
   normalizeHexSignature,
   paperOrderSubmitState,
@@ -199,6 +200,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
+  const [cancellingOrderKey, setCancellingOrderKey] = useState<string | undefined>();
   const [isAcked, setIsAcked] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitState, setSubmitState] = useState<SubmitState | undefined>();
@@ -356,10 +358,8 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
     liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
   });
-  const liveDisabledReason = liveReadiness.allowed && !freshness.isDraftSafe
-    ? freshness.detail
-    : liveReadiness.disabledReason;
-  const canLiveTrade = mode === "live" && liveReadiness.allowed && freshness.isDraftSafe;
+  const liveDisabledReason = liveReadiness.disabledReason;
+  const canLiveTrade = mode === "live" && liveReadiness.allowed;
 
   useEffect(() => {
     if (mode === "live" && !liveReadiness.allowed) {
@@ -568,16 +568,10 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     }
   }
 
-  async function submitLiveOrder() {
-    if (!canLiveTrade) {
-      throw new Error(liveDisabledReason);
-    }
+  async function buildSignAndSendLiveAction(action: unknown, user: `0x${string}`, provider: Eip1193Provider) {
     if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {
       throw new Error("Wallet required.");
     }
-    const provider = await wallet.getEthereumProvider();
-    const user = wallet.address as `0x${string}`;
-    const action = buildHlOrderAction(draft, snapshot.market);
     const headers = {
       "content-type": "application/json",
       "x-agent-trade-risk-accepted": "true",
@@ -590,10 +584,12 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       body: JSON.stringify({ user, action }),
     });
     if (!buildRes.ok) {
-      const error = (await buildRes.json()) as { message?: string; guidance?: string };
-      throw new Error(error.guidance ?? error.message ?? "Exchange build failed");
+      throw new Error(liveOrderErrorMessage(await readLiveOrderError(buildRes, "Exchange build failed")));
     }
     const built = (await buildRes.json()) as { typedData: unknown; nonce: number; action: unknown };
+    if (!built.typedData) {
+      throw new Error("Exchange build did not return typed data for wallet signing.");
+    }
     const typedData = built.typedData as HyperliquidTypedData;
     const rawSignature = await provider.request({
       method: "eth_signTypedData_v4",
@@ -609,14 +605,71 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       body: JSON.stringify({ action: built.action, nonce: built.nonce, signature }),
     });
     if (!sendRes.ok) {
-      const error = (await sendRes.json()) as { message?: string; guidance?: string };
-      throw new Error(error.guidance ?? error.message ?? "Exchange send failed");
+      throw new Error(liveOrderErrorMessage(await readLiveOrderError(sendRes, "Exchange send failed")));
     }
+    return await readJsonOrEmpty(sendRes);
+  }
+
+  async function submitLiveOrder() {
+    if (!canLiveTrade) {
+      throw new Error(liveDisabledReason);
+    }
+    if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {
+      throw new Error("Wallet required.");
+    }
+    const provider = await wallet.getEthereumProvider();
+    const user = wallet.address as `0x${string}`;
+    const action = buildHlOrderAction(draft, snapshot.market);
+    const exchangeResponse = await buildSignAndSendLiveAction(action, user, provider);
     const refreshed = await loadTradingSnapshot(snapshot.market.base, {
       accountAddress: user,
     });
     setSnapshot(refreshed.snapshot);
-    setSubmitState(liveOrderSubmitState(hypurrscanAddressUrl(user)));
+    setBottomTab("fills");
+    setSubmitState(liveOrderSubmitState({
+      scannerUrl: hypurrscanAddressUrl(user),
+      market: draft.symbol,
+      side: draft.side,
+      notionalUsd: notional,
+      resultSummary: summarizeExchangeResponse(exchangeResponse),
+    }));
+  }
+
+  async function cancelLiveOrder(order: SharedTradingSnapshot["account"]["openOrders"][number]) {
+    if (!order.cancelAction) {
+      setSubmitState({ message: "Cancel unavailable: this open order did not include a cancel action." });
+      return;
+    }
+    if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {
+      setSubmitState({ message: "Cancel unavailable: wallet required." });
+      return;
+    }
+    if (!liveReadiness.allowed) {
+      setSubmitState({ message: liveReadiness.disabledReason });
+      return;
+    }
+
+    const orderKey = openOrderRowKey(order);
+    setCancellingOrderKey(orderKey);
+    setModalError(undefined);
+    try {
+      const provider = await wallet.getEthereumProvider();
+      const user = wallet.address as `0x${string}`;
+      const exchangeResponse = await buildSignAndSendLiveAction(order.cancelAction, user, provider);
+      const refreshed = await loadTradingSnapshot(snapshot.market.base, { accountAddress: user });
+      setSnapshot(refreshed.snapshot);
+      setBottomTab("orders");
+      setSubmitState({
+        message: `Cancel submitted for ${order.symbol} order${order.oid ? ` #${order.oid}` : ""}.`,
+        detail: summarizeExchangeResponse(exchangeResponse),
+        scannerUrl: hypurrscanAddressUrl(user) ?? undefined,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Cancel failed.";
+      setSubmitState({ message });
+    } finally {
+      setCancellingOrderKey(undefined);
+    }
   }
 
   async function confirmOrder() {
@@ -691,6 +744,8 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               bottomTab={bottomTab}
               setBottomTab={setBottomTab}
               accountAddress={wallet.status === "connected" ? wallet.address : undefined}
+              cancellingOrderKey={cancellingOrderKey}
+              cancelLiveOrder={(order) => void cancelLiveOrder(order)}
             />
           </div>
           <div className="terminal-book-stack">
@@ -778,6 +833,7 @@ function SubmitStateNotice({ state }: { state: SubmitState }) {
   return (
     <div className="submit-state">
       <span>{state.message}</span>
+      {state.detail ? <small>{state.detail}</small> : null}
       {state.scannerUrl ? (
         <a href={state.scannerUrl} target="_blank" rel="noreferrer">
           View on Hypurrscan
@@ -785,6 +841,58 @@ function SubmitStateNotice({ state }: { state: SubmitState }) {
       ) : null}
     </div>
   );
+}
+
+async function readLiveOrderError(response: Response, fallback: string) {
+  const json = await readJsonOrEmpty(response);
+  if (json && typeof json === "object") {
+    const body = json as { message?: string; guidance?: string; code?: string };
+    return {
+      code: body.code,
+      guidance: body.guidance,
+      message: body.message ?? fallback,
+    };
+  }
+  return { message: fallback };
+}
+
+async function readJsonOrEmpty(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { message: text };
+  }
+}
+
+function summarizeExchangeResponse(response: unknown): string {
+  if (!response || typeof response !== "object") {
+    return "Hyperliquid response received. Refreshing order state.";
+  }
+  const record = response as {
+    exchangeResponse?: unknown;
+    status?: string;
+    response?: unknown;
+    message?: string;
+  };
+  const inner = record.exchangeResponse && typeof record.exchangeResponse === "object"
+    ? record.exchangeResponse as { status?: string; response?: { type?: string; data?: unknown } }
+    : undefined;
+  const status = inner?.status ?? record.status;
+  const type = inner?.response?.type;
+  if (status && type) {
+    return `Hyperliquid returned ${status} (${type}).`;
+  }
+  if (status) {
+    return `Hyperliquid returned ${status}.`;
+  }
+  if (record.message) {
+    return record.message;
+  }
+  return "Hyperliquid response received. Refreshing order state.";
 }
 
 function TerminalRail() {
@@ -1570,7 +1678,7 @@ function AgentPanel(props: {
       <div className="panel-head">
         <div>
           <span>{AGENT_PANEL_HEADING}</span>
-          <strong>{props.freshness.isDraftSafe ? "Agent market read" : "Drafting paused for market refresh"}</strong>
+          <strong>{props.freshness.isDraftSafe ? "Agent market read" : "Drafts include stale-data warning"}</strong>
         </div>
       </div>
       <div className="prompt-chips">
@@ -1643,6 +1751,8 @@ function BottomPanel(props: {
   bottomTab: "positions" | "orders" | "fills";
   setBottomTab: (tab: "positions" | "orders" | "fills") => void;
   accountAddress?: string;
+  cancellingOrderKey?: string;
+  cancelLiveOrder: (order: SharedTradingSnapshot["account"]["openOrders"][number]) => void;
 }) {
   const scannerUrl = hypurrscanAddressUrl(props.accountAddress);
   return (
@@ -1673,13 +1783,25 @@ function BottomPanel(props: {
       {props.bottomTab === "orders" ? (
         <div className="data-table">
           {props.snapshot.account.openOrders.map((order) => (
-            <div key={`${order.mode ?? "demo"}-${order.symbol}-${order.side}-${order.timestamp}`} className="data-row">
+            <div key={openOrderRowKey(order)} className="data-row">
               <strong>{order.symbol}{order.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={order.side === "buy" ? "pos" : "neg"}>{order.side}</span>
               <span>{order.type}</span>
               <span>{fmtUsd(order.price, 1)}</span>
               <span>{order.size}</span>
-              <span>{order.reduceOnly ? "Reduce only" : "Open"}</span>
+              <span className="row-actions-cell">
+                {order.reduceOnly ? "Reduce only" : "Open"}
+                {order.mode === "live" && order.cancelAction ? (
+                  <button
+                    type="button"
+                    className="mini-action-button"
+                    disabled={props.cancellingOrderKey === openOrderRowKey(order)}
+                    onClick={() => props.cancelLiveOrder(order)}
+                  >
+                    {props.cancellingOrderKey === openOrderRowKey(order) ? "Cancelling..." : "Cancel"}
+                  </button>
+                ) : null}
+              </span>
             </div>
           ))}
         </div>
@@ -1719,6 +1841,17 @@ function positionRowKey(position: SharedTradingSnapshot["account"]["positions"][
     position.symbol,
     position.side,
     position.lastFillId ?? position.updatedAt ?? position.entryPrice,
+  ].join("-");
+}
+
+function openOrderRowKey(order: SharedTradingSnapshot["account"]["openOrders"][number]): string {
+  return [
+    order.mode ?? "demo",
+    order.oid ?? order.timestamp,
+    order.symbol,
+    order.side,
+    order.price,
+    order.size,
   ].join("-");
 }
 
