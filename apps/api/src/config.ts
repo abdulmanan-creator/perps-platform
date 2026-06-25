@@ -150,8 +150,9 @@ const ConfigSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
-  AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: z.coerce.number().positive().default(250),
-  AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: z.coerce.number().positive().default(1000),
+  AGENT_TRADE_MIN_ORDER_NOTIONAL_USD: z.coerce.number().positive().default(10),
+  AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: z.coerce.number().nonnegative().default(250),
+  AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: z.coerce.number().nonnegative().default(1000),
   AGENT_TRADE_INTERNAL_ALLOWLIST: z.string().default(""),
   AGENT_TRADE_REQUIRE_RISK_ACK: z
     .enum(["true", "false"])

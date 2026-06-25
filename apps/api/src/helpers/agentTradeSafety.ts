@@ -126,16 +126,7 @@ export function assertAgentTradeExchangeAllowed(args: {
       throw new ApiException(
         "REGION_BLOCKED",
         "Mainnet order execution is disabled for Agent.trade.",
-        "Use Hyperliquid testnet for MVP execution. To enable mainnet, set AGENT_TRADE_MAINNET_EXECUTION_ENABLED=true and add the user to AGENT_TRADE_INTERNAL_ALLOWLIST.",
-      );
-    }
-
-    const user = args.user?.toLowerCase();
-    if (!user || !args.cfg.agentTradeAllowlist.has(user)) {
-      throw new ApiException(
-        "REGION_BLOCKED",
-        "This account is not allowlisted for mainnet execution.",
-        "Mainnet execution requires the internal allowlist, eligibility checks, caps, and the kill switch to be open.",
+        "Use Hyperliquid testnet for MVP execution, or enable mainnet only with Agent.trade eligibility, acknowledgement, and kill-switch controls active.",
       );
     }
   }
@@ -145,21 +136,35 @@ export function assertAgentTradeExchangeAllowed(args: {
   }
 
   const notionalUsd = actionNotionalUsd(args.action);
-  if (notionalUsd > args.cfg.AGENT_TRADE_ORDER_NOTIONAL_CAP_USD) {
+  if (notionalUsd < args.cfg.AGENT_TRADE_MIN_ORDER_NOTIONAL_USD) {
+    throw new ApiException(
+      "INVALID_PARAMS",
+      "Order is below Hyperliquid's minimum trade size.",
+      `Increase order notional to at least ${args.cfg.AGENT_TRADE_MIN_ORDER_NOTIONAL_USD} USD.`,
+    );
+  }
+
+  if (
+    args.cfg.AGENT_TRADE_ORDER_NOTIONAL_CAP_USD > 0 &&
+    notionalUsd > args.cfg.AGENT_TRADE_ORDER_NOTIONAL_CAP_USD
+  ) {
     throw new ApiException(
       "INVALID_PARAMS",
       "Order exceeds the Agent.trade per-order notional cap.",
-      `Reduce order size below ${args.cfg.AGENT_TRADE_ORDER_NOTIONAL_CAP_USD} USD for internal MVP testing.`,
+      `Reduce order size below ${args.cfg.AGENT_TRADE_ORDER_NOTIONAL_CAP_USD} USD, or disable the optional product safety throttle by setting AGENT_TRADE_ORDER_NOTIONAL_CAP_USD=0.`,
     );
   }
 
   const usageKey = args.user?.toLowerCase() ?? args.req.ip;
   const used = dailyUsage.get(usageKey)?.notionalUsd ?? 0;
-  if (used + notionalUsd > args.cfg.AGENT_TRADE_DAILY_NOTIONAL_CAP_USD) {
+  if (
+    args.cfg.AGENT_TRADE_DAILY_NOTIONAL_CAP_USD > 0 &&
+    used + notionalUsd > args.cfg.AGENT_TRADE_DAILY_NOTIONAL_CAP_USD
+  ) {
     throw new ApiException(
       "INVALID_PARAMS",
       "Order exceeds the Agent.trade daily notional cap.",
-      `This account/session has used ${used.toFixed(2)} USD today. The MVP cap is ${args.cfg.AGENT_TRADE_DAILY_NOTIONAL_CAP_USD} USD.`,
+      `This account/session has used ${used.toFixed(2)} USD today. The optional product safety throttle is ${args.cfg.AGENT_TRADE_DAILY_NOTIONAL_CAP_USD} USD.`,
     );
   }
 }

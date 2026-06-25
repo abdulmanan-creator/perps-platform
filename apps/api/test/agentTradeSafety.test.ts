@@ -62,7 +62,7 @@ function ackHeaders(country = "CA"): Record<string, string> {
   };
 }
 
-function order(price = 1000, size = 0.001): OrderAction {
+function order(price = 1000, size = 0.01): OrderAction {
   return {
     type: "order",
     grouping: "na",
@@ -173,6 +173,17 @@ describe("Agent.trade safety helper", () => {
     ).toThrow(/acknowledgement/i);
   });
 
+  it("minimum order notional blocks orders below Hyperliquid minimum", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders()),
+        cfg: cfg(),
+        action: order(1000, 0.009),
+        user: USER,
+      }),
+    ).toThrow(/minimum trade size/i);
+  });
+
   it("per-order notional cap blocks oversized orders", () => {
     expect(() =>
       assertAgentTradeExchangeAllowed({
@@ -182,6 +193,20 @@ describe("Agent.trade safety helper", () => {
         user: USER,
       }),
     ).toThrow(/per-order notional cap/i);
+  });
+
+  it("disabled per-order cap defers oversized order rejection downstream", () => {
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: req(ackHeaders()),
+        cfg: cfg({
+          AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: "0",
+          AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: "0",
+        }),
+        action: order(1000, 100),
+        user: USER,
+      }),
+    ).not.toThrow();
   });
 
   it("daily notional cap blocks after recorded usage", () => {
@@ -203,6 +228,28 @@ describe("Agent.trade safety helper", () => {
     ).toThrow(/daily notional cap/i);
   });
 
+  it("disabled daily cap allows usage above the optional product throttle", () => {
+    const config = cfg({
+      AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: "0",
+      AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: "0",
+    });
+    const request = req(ackHeaders());
+    const firstOrder = order(1000, 100);
+    const secondOrder = order(1000, 100);
+
+    assertAgentTradeExchangeAllowed({ req: request, cfg: config, action: firstOrder, user: USER });
+    recordAgentTradeNotional({ req: request, action: firstOrder, user: USER });
+
+    expect(() =>
+      assertAgentTradeExchangeAllowed({
+        req: request,
+        cfg: config,
+        action: secondOrder,
+        user: USER,
+      }),
+    ).not.toThrow();
+  });
+
   it("mainnet execution disabled blocks order actions", () => {
     expect(() =>
       assertAgentTradeExchangeAllowed({
@@ -214,18 +261,20 @@ describe("Agent.trade safety helper", () => {
     ).toThrow(/Mainnet order execution is disabled/i);
   });
 
-  it("mainnet allowlist is required when mainnet execution is enabled", () => {
+  it("eligible acknowledged users may pass Agent.trade mainnet policy without internal allowlist", () => {
     expect(() =>
       assertAgentTradeExchangeAllowed({
         req: req(ackHeaders()),
         cfg: cfg({
           HYPERLIQUID_API_URL: "https://api.hyperliquid.xyz",
           AGENT_TRADE_MAINNET_EXECUTION_ENABLED: "true",
+          AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: "0",
+          AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: "0",
         }),
         action: order(),
         user: USER,
       }),
-    ).toThrow(/not allowlisted/i);
+    ).not.toThrow();
   });
 
   it("unknown eligibility blocks updateLeverage guard", () => {

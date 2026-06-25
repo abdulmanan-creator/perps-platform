@@ -277,6 +277,7 @@ export async function agentTradeRoute(app: FastifyInstance): Promise<void> {
       executionVenue: app.config.isTestnet ? "hyperliquid-testnet" : "hyperliquid-mainnet",
       mainnetExecutionEnabled: app.config.AGENT_TRADE_MAINNET_EXECUTION_ENABLED,
       killSwitchEnabled: app.config.AGENT_TRADE_LIVE_TRADING_KILL_SWITCH,
+      minOrderNotionalUsd: app.config.AGENT_TRADE_MIN_ORDER_NOTIONAL_USD,
       orderNotionalCapUsd: app.config.AGENT_TRADE_ORDER_NOTIONAL_CAP_USD,
       dailyNotionalCapUsd: app.config.AGENT_TRADE_DAILY_NOTIONAL_CAP_USD,
     });
