@@ -20,6 +20,7 @@ import {
   ticketSourceDisplay,
 } from "@/lib/agent-trade/agent-ux";
 import { createAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
+import { parseConnectorDraftParam } from "@/lib/agent-trade/connector-draft";
 import {
   fmtAdaptiveUsd,
   fmtAgo,
@@ -157,6 +158,7 @@ function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
     marginMode: "isolated",
     reduceOnly: false,
     fromAgent: false,
+    source: "manual",
   };
 }
 
@@ -283,7 +285,11 @@ function buildUnsupportedPromptMarketResponse(
 function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const requestedSymbol = normalizeSymbol(searchParams.get("symbol"));
+  const draftParam = searchParams.get("draft");
+  const parsedConnectorDraft = useMemo(() => parseConnectorDraftParam(draftParam), [draftParam]);
+  const requestedSymbol = normalizeSymbol(
+    searchParams.get("symbol") ?? (parsedConnectorDraft.status === "valid" ? parsedConnectorDraft.draft.symbol : null),
+  );
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
@@ -317,6 +323,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   );
   const [isLoadingCandles, setIsLoadingCandles] = useState(false);
   const [streamStatus, setStreamStatus] = useState<TerminalStreamStatus>("disconnected");
+  const importedConnectorDraftRef = useRef<string | undefined>();
   const streamDebugRef = useRef<TerminalStreamDebug>({
     selectedMarket: MOCK_TRADING_SNAPSHOT.market.symbol,
     subscribedCoin: MOCK_TRADING_SNAPSHOT.market.base,
@@ -360,6 +367,34 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       window.clearInterval(timer);
     };
   }, [requestedSymbol, wallet.address, wallet.status]);
+
+  useEffect(() => {
+    if (!draftParam || importedConnectorDraftRef.current === draftParam) {
+      return;
+    }
+    if (parsedConnectorDraft.status === "empty") {
+      return;
+    }
+    if (parsedConnectorDraft.status === "invalid") {
+      importedConnectorDraftRef.current = draftParam;
+      setSubmitState({
+        message: "Connector draft could not be imported.",
+        detail: parsedConnectorDraft.message,
+      });
+      return;
+    }
+    if (parsedConnectorDraft.draft.symbol !== snapshot.market.symbol) {
+      return;
+    }
+
+    importedConnectorDraftRef.current = draftParam;
+    setDraft({ ...parsedConnectorDraft.draft, symbol: snapshot.market.symbol });
+    setSubmitState({
+      message: "Connector draft imported into the ticket.",
+      detail: "Review every field. Agent.trade will not submit until you confirm.",
+    });
+    setModalError(undefined);
+  }, [draftParam, parsedConnectorDraft, snapshot.market.symbol]);
 
   async function refreshTerminalSnapshot(options: { preserveDraft?: boolean } = {}) {
     setIsLoadingData(true);
@@ -935,7 +970,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   }
 
   function sendToTicket(orderDraft: OrderDraft) {
-    setDraft({ ...orderDraft, fromAgent: true, editedAfterAgent: false });
+    setDraft({ ...orderDraft, fromAgent: true, source: "agent", editedAfterAgent: false });
     setSubmitState({ message: "Agent proposal copied into the ticket." });
     setModalError(undefined);
   }
@@ -2076,7 +2111,7 @@ function TicketPanel(props: {
   const sourceDisplay = ticketSourceDisplay(props.draft);
   const largePaperOrder = props.mode === "paper" && props.notional > props.simulatedBalanceUsd;
   return (
-    <div className={`panel ticket-panel ${sourceDisplay.state === "agent" ? "from-agent" : ""}`}>
+    <div className={`panel ticket-panel ${sourceDisplay.state === "agent" || sourceDisplay.state === "connector" ? "from-agent" : ""}`}>
       <div className="panel-head">
         <div>
           <span>Order ticket</span>
@@ -2515,7 +2550,7 @@ function ConfirmModal(props: {
         <div className="confirm-grid">
           <span>Market <strong>{props.draft.symbol}</strong></span>
           <span>Side <strong>{props.draft.side}</strong></span>
-          <span>Source <strong>{source === "agent" ? "Agent draft" : "Manual input"}</strong></span>
+          <span>Source <strong>{sourceDisplay.label}</strong></span>
           <span>Size <strong>{fmtNumber(props.draft.sizeBtc, props.szDecimals)} {props.base}</strong></span>
           <span>Order type <strong>{props.draft.orderType}</strong></span>
           <span>Leverage <strong>{props.draft.leverage}x</strong></span>

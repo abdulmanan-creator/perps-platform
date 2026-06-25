@@ -28,14 +28,15 @@ Future permissioned execution can exist, but it needs explicit scopes, caps, rev
 | Route | Current state | Notes |
 |---|---|---|
 | `/connectors` | Safe current-product copy | Frames Claude and ChatGPT as market context, draft proposal, and terminal confirmation. States that connectors do not bypass eligibility, caps, acknowledgements, or confirmation. |
-| `/connect/claude` | Safe current-product copy | Shows the MCP URL and Claude setup steps, but repeatedly states research/draft only and that orders return to Agent.trade. |
-| `/connect/chatgpt` | Safe current-product copy | Same framing as Claude: research, sourced context, draft handoff, and Agent.trade confirmation. |
+| `/connect/claude` | Safe current-product copy | Shows the MCP URL, Claude setup steps, and draft review-link shape. Repeatedly states research/draft only and that orders return to Agent.trade. |
+| `/connect/chatgpt` | Safe current-product copy | Same framing as Claude: research, sourced context, draft review-link shape, and Agent.trade confirmation. |
 | `/oauth/authorize` | Fail-closed by default | Returns the compatibility-disabled screen unless `NEXT_PUBLIC_AGENT_TRADE_ENABLE_OAUTH_COMPAT_APPROVALS=true`. When enabled, it can request legacy `approveBuilderFee` and `approveAgent` signatures through generic `/exchange`. |
 | `/approve` | Fail-closed by default | Returns the legacy-disabled screen unless `NEXT_PUBLIC_AGENT_TRADE_ENABLE_LEGACY_APPROVALS=true`. When enabled and live-eligible, it can build/sign/send `approveBuilderFee` through generic `/exchange`; Bridge2 deposit is separately gated. |
+| `/terminal?symbol=...&draft=...` | Draft-import handoff | Imports a URL-encoded connector draft into the ticket, labels it `From Connector`, and still requires Agent.trade review and confirmation before any submission. |
 
-### Public Copy Gap
+### Public Copy
 
-`apps/web/public/llms.txt` still describes the previous hosted MCP product as execution-capable: OAuth plus `approveAgent`, `place_market_order`, `place_limit_order`, `cancel_order`, `set_leverage`, and `approve_builder`. That conflicts with the current Agent.trade stance. It should be revised before any safe connector launch so external assistants do not ingest stale execution claims.
+`apps/web/public/llms.txt` now describes connectors as research, explanation, and draft handoff surfaces. It states that connector orders return to Agent.trade for confirmation and that permissioned connector execution is future roadmap only.
 
 ### Feature Flags
 
@@ -122,9 +123,11 @@ Current OAuth gaps for permissioned execution:
 - `stdio` transport with optional `ALCHEMY_HL_TRADE_KEY` hot-key signing.
 - `http` transport with OAuth bearer tokens.
 - Read tools for markets, prices, balances, positions, open orders, fills, approval, and prediction markets.
-- Write tools for market orders, limit orders, trigger orders, prediction trades, close position, cancel order, set leverage, and approve builder.
+- Draft tool `draft_trade_proposal`, which returns a structured proposal and Agent.trade review URL.
+- Default `MCP_TOOL_MODE=draft`, which hides inherited write tools.
+- Legacy `MCP_TOOL_MODE=legacy-execution`, which exposes inherited write tools for builder-code compatibility only.
 
-For Agent.trade safe launch, the existing MCP write tools are not acceptable as-is. They should be removed, hidden, or replaced with draft/deep-link tools before launch.
+For Agent.trade safe launch, the hosted MCP server should remain in default draft mode. Legacy execution mode is not part of the MVP connector product.
 
 ## Safe Launch Scope
 
@@ -136,8 +139,6 @@ Allowed tools:
 
 - `get_markets`
 - `get_market_price`
-- `get_market_stats`
-- `get_l2_book`
 - `get_prediction_markets`
 - `get_prediction_odds`
 - `get_balance` when authenticated or when the user supplies an address
@@ -145,7 +146,6 @@ Allowed tools:
 - `get_open_orders` when authenticated or when the user supplies an address
 - `get_fills` when authenticated or when the user supplies an address
 - `draft_trade_proposal`
-- `draft_risk_summary`
 
 Disallowed for 7A:
 
@@ -174,7 +174,14 @@ The draft tool should return a structured proposal, not an executable action:
 
 ### 7B: Deep-Link/Order Handoff To Agent.trade Confirmation
 
-Add a backend draft endpoint and a web handoff route.
+Implemented groundwork:
+
+- URL format: `/terminal?symbol=<base>&draft=<url-encoded-json>`.
+- Draft payload version: `{ v: 1, source, symbol, side, orderType, sizeBtc, leverage, marginMode, reduceOnly, limitPrice?, takeProfit?, stopLoss?, note? }`.
+- Terminal behavior: import only, label as `From Connector`, require normal ticket review and confirmation.
+- Submission behavior: unchanged. Paper still uses `/agent-trade/paper-orders`; live still uses `/agent-trade/exchange` only after confirmation.
+
+Recommended backend endpoints for production hardening:
 
 Required endpoints:
 
@@ -335,4 +342,3 @@ Copy rule:
 - Do not change `/agent-trade/exchange` semantics.
 - Do not change terminal or websocket files.
 - Do not modify deployed `alchemy-hl-*` service config.
-

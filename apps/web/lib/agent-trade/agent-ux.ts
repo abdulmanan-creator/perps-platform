@@ -2,7 +2,7 @@ import { fmtMarketUsd, fmtPct, fmtUsd } from "./format";
 import type { AgentResponse, EligibilityMode, OrderDraft, SharedTradingSnapshot } from "./types";
 
 export type AgentProviderDisplayState = "deterministic" | "liveModel" | "fallback";
-export type TicketSourceDisplayState = "manual" | "agent" | "editedAfterAgent";
+export type TicketSourceDisplayState = "manual" | "agent" | "connector" | "editedAfterAgent";
 
 export interface AgentProviderDisplay {
   state: AgentProviderDisplayState;
@@ -102,7 +102,7 @@ export function agentDataReadSummary(args: {
   return items;
 }
 
-export function ticketSourceDisplay(draft: Pick<OrderDraft, "fromAgent"> & { editedAfterAgent?: boolean }): {
+export function ticketSourceDisplay(draft: Pick<OrderDraft, "fromAgent" | "source"> & { editedAfterAgent?: boolean }): {
   state: TicketSourceDisplayState;
   label: string;
   summary: string;
@@ -111,7 +111,14 @@ export function ticketSourceDisplay(draft: Pick<OrderDraft, "fromAgent"> & { edi
     return {
       state: "editedAfterAgent",
       label: "Edited after agent",
-      summary: "Agent draft was manually changed; review every field.",
+      summary: "Imported draft was manually changed; review every field.",
+    };
+  }
+  if (draft.source === "connector") {
+    return {
+      state: "connector",
+      label: "From Connector",
+      summary: "Connector draft imported; you confirm in Agent.trade.",
     };
   }
   if (draft.fromAgent) {

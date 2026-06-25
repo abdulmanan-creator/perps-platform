@@ -21,6 +21,7 @@ export type OrderType = "market" | "limit";
 export type MarginMode = "isolated" | "cross";
 export type DataSource = "mock" | "live-mainnet";
 export type AccountValueKind = "paper" | "real" | "hybrid" | "unavailable";
+export type OrderDraftSource = "manual" | "agent" | "connector";
 
 export interface MarketSnapshot {
   symbol: string;
@@ -158,6 +159,7 @@ export interface OrderDraft {
   takeProfit?: number;
   stopLoss?: number;
   fromAgent: boolean;
+  source?: OrderDraftSource;
   editedAfterAgent?: boolean;
   scenarioId?: string;
 }

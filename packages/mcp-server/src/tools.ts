@@ -6,7 +6,12 @@
  *   - auth: per-request auth context. agentJwt populated in http transport
  *           mode when the Authorization header is present; empty otherwise.
  *
- * Write tools pick the right SDK instance:
+ * Draft mode is the default hosted connector stance: tools can research and
+ * create Agent.trade review links, but cannot submit orders. Legacy execution
+ * tools remain behind MCP_TOOL_MODE=legacy-execution for inherited builder-code
+ * compatibility.
+ *
+ * Legacy write tools pick the right SDK instance:
  *   - If agentJwt is present → agent-mode SDK that POSTs /agent/exchange.
  *     The user signed approveAgent in advance; server signs each trade.
  *   - Else if ALCHEMY_HL_TRADE_KEY is set → hot-key SDK signs locally.
@@ -75,7 +80,21 @@ export function buildTools(cfg: Config): Tool[] {
     return `Cannot execute ${toolName}: no auth available. In http transport mode, the calling host (Claude/ChatGPT) must pass Authorization: Bearer <privy-jwt>. In stdio mode, set ALCHEMY_HL_TRADE_KEY on the server. Read-only tools still work.`;
   };
 
-  return [
+  const draftTradeProposalSchema = z.object({
+    symbol: z.string().describe("Perp market symbol like BTC, ETH, or SOL."),
+    side: z.enum(["long", "short"]).describe("Proposed position direction."),
+    orderType: z.enum(["market", "limit"]).default("market"),
+    sizeBtc: z.number().positive().describe("Order size in base units. For ETH this is ETH, for SOL this is SOL, etc."),
+    leverage: z.number().int().min(1).max(50),
+    marginMode: z.enum(["isolated", "cross"]).default("isolated"),
+    reduceOnly: z.boolean().default(false),
+    limitPrice: z.number().positive().optional().describe("Required when orderType is limit."),
+    takeProfit: z.number().positive().optional(),
+    stopLoss: z.number().positive().optional(),
+    rationale: z.string().max(1_000).optional().describe("Brief reasoning for the proposal."),
+  });
+
+  const safeTools: Tool[] = [
     // ========================================================================
     // Read-only tools
     // ========================================================================
@@ -350,9 +369,47 @@ export function buildTools(cfg: Config): Tool[] {
       },
     },
 
+    {
+      name: "draft_trade_proposal",
+      description:
+        "Create a draft-only Agent.trade review link for a proposed perp order. This tool does not place, submit, sign, or confirm trades. The user must open Agent.trade, review eligibility/caps/risk, sign with their wallet when required, and explicitly confirm before any live order can be submitted.",
+      inputSchema: draftTradeProposalSchema,
+      async handler(rawArgs) {
+        const args = draftTradeProposalSchema.parse(rawArgs ?? {});
+        if (args.orderType === "limit" && args.limitPrice === undefined) {
+          return JSON.stringify(
+            { ok: false, error: "LIMIT_PRICE_REQUIRED", message: "Limit drafts require limitPrice." },
+            null,
+            2,
+          );
+        }
+        const draft = normalizeConnectorDraft(args);
+        return JSON.stringify(
+          {
+            ok: true,
+            type: "connector_draft",
+            draft,
+            reviewUrl: connectorDraftReviewUrl(cfg.WEB_PUBLIC_URL, draft),
+            safety:
+              "Draft only. Agent.trade will not submit this proposal until the user reviews the ticket and explicitly confirms inside Agent.trade.",
+            rationale: args.rationale ?? null,
+          },
+          null,
+          2,
+        );
+      },
+    },
+
     // ========================================================================
-    // Write tools — require ALCHEMY_HL_TRADE_KEY
+    // Legacy execution tools — hidden unless MCP_TOOL_MODE=legacy-execution.
     // ========================================================================
+  ];
+
+  if (cfg.MCP_TOOL_MODE === "draft") {
+    return safeTools;
+  }
+
+  const executionTools: Tool[] = [
 
     {
       name: "trade_prediction_market",
@@ -761,6 +818,66 @@ export function buildTools(cfg: Config): Tool[] {
       },
     },
   ];
+
+  return [...safeTools, ...executionTools];
+}
+
+interface ConnectorDraftToolArgs {
+  symbol: string;
+  side: "long" | "short";
+  orderType: "market" | "limit";
+  sizeBtc: number;
+  leverage: number;
+  marginMode: "isolated" | "cross";
+  reduceOnly: boolean;
+  limitPrice?: number;
+  takeProfit?: number;
+  stopLoss?: number;
+}
+
+interface ConnectorDraftPayload extends ConnectorDraftToolArgs {
+  v: 1;
+  source: "mcp";
+}
+
+function normalizeConnectorDraft(args: ConnectorDraftToolArgs): ConnectorDraftPayload {
+  const draft: ConnectorDraftPayload = {
+    v: 1,
+    source: "mcp",
+    symbol: normalizePerpSymbol(args.symbol),
+    side: args.side,
+    orderType: args.orderType,
+    sizeBtc: args.sizeBtc,
+    leverage: args.leverage,
+    marginMode: args.marginMode,
+    reduceOnly: args.reduceOnly,
+    takeProfit: args.takeProfit,
+    stopLoss: args.stopLoss,
+  };
+  if (args.orderType === "limit") {
+    draft.limitPrice = args.limitPrice;
+  }
+  return draft;
+}
+
+function connectorDraftReviewUrl(webPublicUrl: string, draft: ConnectorDraftPayload): string {
+  const base = webPublicUrl.replace(/\/+$/u, "");
+  const symbol = draft.symbol.replace(/-USD$/u, "");
+  return `${base}/terminal?symbol=${encodeURIComponent(symbol)}&draft=${encodeURIComponent(JSON.stringify(draft))}`;
+}
+
+function normalizePerpSymbol(input: string): string {
+  const normalized = input.trim().toUpperCase().replace(/\s+/gu, "").replace(/\//gu, "-");
+  if (!normalized) {
+    return "BTC-USD";
+  }
+  if (normalized.endsWith("-USD")) {
+    return normalized;
+  }
+  if (normalized.endsWith("USD")) {
+    return `${normalized.slice(0, -3)}-USD`;
+  }
+  return `${normalized}-USD`;
 }
 
 function errToMessage(err: unknown): string {

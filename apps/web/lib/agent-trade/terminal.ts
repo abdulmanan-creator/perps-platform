@@ -1,7 +1,7 @@
 import { marketSearchAliases, normalizeSymbol } from "./markets";
 import type { ChartAnnotation, EligibilityMode, MarketSnapshot, OrderDraft, Position } from "./types";
 
-export type TicketSource = "manual" | "agent";
+export type TicketSource = "manual" | "agent" | "connector";
 
 export interface JsonSafeSignature {
   r: `0x${string}`;
@@ -71,12 +71,21 @@ export interface TerminalEligibilityStatus {
   message: string;
 }
 
-export function getTicketSource(draft: Pick<OrderDraft, "fromAgent">): TicketSource {
+export function getTicketSource(draft: Pick<OrderDraft, "fromAgent" | "source">): TicketSource {
+  if (draft.source === "connector") {
+    return "connector";
+  }
   return draft.fromAgent ? "agent" : "manual";
 }
 
 export function applyManualDraftPatch(draft: OrderDraft, patch: Partial<OrderDraft>): OrderDraft {
-  return { ...draft, ...patch, fromAgent: false, editedAfterAgent: draft.fromAgent || draft.editedAfterAgent };
+  return {
+    ...draft,
+    ...patch,
+    fromAgent: false,
+    source: "manual",
+    editedAfterAgent: draft.fromAgent || draft.editedAfterAgent,
+  };
 }
 
 export function getConfirmationAckCopy(
@@ -92,6 +101,9 @@ export function getConfirmationAckCopy(
 
   if (source === "agent") {
     return "I understand this is a leveraged perpetual order. The agent drafted, but I am confirming.";
+  }
+  if (source === "connector") {
+    return "I understand this is a leveraged perpetual order. A connector drafted, but I am confirming in Agent.trade.";
   }
 
   return mode === "paper"
@@ -123,6 +135,7 @@ export function closePositionDraft(position: Position): OrderDraft {
     marginMode: position.marginMode,
     reduceOnly: true,
     fromAgent: false,
+    source: "manual",
   };
 }
 

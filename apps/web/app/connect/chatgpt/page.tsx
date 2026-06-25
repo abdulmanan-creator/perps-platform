@@ -11,6 +11,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/agent-trade/AppShell";
 import { CodeBlock } from "@/components/CodeBlock";
 
+import { connectorDraftReviewPath } from "@/lib/agent-trade/connector-draft";
 import { normalizeUrl } from "@/lib/api";
 
 // Resolved at build time from NEXT_PUBLIC_MCP_URL (wired via render.yaml
@@ -18,6 +19,17 @@ import { normalizeUrl } from "@/lib/api";
 const MCP_URL = normalizeUrl(
   process.env.NEXT_PUBLIC_MCP_URL ?? "https://alchemy-hl-mcp.onrender.com",
 );
+const SAMPLE_REVIEW_PATH = connectorDraftReviewPath({
+  v: 1,
+  source: "chatgpt",
+  symbol: "BTC",
+  side: "long",
+  orderType: "market",
+  sizeBtc: 0.01,
+  leverage: 2,
+  marginMode: "isolated",
+  reduceOnly: false,
+});
 
 export default function ConnectChatGptPage() {
   return (
@@ -113,6 +125,7 @@ export default function ConnectChatGptPage() {
             draft must open in Agent.trade before any paper or live order is
             submitted.
           </div>
+          <CodeBlock label="draft review link shape">{SAMPLE_REVIEW_PATH}</CodeBlock>
         </Step>
 
         <Step n={5} title="Ask for reads and proposals">

@@ -16,6 +16,7 @@
  * Env vars:
  *   ALCHEMY_HL_API_URL    URL of our backend's /exchange API (default localhost:8080)
  *   MCP_TRANSPORT         "stdio" | "http"  (default "stdio")
+ *   MCP_TOOL_MODE         "draft" | "legacy-execution" (default "draft")
  *   MCP_PORT              http listen port  (default 3001, only used when http)
  *   ALCHEMY_HL_TRADE_KEY  hot key for stdio mode (32 bytes hex, optional → read-only mode)
  *   LOG_LEVEL             "debug" | "info" | "warn" | "error" (default "info")
@@ -53,6 +54,7 @@ const ConfigSchema = z.object({
   // bare hostnames). Normalized to full URL via normalizeUrl in loadConfig.
   ALCHEMY_HL_API_URL: z.string().min(1).default("http://localhost:8080"),
   MCP_TRANSPORT: z.enum(["stdio", "http"]).default("stdio"),
+  MCP_TOOL_MODE: z.enum(["draft", "legacy-execution"]).default("draft"),
   // HTTP listen port. Render / Fly / Heroku inject PORT; MCP_PORT is the
   // explicit local-dev override. PORT wins when both are set.
   PORT: z.coerce.number().int().min(1).max(65535).optional(),
@@ -96,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     ALCHEMY_HL_API_URL: normalizeUrl(parsed.ALCHEMY_HL_API_URL),
     MCP_TRANSPORT: parsed.MCP_TRANSPORT,
+    MCP_TOOL_MODE: parsed.MCP_TOOL_MODE,
     ALCHEMY_HL_TRADE_KEY: parsed.ALCHEMY_HL_TRADE_KEY,
     LOG_LEVEL: parsed.LOG_LEVEL,
     hasSigner: !!parsed.ALCHEMY_HL_TRADE_KEY,

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
+import {
+  connectorDraftReviewPath,
+  encodeConnectorDraftParam,
+  parseConnectorDraftParam,
+} from "../lib/agent-trade/connector-draft";
 import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/agent-trade/agent-provider";
 import { buildAgentPrompt } from "../lib/agent-trade/agent-prompt";
 import {
@@ -125,6 +131,66 @@ describe("Agent.trade terminal product-loop helpers", () => {
 
     expect(copy).toContain("The agent drafted");
     expect(getTicketSource({ fromAgent: true })).toBe("agent");
+  });
+
+  it("imports connector draft links as ticket drafts, not executable orders", () => {
+    const payload = {
+      v: 1,
+      source: "claude",
+      symbol: "BTC",
+      side: "long",
+      orderType: "market",
+      sizeBtc: 0.01,
+      leverage: 2,
+      marginMode: "isolated",
+      reduceOnly: false,
+    } as const;
+    const encoded = encodeConnectorDraftParam(payload);
+    const reviewPath = connectorDraftReviewPath(payload);
+    const parsed = parseConnectorDraftParam(encoded);
+
+    expect(reviewPath).toContain("/terminal?symbol=BTC&draft=");
+    expect(reviewPath).not.toContain("/exchange");
+    expect(parsed.status).toBe("valid");
+    if (parsed.status !== "valid") {
+      throw new Error("expected valid connector draft");
+    }
+    expect(parsed.draft).toMatchObject({
+      symbol: "BTC-USD",
+      side: "long",
+      fromAgent: true,
+      source: "connector",
+    });
+    expect(getTicketSource(parsed.draft)).toBe("connector");
+    expect(getConfirmationAckCopy(getTicketSource(parsed.draft))).toContain("confirming in Agent.trade");
+    expect(ticketSourceDisplay(parsed.draft)).toMatchObject({
+      state: "connector",
+      label: "From Connector",
+    });
+  });
+
+  it("rejects malformed connector drafts before they can prefill a ticket", () => {
+    expect(parseConnectorDraftParam("%7Bnot-json")).toMatchObject({
+      status: "invalid",
+    });
+    expect(
+      parseConnectorDraftParam(
+        encodeURIComponent(JSON.stringify({ v: 1, symbol: "BTC", side: "long", orderType: "market", sizeBtc: -1, leverage: 2, marginMode: "isolated" })),
+      ),
+    ).toMatchObject({
+      status: "invalid",
+      message: "Connector draft size must be positive.",
+    });
+  });
+
+  it("keeps llms connector copy free of live execution claims", () => {
+    const copy = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
+
+    expect(copy).toContain("research, explain, and draft");
+    expect(copy).toContain("orders return to Agent.trade");
+    expect(copy).toContain("future roadmap only");
+    expect(copy).not.toMatch(/connectors can place trades directly/i);
+    expect(copy).not.toMatch(/autonomous connector trade execution is live/i);
   });
 
   it("uses close-specific confirmation copy for paper and live closes", () => {
