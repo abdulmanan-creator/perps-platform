@@ -162,14 +162,19 @@ export function agentAnalysisToResponse(analysis: AgentAnalysis, input: AgentInp
   return {
     id: analysis.id ?? `${input.market.base.toLowerCase()}-${analysis.responseType}`,
     state: responseTypeToState(analysis.responseType),
+    responseType: analysis.responseType,
     question: analysis.question ?? input.requestedPrompt,
+    summary: analysis.summary,
     thesis: analysis.thesis,
+    confidence: analysis.confidence,
     receipts: analysis.receipts,
     riskNote,
     whyWrong: analysis.whyWrong,
     orderDraft: analysis.responseType === "trade_proposal" ? analysis.orderDraft : undefined,
     annotations: analysis.annotations ?? [],
     followUps: analysis.followUps,
+    warnings: analysis.warnings,
+    provider: analysis.provider,
   };
 }
 

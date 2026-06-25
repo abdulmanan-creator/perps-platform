@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
 import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/agent-trade/agent-provider";
 import { buildAgentPrompt } from "../lib/agent-trade/agent-prompt";
+import {
+  agentDataReadSummary,
+  agentProviderDisplay,
+  PHASE_4B_AGENT_VALIDATION_CHECKLIST,
+  ticketSourceDisplay,
+} from "../lib/agent-trade/agent-ux";
 import { buildSwitchingMarketSnapshot, loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
 import { api } from "../lib/api";
 import { hypurrscanAddressUrl, normalizeHypurrscanAddress } from "../lib/agent-trade/hypurrscan";
@@ -1448,9 +1454,90 @@ describe("Agent.trade terminal product-loop helpers", () => {
 
     expect(draft).toBeTruthy();
     expect(getTicketSource(draft!)).toBe("agent");
+    expect(ticketSourceDisplay(draft!)).toMatchObject({
+      state: "agent",
+      label: "From Agent",
+    });
 
     const edited = applyManualDraftPatch(draft!, { sizeBtc: draft!.sizeBtc + 0.01 });
     expect(getTicketSource(edited)).toBe("manual");
+    expect(ticketSourceDisplay(edited)).toMatchObject({
+      state: "editedAfterAgent",
+      label: "Edited after agent",
+    });
+  });
+
+  it("maps agent provider state to terminal badge copy", () => {
+    expect(agentProviderDisplay()).toMatchObject({
+      state: "deterministic",
+      label: "Deterministic",
+    });
+    expect(agentProviderDisplay({
+      provider: {
+        name: "openai",
+        model: "gpt-test",
+        deterministic: false,
+        generatedAt: Date.now(),
+      },
+    })).toMatchObject({
+      state: "liveModel",
+      label: "OpenAI gpt-test",
+    });
+    expect(agentProviderDisplay({
+      provider: {
+        name: "deterministic",
+        deterministic: true,
+        generatedAt: Date.now(),
+        fallbackReason: "OpenAI provider requested without OPENAI_API_KEY; using deterministic fallback.",
+      },
+    })).toMatchObject({
+      state: "fallback",
+      label: "Fallback",
+      detail: expect.stringContaining("deterministic fallback"),
+    });
+  });
+
+  it("summarizes the market, book, funding, trades, candles, and account context the agent read", () => {
+    const items = agentDataReadSummary({
+      snapshot: MOCK_TRADING_SNAPSHOT,
+      eligibility: "restricted",
+      agent: {
+        id: "test",
+        state: "answered",
+        question: "read",
+        thesis: "read",
+        receipts: [],
+        riskNote: "risk",
+        whyWrong: "wrong",
+        annotations: [],
+      },
+    });
+
+    expect(items.map((item) => item.label)).toEqual(expect.arrayContaining([
+      "Market",
+      "Mark",
+      "Book",
+      "Funding",
+      "Open interest",
+      "Trades/candles",
+      "Account",
+      "Mode",
+    ]));
+    expect(items.find((item) => item.label === "Mode")?.value).toBe("Paper draft only");
+  });
+
+  it("keeps a local/staging validation checklist for Phase 4B agent paths", () => {
+    expect(PHASE_4B_AGENT_VALIDATION_CHECKLIST).toEqual(expect.arrayContaining([
+      "deterministic mode",
+      "OpenAI disabled mode",
+      "OpenAI enabled with mock/fake key failure",
+      "OpenAI enabled with valid key if available",
+      "malformed model output",
+      "timeout/provider error",
+      "no usable price",
+      "restricted/paper user",
+      "eligible/live user",
+    ]));
   });
 
   it("builds structured agent input from terminal snapshot, order book, trades, candles, and freshness", () => {
@@ -1581,6 +1668,18 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(live.state).toBe("staleRefusal");
     expect(live.orderDraft).toBeUndefined();
     expect(live.thesis).toContain("live trading is not allowed");
+  });
+
+  it("allows live drafts only when live mode is explicitly allowed", async () => {
+    const response = await runTypedPrompt("Should I short BTC?", false, undefined, {}, {
+      mode: "live",
+      eligibilityState: "liveEligible",
+      liveAllowed: true,
+    });
+
+    expect(response.state).toBe("tradeProposal");
+    expect(response.orderDraft).toMatchObject({ side: "short" });
+    expect(response.thesis).toContain("controlled live short");
   });
 
   it("does not call exchange or any network endpoint from agent analysis", async () => {

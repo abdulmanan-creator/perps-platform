@@ -158,6 +158,7 @@ export interface OrderDraft {
   takeProfit?: number;
   stopLoss?: number;
   fromAgent: boolean;
+  editedAfterAgent?: boolean;
   scenarioId?: string;
 }
 
@@ -170,14 +171,25 @@ export interface AgentReceipt {
 export interface AgentResponse {
   id: string;
   state: "tradeProposal" | "answered" | "noTrade" | "staleRefusal";
+  responseType?: "greeting" | "market_read" | "trade_proposal" | "no_trade" | "refusal";
   question: string;
+  summary?: string;
   thesis: string;
+  confidence?: number;
   receipts: AgentReceipt[];
   riskNote: string;
   whyWrong: string;
   orderDraft?: OrderDraft;
   annotations: ChartAnnotation[];
   followUps?: string[];
+  warnings?: string[];
+  provider?: {
+    name: "deterministic" | "openai" | "anthropic" | "openrouter";
+    model?: string;
+    deterministic: boolean;
+    generatedAt: number;
+    fallbackReason?: string;
+  };
 }
 
 export interface PaperOrder {

@@ -14,6 +14,11 @@ import {
   type LiveTradingReadiness,
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
+import {
+  agentDataReadSummary,
+  agentProviderDisplay,
+  ticketSourceDisplay,
+} from "@/lib/agent-trade/agent-ux";
 import { createAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import {
   fmtAdaptiveUsd,
@@ -930,7 +935,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   }
 
   function sendToTicket(orderDraft: OrderDraft) {
-    setDraft({ ...orderDraft, fromAgent: true });
+    setDraft({ ...orderDraft, fromAgent: true, editedAfterAgent: false });
     setSubmitState({ message: "Agent proposal copied into the ticket." });
     setModalError(undefined);
   }
@@ -1282,6 +1287,9 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               sendToTicket={sendToTicket}
               freshness={freshness}
               streamStatus={streamStatus}
+              snapshot={snapshot}
+              eligibility={eligibility.state}
+              mode={mode}
             />
           </div>
         </section>
@@ -2065,14 +2073,14 @@ function TicketPanel(props: {
   openModal: () => void;
 }) {
   const blocked = props.mode === "live" && !props.canLiveTrade;
-  const source = getTicketSource(props.draft);
+  const sourceDisplay = ticketSourceDisplay(props.draft);
   const largePaperOrder = props.mode === "paper" && props.notional > props.simulatedBalanceUsd;
   return (
-    <div className={`panel ticket-panel ${source === "agent" ? "from-agent" : ""}`}>
+    <div className={`panel ticket-panel ${sourceDisplay.state === "agent" ? "from-agent" : ""}`}>
       <div className="panel-head">
         <div>
           <span>Order ticket</span>
-          <strong>{source === "agent" ? "From Agent" : "Manual"}</strong>
+          <strong>{sourceDisplay.label}</strong>
         </div>
         <span className={props.mode === "paper" ? "paper-badge" : "live-badge"}>{props.mode}</span>
       </div>
@@ -2138,7 +2146,7 @@ function TicketPanel(props: {
         </label>
       </div>
       <div className="ticket-summary">
-        <span>Source <strong>{source === "agent" ? "Agent draft" : "Manual input"}</strong></span>
+        <span>Source <strong>{sourceDisplay.summary}</strong></span>
         <span>Account <strong>{props.accountReadiness.accountValueKind === "real" ? "Read-only live" : props.accountReadiness.accountValueKind === "hybrid" ? "Live + paper" : "Paper"}</strong></span>
         <span>Entry <strong>{fmtMarketUsd({ price: props.entryPrice, market: props.pricePrecision })}</strong></span>
         <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
@@ -2217,8 +2225,18 @@ function AgentPanel(props: {
   sendToTicket: (draft: OrderDraft) => void;
   freshness: TerminalFreshness;
   streamStatus: TerminalStreamStatus;
+  snapshot: SharedTradingSnapshot;
+  eligibility: EligibilityMode;
+  mode: "paper" | "live";
 }) {
   const [prompt, setPrompt] = useState("");
+  const provider = agentProviderDisplay(props.agent);
+  const dataReadSummary = agentDataReadSummary({
+    snapshot: props.snapshot,
+    agent: props.agent,
+    eligibility: props.eligibility,
+  });
+  const isRestricted = props.eligibility !== "liveEligible";
 
   function submitPrompt() {
     const next = prompt.trim();
@@ -2236,7 +2254,15 @@ function AgentPanel(props: {
           <span>{AGENT_PANEL_HEADING}</span>
           <strong>{props.streamStatus === "live" && props.freshness.marketFreshness.state === "fresh" ? "Agent market read" : "Drafts include market-data warning"}</strong>
         </div>
+        <span className="from-agent-badge">{provider.label}</span>
       </div>
+      <div className="receipt-row" style={{ padding: "10px 12px 0" }}>
+        <span>{provider.detail}</span>
+        <span>Agent drafts; you confirm.</span>
+      </div>
+      {isRestricted ? (
+        <p className="paper-note">Paper draft only. Live trading is unavailable until eligibility is confirmed.</p>
+      ) : null}
       <div className="prompt-chips">
         <button onClick={() => props.runAgent("long")}>Should I long {props.base}?</button>
         <button onClick={() => props.runAgent("short")}>Should I short {props.base}?</button>
@@ -2266,15 +2292,25 @@ function AgentPanel(props: {
           <p>{props.agentQuestion}</p>
         </div>
       ) : null}
-      {props.isThinking ? <div className="thinking">Reading funding, OI, book pressure, and liquidation levels...</div> : null}
+      {props.isThinking ? <div className="thinking">Reading mark, order book, trades, candles, funding, OI, and account context...</div> : null}
       {!props.isThinking && props.agent ? (
         <div className={`agent-answer ${props.agent.state}`}>
           <p className="agent-question">Agent.trade response</p>
-          <h3>{props.agent.state === "noTrade" ? "No clean setup" : props.agent.state === "staleRefusal" ? "Refusing to draft" : "Market read"}</h3>
+          <h3>{props.agent.state === "noTrade" ? "No clean setup" : props.agent.state === "staleRefusal" ? "Refusing to draft" : props.agent.state === "tradeProposal" ? "Trade proposal" : "Market read"}</h3>
+          <div className="receipt-row">
+            <span>{provider.label}</span>
+            {props.agent.confidence != null ? <span>Confidence {Math.round(props.agent.confidence * 100)}%</span> : null}
+            <span>{props.mode === "paper" ? "Paper mode" : "Live mode"}</span>
+          </div>
           <p>{props.agent.thesis}</p>
           <div className="receipt-row">
+            {dataReadSummary.map((item) => (
+              <span key={`${item.label}-${item.value}`}>{item.label}: {item.value}</span>
+            ))}
+          </div>
+          <div className="receipt-row">
             {props.agent.receipts.map((item) => (
-              <span key={item.label}>{item.label}: {item.value}</span>
+              <span key={`${item.label}-${item.timestamp}`}>{item.label}: {item.value} · {fmtAgo(item.timestamp, Date.now())}</span>
             ))}
           </div>
           <div className="agent-risk">
@@ -2284,9 +2320,12 @@ function AgentPanel(props: {
             <p>{props.agent.whyWrong}</p>
           </div>
           {props.agent.orderDraft ? (
-            <button className="secondary-action" onClick={() => props.sendToTicket(props.agent?.orderDraft as OrderDraft)}>
-              Send to ticket
-            </button>
+            <div className="agent-risk">
+              <p>Send to ticket copies this draft only. Agent.trade cannot submit it directly.</p>
+              <button className="secondary-action" onClick={() => props.sendToTicket(props.agent?.orderDraft as OrderDraft)}>
+                Send to ticket
+              </button>
+            </div>
           ) : null}
           {props.agent.followUps ? (
             <div className="prompt-chips followups">
@@ -2457,6 +2496,7 @@ function ConfirmModal(props: {
 }) {
   const liveBlocked = props.mode === "live" && !props.canLiveTrade;
   const source = getTicketSource(props.draft);
+  const sourceDisplay = ticketSourceDisplay(props.draft);
   const title = props.intent === "close" ? "Close position" : props.mode === "paper" ? "Paper confirmation" : "Live confirmation";
   const actionLabel = props.intent === "close"
     ? `Confirm ${props.mode} close`
@@ -2469,8 +2509,9 @@ function ConfirmModal(props: {
             <span>{title}</span>
             <strong>{props.draft.symbol} {props.draft.side}</strong>
           </div>
-          {source === "agent" ? <span className="from-agent-badge">From Agent</span> : null}
+          {sourceDisplay.state !== "manual" ? <span className="from-agent-badge">{sourceDisplay.label}</span> : null}
         </div>
+        <p className="paper-note">{sourceDisplay.summary}</p>
         <div className="confirm-grid">
           <span>Market <strong>{props.draft.symbol}</strong></span>
           <span>Side <strong>{props.draft.side}</strong></span>

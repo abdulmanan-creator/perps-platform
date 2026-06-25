@@ -105,6 +105,49 @@ describe("Agent.trade real agent provider wiring", () => {
     });
     expect(analysis.provider.fallbackReason).toContain("malformed");
   });
+
+  it("handles OpenAI HTTP errors safely without a draft", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-fake",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.provider).toMatchObject({
+      name: "openai",
+      model: "test-agent-model",
+      fallbackReason: "OpenAI provider returned HTTP 401.",
+    });
+  });
+
+  it("handles OpenAI timeouts safely without a draft", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      timeoutMs: 1,
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.provider.fallbackReason).toContain("timed out");
+  });
 });
 
 function buildTestAgentInput() {

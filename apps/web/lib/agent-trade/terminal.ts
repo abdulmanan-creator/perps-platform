@@ -76,7 +76,7 @@ export function getTicketSource(draft: Pick<OrderDraft, "fromAgent">): TicketSou
 }
 
 export function applyManualDraftPatch(draft: OrderDraft, patch: Partial<OrderDraft>): OrderDraft {
-  return { ...draft, ...patch, fromAgent: false };
+  return { ...draft, ...patch, fromAgent: false, editedAfterAgent: draft.fromAgent || draft.editedAfterAgent };
 }
 
 export function getConfirmationAckCopy(
