@@ -62,6 +62,19 @@ import {
   type HyperliquidTypedData,
   type SubmitState,
 } from "@/lib/agent-trade/terminal";
+import {
+  applyTerminalCandleEvent,
+  applyTerminalStreamEvent,
+  hyperliquidWsUrlForVenue,
+  isTerminalStreamWarning,
+  normalizeTerminalWsMessage,
+  subscriptionMessage,
+  terminalMarketSubscriptions,
+  terminalStreamStatusDetail,
+  terminalStreamStatusLabel,
+  unsubscribeMessage,
+  type TerminalStreamStatus,
+} from "@/lib/agent-trade/streaming";
 import type {
   AgentResponse,
   ChartAnnotation,
@@ -206,6 +219,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "Waiting for Hyperliquid candles."),
   );
   const [isLoadingCandles, setIsLoadingCandles] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<TerminalStreamStatus>("disconnected");
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5_000);
@@ -244,6 +258,152 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       window.clearInterval(timer);
     };
   }, [requestedSymbol, wallet.address, wallet.status]);
+
+  async function refreshTerminalSnapshot(options: { preserveDraft?: boolean } = {}) {
+    setIsLoadingData(true);
+    const result = await loadTradingSnapshot(requestedSymbol, {
+      accountAddress: wallet.status === "connected" ? wallet.address : undefined,
+    });
+    const next = result.snapshot;
+    setSnapshot(next);
+    if (!options.preserveDraft) {
+      setDraft((current) =>
+        current.symbol === next.market.symbol
+          ? { ...current, symbol: next.market.symbol }
+          : buildDefaultDraft(next),
+      );
+    }
+    setMarketNotice(
+      result.usedFallback && requestedSymbol !== "BTC"
+        ? `${result.requestedSymbol.toUpperCase()} is not available from /markets yet. Showing BTC instead.`
+        : undefined,
+    );
+    setApiStatus("ok");
+    setIsLoadingData(false);
+    return result;
+  }
+
+  useEffect(() => {
+    if (typeof WebSocket === "undefined" || eligibility.state === "loading") {
+      setStreamStatus("disconnected");
+      return;
+    }
+
+    const selectedCoin = snapshot.market.base;
+    const wsUrl = hyperliquidWsUrlForVenue(eligibility.executionVenue);
+    const subscriptions = terminalMarketSubscriptions({ coin: selectedCoin, interval: chartInterval });
+    let socket: WebSocket | undefined;
+    let cancelled = false;
+    let reconnectTimer: number | undefined;
+    let heartbeatTimer: number | undefined;
+    let reconnectAttempt = 0;
+
+    function clearTimers() {
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
+      if (heartbeatTimer !== undefined) {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
+    }
+
+    function sendJson(payload: unknown) {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(payload));
+      }
+    }
+
+    function connect() {
+      if (cancelled) {
+        return;
+      }
+
+      setStreamStatus(reconnectAttempt === 0 ? "connecting" : "reconnecting");
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        setStreamStatus("rest_fallback");
+        scheduleReconnect();
+        return;
+      }
+
+      socket.addEventListener("open", () => {
+        if (cancelled) {
+          return;
+        }
+        reconnectAttempt = 0;
+        setStreamStatus("live");
+        subscriptions.forEach((subscription) => sendJson(subscriptionMessage(subscription)));
+        heartbeatTimer = window.setInterval(() => sendJson({ method: "ping" }), 25_000);
+        void refreshTerminalSnapshot({ preserveDraft: true }).catch(() => setStreamStatus("rest_fallback"));
+      });
+
+      socket.addEventListener("message", (event) => {
+        if (cancelled) {
+          return;
+        }
+        try {
+          const parsed = JSON.parse(String(event.data)) as unknown;
+          const events = normalizeTerminalWsMessage({
+            message: parsed,
+            selectedCoin,
+            interval: chartInterval,
+          });
+          if (events.length > 0) {
+            setStreamStatus("live");
+          }
+          for (const streamEvent of events) {
+            if (streamEvent.type === "candle") {
+              setChartData((current) => applyTerminalCandleEvent(current, streamEvent, chartInterval));
+            } else {
+              setSnapshot((current) => applyTerminalStreamEvent(current, streamEvent));
+            }
+          }
+        } catch {
+          setStreamStatus("degraded");
+        }
+      });
+
+      socket.addEventListener("error", () => {
+        if (!cancelled) {
+          setStreamStatus("degraded");
+        }
+      });
+
+      socket.addEventListener("close", () => {
+        clearTimers();
+        if (cancelled) {
+          setStreamStatus("disconnected");
+          return;
+        }
+        setStreamStatus("reconnecting");
+        void refreshTerminalSnapshot({ preserveDraft: true }).catch(() => setStreamStatus("rest_fallback"));
+        scheduleReconnect();
+      });
+    }
+
+    function scheduleReconnect() {
+      reconnectAttempt += 1;
+      if (reconnectAttempt >= 4) {
+        setStreamStatus("rest_fallback");
+      }
+      const delay = Math.min(15_000, 500 * 2 ** Math.min(reconnectAttempt, 5));
+      reconnectTimer = window.setTimeout(connect, delay + Math.floor(Math.random() * 250));
+    }
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      clearTimers();
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        subscriptions.forEach((subscription) => sendJson(unsubscribeMessage(subscription)));
+      }
+      socket?.close();
+    };
+  }, [chartInterval, eligibility.executionVenue, eligibility.state, requestedSymbol, snapshot.market.base, wallet.address, wallet.status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -377,6 +537,18 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     const sizes = [...snapshot.orderBook.asks, ...snapshot.orderBook.bids].map((level) => level.size);
     return Math.max(...sizes, 1);
   }, [snapshot.orderBook]);
+  const marketDataWarning = useMemo(() => {
+    if (!Number.isFinite(snapshot.market.markPrice) || snapshot.market.markPrice <= 0) {
+      return undefined;
+    }
+    if (isTerminalStreamWarning(streamStatus)) {
+      return terminalStreamStatusDetail(streamStatus);
+    }
+    if (freshness.marketFreshness.state !== "fresh") {
+      return freshness.marketFreshness.detail;
+    }
+    return undefined;
+  }, [freshness.marketFreshness.detail, freshness.marketFreshness.state, snapshot.market.markPrice, streamStatus]);
 
   async function switchTerminalMarket(symbol: string, options: { question?: string } = {}) {
     const resolved = normalizeSymbol(symbol);
@@ -421,7 +593,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         market: { ...snapshot.market, dataAgeSeconds: freshness.marketAgeSeconds },
       },
       isStale: !freshness.isDraftSafe,
-      accountFreshnessWarning: freshness.accountFreshness.warning,
+      accountFreshnessWarning: [marketDataWarning, freshness.accountFreshness.warning].filter(Boolean).join(" ") || undefined,
       mode,
     });
     setAgent(response);
@@ -507,7 +679,10 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         market: { ...agentSnapshot.market, dataAgeSeconds: agentFreshness.marketAgeSeconds },
       },
       isStale: !agentFreshness.isDraftSafe,
-      accountFreshnessWarning: agentFreshness.accountFreshness.warning,
+      accountFreshnessWarning: [
+        marketDataWarning,
+        agentFreshness.accountFreshness.warning,
+      ].filter(Boolean).join(" ") || undefined,
       mode,
     });
     setAgent(response);
@@ -697,6 +872,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
           setMode={setMode}
           apiStatus={apiStatus}
           freshness={freshness}
+          streamStatus={streamStatus}
           isLoadingData={isLoadingData}
           marketNotice={marketNotice}
           accountReadiness={accountReadiness}
@@ -784,6 +960,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               runTypedAgent={runTypedAgent}
               sendToTicket={sendToTicket}
               freshness={freshness}
+              streamStatus={streamStatus}
             />
           </div>
         </section>
@@ -924,6 +1101,7 @@ function TerminalMarketHeader({
   setMode,
   apiStatus,
   freshness,
+  streamStatus,
   isLoadingData,
   marketNotice,
   accountReadiness,
@@ -938,6 +1116,7 @@ function TerminalMarketHeader({
   setMode: (mode: "paper" | "live") => void;
   apiStatus: "checking" | "ok" | "unavailable";
   freshness: TerminalFreshness;
+  streamStatus: TerminalStreamStatus;
   isLoadingData: boolean;
   marketNotice: string | undefined;
   accountReadiness: AccountReadinessDisplay;
@@ -1005,6 +1184,12 @@ function TerminalMarketHeader({
         ))}
       </div>
       <div className="terminal-header-actions">
+        <span
+          className={streamStatus === "live" ? "state-pill live" : "state-pill stale"}
+          title={terminalStreamStatusDetail(streamStatus)}
+        >
+          {terminalStreamStatusLabel(streamStatus)}
+        </span>
         <span
           className={freshness.marketFreshness.state === "fresh" ? "state-pill live" : "state-pill stale"}
           title={freshness.marketFreshness.detail}
@@ -1264,13 +1449,15 @@ function ChartPanel({
 }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
   const candles = chartData.candles;
+  const marketSymbol = snapshot.market.symbol;
 
   useEffect(() => {
     let cancelled = false;
+    const market = snapshot.market;
 
     async function loadCandles() {
       setIsLoadingCandles(true);
-      const next = await loadTerminalCandles(snapshot.market, interval);
+      const next = await loadTerminalCandles(market, interval);
       if (!cancelled) {
         setChartData(next);
         setIsLoadingCandles(false);
@@ -1281,7 +1468,7 @@ function ChartPanel({
     return () => {
       cancelled = true;
     };
-  }, [interval, snapshot.market]);
+  }, [interval, marketSymbol]);
 
   useEffect(() => {
     let disposed = false;
@@ -1650,6 +1837,7 @@ function AgentPanel(props: {
   runTypedAgent: (prompt: string) => void;
   sendToTicket: (draft: OrderDraft) => void;
   freshness: TerminalFreshness;
+  streamStatus: TerminalStreamStatus;
 }) {
   const [prompt, setPrompt] = useState("");
 
@@ -1667,7 +1855,7 @@ function AgentPanel(props: {
       <div className="panel-head">
         <div>
           <span>{AGENT_PANEL_HEADING}</span>
-          <strong>{props.freshness.isDraftSafe ? "Agent market read" : "Drafts include stale-data warning"}</strong>
+          <strong>{props.streamStatus === "live" && props.freshness.marketFreshness.state === "fresh" ? "Agent market read" : "Drafts include market-data warning"}</strong>
         </div>
       </div>
       <div className="prompt-chips">

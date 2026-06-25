@@ -492,6 +492,7 @@ async function terminalDefaultSafety(page) {
   assert(/Ask Agent.trade/i.test(text), "Agent panel heading missing");
   assert(/Hyperliquid candles|Synthetic fallback/i.test(text), "Chart candle source label missing");
   assert(/Live market data|Refreshing|Market data stale|Candles stale|API unavailable/i.test(text), "Terminal compact freshness label missing");
+  assert(/Live stream|REST fallback|Stream disconnected|Stream degraded/i.test(text), "Terminal stream status label missing");
   assert(/Manual/i.test(text), "Ticket did not show Manual source by default");
   assert(await evaluate(page, `(() => {
     const liveMode = [...document.querySelectorAll('.mode-control button')]

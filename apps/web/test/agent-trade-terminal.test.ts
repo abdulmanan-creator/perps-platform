@@ -9,6 +9,14 @@ import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { buildHlOrderAction, formatOrderPrice, formatOrderSize } from "../lib/agent-trade/orders";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
+  applyTerminalCandleEvent,
+  applyTerminalStreamEvent,
+  mergeRecentTrades,
+  normalizeTerminalWsMessage,
+  terminalStreamStatusLabel,
+  upsertTerminalCandles,
+} from "../lib/agent-trade/streaming";
+import {
   AGENT_PANEL_HEADING,
   applyManualDraftPatch,
   buildFallbackTerminalChartData,
@@ -565,6 +573,138 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(terminalChartLabel(fallback)).toBe("Synthetic fallback · 15m · chart data degraded");
   });
 
+  it("normalizes and applies active asset context updates from Hyperliquid WS", () => {
+    const [event] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      now: 1710000000000,
+      message: {
+        channel: "activeAssetCtx",
+        data: {
+          coin: "BTC",
+          ctx: {
+            markPx: "101000",
+            midPx: "100990",
+            oraclePx: "100980",
+            prevDayPx: "100000",
+            dayNtlVlm: "2000000000",
+            openInterest: "12000",
+            funding: "0.00012",
+          },
+        },
+      },
+    });
+
+    const patched = applyTerminalStreamEvent(MOCK_TRADING_SNAPSHOT, event);
+
+    expect(event.type).toBe("activeAssetCtx");
+    expect(patched.asOf).toBe(1710000000000);
+    expect(patched.market.markPrice).toBe(101000);
+    expect(patched.market.oraclePrice).toBe(100980);
+    expect(patched.market.volume24hUsd).toBe(2_000_000_000);
+    expect(patched.market.openInterestUsd).toBe(1_212_000_000);
+    expect(patched.market.fundingRatePct).toBe(0.012);
+  });
+
+  it("replaces order book levels from Hyperliquid WS l2Book messages", () => {
+    const [event] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      now: 1710000000000,
+      message: {
+        channel: "l2Book",
+        data: {
+          coin: "BTC",
+          levels: [
+            [{ px: "100000", sz: "1.25" }],
+            [{ px: "100010", sz: "2.5" }],
+          ],
+        },
+      },
+    });
+
+    const patched = applyTerminalStreamEvent(MOCK_TRADING_SNAPSHOT, event);
+
+    expect(event.type).toBe("l2Book");
+    expect(patched.orderBook.bids).toEqual([{ price: 100000, size: 1.25 }]);
+    expect(patched.orderBook.asks).toEqual([{ price: 100010, size: 2.5 }]);
+    expect(patched.market.liquidityUsd).toBeCloseTo(375025);
+  });
+
+  it("dedupes and prepends recent WS trades", () => {
+    const merged = mergeRecentTrades(
+      [{ side: "buy", price: 100, size: 1, timestamp: 10 }],
+      [
+        { side: "buy", price: 100, size: 1, timestamp: 10 },
+        { side: "sell", price: 101, size: 2, timestamp: 20 },
+      ],
+    );
+
+    expect(merged).toEqual([
+      { side: "sell", price: 101, size: 2, timestamp: 20 },
+      { side: "buy", price: 100, size: 1, timestamp: 10 },
+    ]);
+
+    const [event] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      message: {
+        channel: "trades",
+        data: [
+          { coin: "BTC", side: "B", px: "100500", sz: "0.05", time: 1710000000000 },
+          { coin: "ETH", side: "A", px: "3000", sz: "1", time: 1710000000001 },
+        ],
+      },
+    });
+    expect(event).toMatchObject({
+      type: "trades",
+      trades: [{ side: "buy", price: 100500, size: 0.05, timestamp: 1710000000000 }],
+    });
+  });
+
+  it("upserts WS candles by candle time", () => {
+    const existing = [
+      { time: 100, open: 1, high: 2, low: 1, close: 2, volume: 10 },
+      { time: 200, open: 2, high: 3, low: 2, close: 3, volume: 20 },
+    ];
+    const incoming = [
+      { time: 200, open: 2, high: 4, low: 2, close: 4, volume: 25 },
+      { time: 300, open: 4, high: 5, low: 4, close: 5, volume: 30 },
+    ];
+
+    expect(upsertTerminalCandles(existing, incoming)).toEqual([
+      { time: 100, open: 1, high: 2, low: 1, close: 2, volume: 10 },
+      { time: 200, open: 2, high: 4, low: 2, close: 4, volume: 25 },
+      { time: 300, open: 4, high: 5, low: 4, close: 5, volume: 30 },
+    ]);
+
+    const [event] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      now: 1710000900000,
+      message: {
+        channel: "candle",
+        data: [{ s: "BTC", i: "15m", t: 1710000000000, o: "100", h: "110", l: "90", c: "105", v: "12" }],
+      },
+    });
+    const chart = applyTerminalCandleEvent({
+      interval: "15m",
+      candles: existing,
+      source: "synthetic",
+      fetchedAt: 1,
+      isFallback: true,
+      error: "fallback",
+    }, event, "15m");
+
+    expect(chart).toMatchObject({ source: "hyperliquid", isFallback: false, fetchedAt: 1710000900000 });
+    expect(chart.candles.at(-1)).toEqual({ time: 1710000000, open: 100, high: 110, low: 90, close: 105, volume: 12 });
+  });
+
+  it("exposes compact terminal stream status labels", () => {
+    expect(terminalStreamStatusLabel("live")).toBe("Live stream");
+    expect(terminalStreamStatusLabel("rest_fallback")).toBe("REST fallback");
+  });
+
   it("exposes supported terminal interval groups without unsupported intervals", () => {
     const intervals = TERMINAL_CHART_INTERVAL_GROUPS.flatMap((group) => group.intervals);
 
@@ -625,9 +765,9 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(fresh).toMatchObject({ state: "fresh", label: "Live market data", isDraftSafe: true });
     expect(fresh.marketFreshness).toMatchObject({ state: "fresh", isDraftSafe: true });
     expect(fresh.accountFreshness).toMatchObject({ state: "fresh" });
-    expect(staleMarket).toMatchObject({ state: "degraded", isDraftSafe: false });
+    expect(staleMarket).toMatchObject({ state: "degraded", isDraftSafe: true });
     expect(staleMarket.label).toBe("Market data stale");
-    expect(staleCandles).toMatchObject({ state: "degraded", label: "Candles stale", isDraftSafe: false });
+    expect(staleCandles).toMatchObject({ state: "degraded", label: "Candles stale", isDraftSafe: true });
     expect(staleAccount).toMatchObject({ state: "fresh", label: "Live market data", isDraftSafe: true });
     expect(staleAccount.accountFreshness).toMatchObject({
       state: "stale",
@@ -635,7 +775,7 @@ describe("Agent.trade terminal product-loop helpers", () => {
     });
   });
 
-  it("treats fallback candles, loading, and API outage as not draft-safe", () => {
+  it("treats fallback candles, loading, and API outage as warnings instead of hard draft blockers", () => {
     const now = Date.now();
     const fallback = getTerminalFreshness({
       now,
@@ -656,9 +796,9 @@ describe("Agent.trade terminal product-loop helpers", () => {
       apiStatus: "unavailable",
     });
 
-    expect(fallback).toMatchObject({ state: "degraded", isDraftSafe: false });
-    expect(warming).toMatchObject({ state: "warming", label: "Refreshing...", isDraftSafe: false });
-    expect(apiUnavailable).toMatchObject({ state: "apiUnavailable", label: "API unavailable", isDraftSafe: false });
+    expect(fallback).toMatchObject({ state: "degraded", isDraftSafe: true });
+    expect(warming).toMatchObject({ state: "warming", label: "Refreshing...", isDraftSafe: true });
+    expect(apiUnavailable).toMatchObject({ state: "apiUnavailable", label: "API unavailable", isDraftSafe: true });
   });
 
   it("resolves explicit typed prompt market symbols against supported markets", () => {
