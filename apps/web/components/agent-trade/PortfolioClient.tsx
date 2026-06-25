@@ -10,6 +10,7 @@ import {
 } from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
+import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import { loadPaperAccount, mergePaperAccount } from "@/lib/agent-trade/paper";
 import {
@@ -151,6 +152,9 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     : accountReadiness.accountValueKind === "unavailable"
       ? "Hyperliquid account state is unavailable. Live trading is disabled until account data refreshes; paper mode remains available."
       : `${accountReadiness.summary} Paper positions are simulated and do not imply live Hyperliquid exposure.`;
+  const hypurrscanUrl = accountReadiness.accountValueKind === "real" || accountReadiness.accountValueKind === "hybrid"
+    ? hypurrscanAddressUrl(wallet.address)
+    : null;
 
   return (
     <main className="portfolio-page">
@@ -163,6 +167,11 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
         <div className="portfolio-health">
           <span className={`readiness-pill ${accountReadiness.tone}`}>{accountReadiness.label}</span>
           <span className="state-pill live">{snapshot.market.source === "live-mainnet" ? "Mainnet market data" : "Deterministic market data"}</span>
+          {hypurrscanUrl ? (
+            <a className="hypurrscan-link" href={hypurrscanUrl} target="_blank" rel="noreferrer">
+              View account on Hypurrscan
+            </a>
+          ) : null}
           <span>{isLoading ? "Refreshing..." : `Updated ${fmtAgo(snapshot.asOf)}`}</span>
         </div>
       </section>

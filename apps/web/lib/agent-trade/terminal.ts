@@ -21,6 +21,11 @@ export interface HyperliquidTypedData {
   types: Record<string, { name: string; type: string }[]>;
 }
 
+export interface SubmitState {
+  message: string;
+  scannerUrl?: string;
+}
+
 export const AGENT_PANEL_HEADING = "Ask Agent.trade";
 
 export function normalizeHexSignature(hex: `0x${string}`): JsonSafeSignature {
@@ -79,6 +84,17 @@ export function getConfirmationAckCopy(source: TicketSource): string {
   }
 
   return "I understand this is a leveraged perpetual order. I am confirming this paper order.";
+}
+
+export function liveOrderSubmitState(scannerUrl: string | null): SubmitState {
+  return {
+    message: "Live order forwarded to Hyperliquid after wallet signature.",
+    scannerUrl: scannerUrl ?? undefined,
+  };
+}
+
+export function paperOrderSubmitState(message: string): SubmitState {
+  return { message };
 }
 
 const PROMPT_SYMBOL_STOP_WORDS = new Set([

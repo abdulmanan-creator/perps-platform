@@ -17,6 +17,7 @@ import {
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
+import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import {
   filterMarketsForSelector,
@@ -43,7 +44,9 @@ import {
   getTerminalFreshness,
   getTerminalEligibilityStatus,
   getTicketSource,
+  liveOrderSubmitState,
   normalizeHexSignature,
+  paperOrderSubmitState,
   paperOrderEndpoint,
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
@@ -55,6 +58,7 @@ import {
   type TerminalFreshness,
   type TerminalChartInterval,
   type HyperliquidTypedData,
+  type SubmitState,
 } from "@/lib/agent-trade/terminal";
 import type {
   AgentResponse,
@@ -197,7 +201,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const [isConfirming, setIsConfirming] = useState(false);
   const [isAcked, setIsAcked] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [submitState, setSubmitState] = useState<string | undefined>();
+  const [submitState, setSubmitState] = useState<SubmitState | undefined>();
   const [modalError, setModalError] = useState<string | undefined>();
   const [apiStatus, setApiStatus] = useState<"checking" | "ok" | "unavailable">("checking");
   const [marketNotice, setMarketNotice] = useState<string | undefined>();
@@ -524,7 +528,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
 
   function sendToTicket(orderDraft: OrderDraft) {
     setDraft({ ...orderDraft, fromAgent: true });
-    setSubmitState("Agent proposal copied into the ticket.");
+    setSubmitState({ message: "Agent proposal copied into the ticket." });
     setModalError(undefined);
   }
 
@@ -557,7 +561,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         accountAddress: wallet.status === "connected" ? wallet.address : undefined,
       });
       setSnapshot(refreshed.snapshot);
-      setSubmitState(`Paper fill recorded. Position updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`);
+      setSubmitState(paperOrderSubmitState(`Paper fill recorded. Position updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`));
     } catch (err) {
       setApiStatus("unavailable");
       throw new Error(paperOrderFailureMessage(err, endpoint));
@@ -612,7 +616,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       accountAddress: user,
     });
     setSnapshot(refreshed.snapshot);
-    setSubmitState("Live order forwarded to Hyperliquid after wallet signature.");
+    setSubmitState(liveOrderSubmitState(hypurrscanAddressUrl(user)));
   }
 
   async function confirmOrder() {
@@ -632,7 +636,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Order submission failed.";
       setModalError(message);
-      setSubmitState(message);
+      setSubmitState({ message });
     } finally {
       setIsConfirming(false);
     }
@@ -686,6 +690,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               snapshot={snapshot}
               bottomTab={bottomTab}
               setBottomTab={setBottomTab}
+              accountAddress={wallet.status === "connected" ? wallet.address : undefined}
             />
           </div>
           <div className="terminal-book-stack">
@@ -723,7 +728,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               impact={draftImpact}
               exposureLabels={portfolioRiskLabels}
             />
-            {submitState ? <div className="submit-state">{submitState}</div> : null}
+            {submitState ? <SubmitStateNotice state={submitState} /> : null}
           </div>
           <div className="terminal-agent-stack">
             <AgentPanel
@@ -765,6 +770,19 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         />
       ) : null}
       </main>
+    </div>
+  );
+}
+
+function SubmitStateNotice({ state }: { state: SubmitState }) {
+  return (
+    <div className="submit-state">
+      <span>{state.message}</span>
+      {state.scannerUrl ? (
+        <a href={state.scannerUrl} target="_blank" rel="noreferrer">
+          View on Hypurrscan
+        </a>
+      ) : null}
     </div>
   );
 }
@@ -1624,7 +1642,9 @@ function BottomPanel(props: {
   snapshot: SharedTradingSnapshot;
   bottomTab: "positions" | "orders" | "fills";
   setBottomTab: (tab: "positions" | "orders" | "fills") => void;
+  accountAddress?: string;
 }) {
+  const scannerUrl = hypurrscanAddressUrl(props.accountAddress);
   return (
     <div className="panel bottom-panel">
       <div className="bottom-tabs">
@@ -1642,7 +1662,10 @@ function BottomPanel(props: {
               <span>{position.leverage}x {position.marginMode}</span>
               <span>Entry {fmtUsd(position.entryPrice, 1)}</span>
               <span>PnL <b className={position.pnlUsd >= 0 ? "pos" : "neg"}>{fmtUsd(position.pnlUsd, 2)}</b></span>
-              <span>Liq {fmtUsd(position.liquidationPrice, 1)}</span>
+              <span>
+                Liq {fmtUsd(position.liquidationPrice, 1)}
+                {position.mode === "live" && scannerUrl ? <HypurrscanLink href={scannerUrl} label="Verify" /> : null}
+              </span>
             </div>
           ))}
         </div>
@@ -1670,12 +1693,23 @@ function BottomPanel(props: {
               <span>{fmtUsd(fill.price, 1)}</span>
               <span>{fill.size}</span>
               <span>Fee {fmtUsd(fill.feeUsd, 2)}</span>
-              <span>{fmtAgo(fill.timestamp, props.snapshot.asOf)}</span>
+              <span>
+                {fmtAgo(fill.timestamp, props.snapshot.asOf)}
+                {fill.mode === "live" && scannerUrl ? <HypurrscanLink href={scannerUrl} label="View" /> : null}
+              </span>
             </div>
           ))}
         </div>
       ) : null}
     </div>
+  );
+}
+
+function HypurrscanLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a className="hypurrscan-link" href={href} target="_blank" rel="noreferrer">
+      {label}
+    </a>
   );
 }
 

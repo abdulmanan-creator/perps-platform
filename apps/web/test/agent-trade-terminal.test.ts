@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
 import { loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
 import { api } from "../lib/api";
+import { hypurrscanAddressUrl, normalizeHypurrscanAddress } from "../lib/agent-trade/hypurrscan";
 import { filterMarketsForSelector, sortMarketsForSelector, type JoinedMarket } from "../lib/agent-trade/markets";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { buildHlOrderAction, formatOrderPrice, formatOrderSize } from "../lib/agent-trade/orders";
@@ -16,8 +17,10 @@ import {
   getTerminalEligibilityStatus,
   getTerminalFreshness,
   getTicketSource,
+  liveOrderSubmitState,
   normalizeHexSignature,
   normalizeTerminalCandlesResponse,
+  paperOrderSubmitState,
   paperOrderEndpoint,
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
@@ -122,6 +125,26 @@ describe("Agent.trade terminal product-loop helpers", () => {
 
   it("keeps the agent panel heading explicit for terminal layout smoke", () => {
     expect(AGENT_PANEL_HEADING).toBe("Ask Agent.trade");
+  });
+
+  it("builds Hypurrscan address links only for valid wallets", () => {
+    const address = "0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43";
+
+    expect(normalizeHypurrscanAddress(address.toUpperCase().replace(/^0X/u, "0x"))).toBe(address);
+    expect(hypurrscanAddressUrl(address)).toBe(`https://hypurrscan.io/address/${address}`);
+    expect(hypurrscanAddressUrl("0xdeadbeef")).toBeNull();
+    expect(hypurrscanAddressUrl(undefined)).toBeNull();
+  });
+
+  it("keeps paper success free of Hypurrscan links and adds links for live success", () => {
+    const address = "0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43";
+    const paper = paperOrderSubmitState("Paper fill recorded. Position updated.");
+    const live = liveOrderSubmitState(hypurrscanAddressUrl(address));
+
+    expect(paper.message).toContain("Paper fill recorded");
+    expect(paper.scannerUrl).toBeUndefined();
+    expect(live.message).toContain("Live order forwarded");
+    expect(live.scannerUrl).toBe(`https://hypurrscan.io/address/${address}`);
   });
 
   it("normalizes raw wallet signatures into JSON-safe Hyperliquid signatures", () => {
