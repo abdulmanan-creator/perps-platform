@@ -92,9 +92,11 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   if (error) {
     return (
       <main className="predictions-page">
-        <section className="panel predictions-empty">
-          <strong>Prediction detail unavailable</strong>
-          <span>{error}</span>
+        <section className="panel predictions-empty prediction-detail-unavailable">
+          <strong>Live prediction data unavailable</strong>
+          <span>
+            {error} Question {questionId} may not be listed in the current Hyperliquid HIP-4 metadata.
+          </span>
           <Link href="/predictions">Back to predictions</Link>
         </section>
       </main>
@@ -117,7 +119,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
       <section className="prediction-detail-head">
         <div>
           <Link className="prediction-back-link" href="/predictions">Predictions</Link>
-          <p className="at-kicker">Question {question.questionId}</p>
+          <p className="at-kicker">{question.questionId === 32 ? "World Cup" : `Question ${question.questionId}`}</p>
           <h1>{question.name}</h1>
           <p>{question.criteria || question.description || "Resolution criteria unavailable from Hyperliquid metadata."}</p>
         </div>
@@ -128,8 +130,8 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
         </div>
       </section>
 
-      <section className="prediction-detail-grid">
-        <div className="prediction-detail-main">
+      <section className="prediction-terminal-grid">
+        <aside className="prediction-terminal-left">
           <OutcomeGrid
             question={question}
             odds={odds}
@@ -140,11 +142,25 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
               setSelectedSideIndex(side);
             }}
           />
-          <SettlementModule question={question} />
-          <PredictionPaperPortfolio positions={paperPositions} />
-        </div>
-        <aside className="prediction-detail-side">
           <OrderBookPreview outcome={selectedOutcome} side={selectedSide} />
+        </aside>
+        <div className="prediction-terminal-center">
+          <ProbabilitySnapshot
+            question={question}
+            odds={odds}
+            selectedOutcomeId={selectedOutcomeId}
+            onSelect={(outcomeId) => {
+              setSelectedOutcomeId(outcomeId);
+              setSelectedSideIndex(0);
+            }}
+          />
+          <PredictionPaperPortfolio positions={paperPositions} />
+          <div className="prediction-terminal-lower">
+            <SettlementModule question={question} />
+            <PredictionAgentPreview />
+          </div>
+        </div>
+        <aside className="prediction-terminal-right">
           <PredictionPaperTicket
             question={question}
             selectedOutcomeId={selectedOutcomeId}
@@ -158,7 +174,6 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             onPaperAccount={setPaperAccount}
           />
           <PredictionRiskCopy />
-          <PredictionAgentPreview />
         </aside>
       </section>
     </main>
@@ -184,7 +199,7 @@ function OutcomeGrid(props: {
     <section className="panel prediction-outcome-panel">
       <div className="panel-head">
         <div>
-          <span>Outcome grid</span>
+          <span>Outcome markets</span>
           <strong>{props.question.namedOutcomes.length} named outcomes</strong>
         </div>
       </div>
@@ -226,13 +241,78 @@ function OutcomeGrid(props: {
   );
 }
 
+function ProbabilitySnapshot(props: {
+  question: PredictionQuestion;
+  odds: PredictionQuestionOdds | undefined;
+  selectedOutcomeId: number | undefined;
+  onSelect: (outcomeId: number) => void;
+}) {
+  const rows = props.question.namedOutcomes.slice(0, 8).map((outcome) => {
+    const outcomeOdds = selectedOutcomeOdds(props.odds, outcome.outcome);
+    const yesSide = outcomeOdds?.sides[0];
+    const probability = probabilityFromSide(yesSide);
+    const depth = yesSide ? yesSide.depth.bidSize + yesSide.depth.askSize : 0;
+    return {
+      outcome,
+      probability,
+      depth,
+      emptyBook: yesSide?.emptyBook ?? true,
+    };
+  });
+  const selected = rows.find((row) => row.outcome.outcome === props.selectedOutcomeId) ?? rows[0];
+  const selectedProbability = selected?.probability ?? null;
+  const chartWidth = probabilityBarWidth(selectedProbability);
+
+  return (
+    <section className="panel prediction-probability-panel">
+      <div className="panel-head">
+        <div>
+          <span>Implied probability snapshot</span>
+          <strong>{selected ? selected.outcome.name : "Select outcome"}</strong>
+        </div>
+        <span className="state-pill account-warning">Read-only live books</span>
+      </div>
+      <div className="prediction-probability-stage">
+        <div className="prediction-chart-head">
+          <span>0%</span>
+          <strong>{formatProbability(selectedProbability)}</strong>
+          <span>100%</span>
+        </div>
+        <div className="prediction-chart-surface" aria-label="Current implied probability visualization">
+          <i style={{ width: `${chartWidth}%` }} />
+          <b style={{ left: `${chartWidth}%` }} />
+        </div>
+        <div className="prediction-chart-scale">
+          <span>Low probability</span>
+          <span>Market-implied, not guaranteed</span>
+          <span>High probability</span>
+        </div>
+      </div>
+      <div className="prediction-probability-list">
+        {rows.map((row) => (
+          <button
+            key={row.outcome.outcome}
+            className={props.selectedOutcomeId === row.outcome.outcome ? "active" : ""}
+            onClick={() => props.onSelect(row.outcome.outcome)}
+          >
+            <span>{row.outcome.name}</span>
+            <em>{row.emptyBook ? "Empty book" : formatProbability(row.probability)}</em>
+            <strong style={{ width: `${probabilityBarWidth(row.probability)}%` }} />
+            <small>{row.depth > 0 ? `${Math.round(row.depth).toLocaleString()} contracts depth` : "No visible depth"}</small>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function OrderBookPreview({ outcome, side }: { outcome: PredictionOutcome | undefined; side: PredictionSideOdds | undefined }) {
   return (
     <section className="panel prediction-book-panel">
       <div className="panel-head">
         <div>
-          <span>Read-only book</span>
-          <strong>{outcome ? outcome.name : "Select outcome"}</strong>
+          <span>Top of book</span>
+          <strong>{outcome && side ? `${outcome.name} / ${side.name}` : "Select outcome"}</strong>
         </div>
       </div>
       {side ? (
@@ -366,7 +446,7 @@ function PredictionPaperTicket(props: {
       <div className="panel-head">
         <div>
           <span>Paper ticket</span>
-          <strong>Simulated only</strong>
+          <strong>Paper only</strong>
         </div>
       </div>
       <div className="prediction-ticket-form">
@@ -509,6 +589,11 @@ function paperLiquidityWarning(side: PredictionSideOdds | undefined): string {
   if (!side.bestBid || !side.bestAsk) return "This book is one-sided; paper exits may differ from the displayed probability.";
   if (side.spread !== null && side.spread >= 0.1) return "Wide spreads can materially affect entry and exit in live markets.";
   return "Spread check: paper fills use your limit probability while market depth may differ.";
+}
+
+function probabilityBarWidth(probability: number | null | undefined): number {
+  if (probability === null || probability === undefined || !Number.isFinite(probability)) return 4;
+  return Math.min(100, Math.max(4, probability * 100));
 }
 
 function PredictionRiskCopy() {

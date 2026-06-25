@@ -660,6 +660,280 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   color: var(--muted);
 }
 
+.prediction-world-cup-chip {
+  border: 1px solid rgba(91,99,255,0.48);
+  border-radius: 999px;
+  background: rgba(91,99,255,0.14);
+  color: #dbe2ff;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.predictions-page {
+  background:
+    linear-gradient(180deg, rgba(91,99,255,0.06), transparent 240px),
+    linear-gradient(180deg, #080b18 0%, #05070d 100%);
+}
+.predictions-toolbar {
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px;
+  background: rgba(10,15,32,0.72);
+}
+.predictions-tabs button {
+  padding: 7px 10px;
+  border-radius: 10px;
+}
+.predictions-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.prediction-card {
+  min-height: 232px;
+  padding: 13px;
+  border-color: rgba(54,63,249,0.18);
+  background:
+    linear-gradient(180deg, rgba(19,25,52,0.88), rgba(9,13,28,0.96)),
+    #0c1024;
+}
+.prediction-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(91,99,255,0.7);
+  background:
+    linear-gradient(180deg, rgba(28,34,70,0.94), rgba(8,12,26,0.98)),
+    #0c1024;
+}
+.prediction-card-top > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.prediction-card-top strong {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 600;
+}
+.prediction-card-top em {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  color: #c7cdef;
+  padding: 4px 7px;
+  font-style: normal;
+  font-size: 11px;
+}
+.prediction-card h2 {
+  font-size: 17px;
+  line-height: 1.16;
+}
+.prediction-card p {
+  min-height: 44px;
+  -webkit-line-clamp: 2;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.prediction-card-marketline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.prediction-card-marketline span {
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.035);
+  color: var(--muted);
+  padding: 4px 7px;
+  font-size: 11px;
+}
+.prediction-outcome-strip {
+  gap: 6px;
+}
+.prediction-outcome-strip span {
+  position: relative;
+  overflow: hidden;
+  padding: 8px;
+  border-radius: 7px;
+  background: rgba(9,14,30,0.86);
+}
+.prediction-outcome-strip em {
+  color: #c6cced;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-outcome-strip b {
+  display: block;
+  height: 3px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+}
+.prediction-card-foot {
+  padding-top: 2px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+.prediction-terminal-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.78fr) minmax(420px, 1.55fr) minmax(320px, 0.82fr);
+  gap: 12px;
+  align-items: start;
+}
+.prediction-terminal-left, .prediction-terminal-center, .prediction-terminal-right {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.prediction-terminal-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: 12px;
+}
+.prediction-detail-unavailable {
+  max-width: 720px;
+  margin: 40px auto;
+}
+.prediction-outcome-grid {
+  grid-template-columns: 1fr;
+  max-height: 574px;
+  overflow: auto;
+}
+.prediction-outcome-card {
+  padding: 11px;
+}
+.prediction-side-grid button {
+  min-height: 108px;
+  background: #090d1f;
+}
+.prediction-side-grid button strong {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-probability-panel {
+  overflow: hidden;
+}
+.prediction-probability-stage {
+  padding: 14px 16px 12px;
+  border-top: 1px solid rgba(255,255,255,0.045);
+}
+.prediction-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-chart-head strong {
+  color: var(--text);
+  font-size: 28px;
+}
+.prediction-chart-surface {
+  position: relative;
+  height: 148px;
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  background:
+    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 100% 25%,
+    linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px) 0 0 / 16.666% 100%,
+    #080d1e;
+}
+.prediction-chart-surface i {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 100%;
+  min-width: 4%;
+  background: linear-gradient(180deg, rgba(91,99,255,0.3), rgba(39,214,170,0.05));
+}
+.prediction-chart-surface::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 48%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+  opacity: 0.9;
+}
+.prediction-chart-surface b {
+  position: absolute;
+  bottom: calc(48% - 5px);
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 6px rgba(39,214,170,0.14);
+}
+.prediction-chart-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--dim);
+  font-size: 11px;
+}
+.prediction-probability-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  border-top: 1px solid var(--line);
+  background: var(--line);
+}
+.prediction-probability-list button {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  background: #0d1326;
+  color: var(--muted);
+  padding: 11px;
+  text-align: left;
+}
+.prediction-probability-list button.active {
+  background: linear-gradient(180deg, rgba(91,99,255,0.16), rgba(13,19,38,0.96));
+}
+.prediction-probability-list span {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prediction-probability-list em {
+  color: var(--green);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-probability-list strong {
+  display: block;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+}
+.prediction-probability-list small {
+  color: var(--dim);
+  font-size: 11px;
+}
+.prediction-book-levels div:nth-child(1) strong,
+.prediction-book-levels div:nth-child(3) strong {
+  color: var(--green);
+}
+.prediction-book-levels div:nth-child(2) strong {
+  color: var(--red);
+}
+.prediction-ticket-preview {
+  border-color: rgba(91,99,255,0.38);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 14px 38px rgba(0,0,0,0.22);
+}
+.prediction-ticket-form > button {
+  border-color: rgba(91,99,255,0.55);
+  background: var(--blue);
+  color: white;
+}
+.prediction-ticket-form > button:hover:not(:disabled) {
+  background: #4952f5;
+}
+.prediction-risk-panel {
+  border-color: rgba(240,162,58,0.24);
+}
+
 .portfolio-page { padding: 18px; }
 .portfolio-head {
   display: flex;
@@ -2062,6 +2336,9 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .connectors-hero, .connector-safety { grid-template-columns: 1fr; }
   .terminal-grid { grid-template-columns: minmax(0, 1fr) 330px; }
   .terminal-mid { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; }
+  .predictions-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .prediction-terminal-grid { grid-template-columns: minmax(280px, 0.86fr) minmax(0, 1.14fr); }
+  .prediction-terminal-right { grid-column: 1 / -1; grid-template-columns: minmax(320px, 0.85fr) minmax(280px, 0.65fr); }
 }
 
 @media (max-width: 820px) {
@@ -2110,9 +2387,11 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   .onboarding-head { align-items: flex-start; flex-direction: column; }
   .onboarding-actions { justify-content: flex-start; }
   .markets-toolbar, .predictions-toolbar { grid-template-columns: 1fr; }
-  .predictions-grid, .prediction-detail-grid, .prediction-outcome-grid, .portfolio-grid, .portfolio-tables { grid-template-columns: 1fr; }
+  .predictions-grid, .prediction-detail-grid, .prediction-terminal-grid, .prediction-terminal-right, .prediction-terminal-lower, .prediction-outcome-grid, .prediction-probability-list, .portfolio-grid, .portfolio-tables { grid-template-columns: 1fr; }
   .prediction-card-stats, .prediction-book-levels, .prediction-settlement-body, .prediction-ticket-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .prediction-side-grid, .prediction-outcome-strip { grid-template-columns: 1fr; }
+  .prediction-outcome-grid { max-height: none; }
+  .prediction-chart-surface { height: 118px; }
   .onboarding-grid, .onboarding-grid.wide { grid-template-columns: 1fr; }
   .onboarding-grid, .onboarding-head, .onboarding-next { width: 100%; max-width: 100%; min-width: 0; }
   .onboarding-card { min-width: 0; }

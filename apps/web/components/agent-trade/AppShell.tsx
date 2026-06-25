@@ -8,7 +8,8 @@ const navItems = [
   { href: "/onboarding", label: "Onboarding" },
   { href: "/terminal", label: "Terminal" },
   { href: "/markets", label: "Markets" },
-  { href: "/predictions", label: "Predictions" },
+  { href: "/predictions", label: "Predictions", exact: true },
+  { href: "/predictions/32", label: "World Cup", exact: true },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/connectors", label: "Connectors" },
   { href: "/rewards", label: "Rewards" },
@@ -35,7 +36,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               href={item.href}
               className={
                 pathname === item.href ||
-                (item.href !== "/" && pathname.startsWith(`${item.href}/`)) ||
+                (!item.exact && item.href !== "/" && pathname.startsWith(`${item.href}/`)) ||
                 (pathname === "/" && item.href === "/terminal")
                   ? "active"
                   : ""

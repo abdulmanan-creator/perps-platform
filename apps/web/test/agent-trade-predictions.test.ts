@@ -271,6 +271,13 @@ describe("Agent.trade prediction helpers", () => {
 });
 
 describe("prediction route smoke", () => {
+  it("adds Predictions and World Cup app-shell navigation entries", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/AppShell.tsx"), "utf8");
+    expect(source).toContain("Predictions");
+    expect(source).toContain("World Cup");
+    expect(source).toContain("/predictions/32");
+  });
+
   it("wires the /predictions route to the prediction client", () => {
     const source = readFileSync(join(process.cwd(), "app/predictions/page.tsx"), "utf8");
     expect(source).toContain("PredictionsClient");
@@ -281,6 +288,12 @@ describe("prediction route smoke", () => {
     const source = readFileSync(join(process.cwd(), "app/predictions/[questionId]/page.tsx"), "utf8");
     expect(source).toContain("PredictionDetailClient");
     expect(source).toContain("questionId");
+  });
+
+  it("keeps the World Cup detail route graceful when live data is unavailable", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    expect(source).toContain("Live prediction data unavailable");
+    expect(source).toContain("Back to predictions");
   });
 
   it("keeps prediction paper helpers away from exchange submission", () => {

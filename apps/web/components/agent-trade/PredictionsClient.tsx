@@ -132,6 +132,9 @@ export function PredictionsClient() {
           </p>
         </div>
         <div className="predictions-health">
+          <Link className="prediction-world-cup-chip" href="/predictions/32">
+            World Cup
+          </Link>
           <span className={error ? "state-pill stale" : "state-pill live"}>
             {error ? "Read unavailable" : "HIP-4 read-only"}
           </span>
@@ -191,38 +194,59 @@ function PredictionQuestionCard({ question }: { question: PredictionDiscoveryQue
   const spreadText = odds?.widestSpread === null || odds?.widestSpread === undefined
     ? "Spread pending"
     : `Widest spread ${formatSpread(odds.widestSpread)}`;
+  const visibleOutcomes = odds?.visibleOutcomes.length
+    ? odds.visibleOutcomes
+    : question.namedOutcomes.slice(0, 4).map((outcome) => ({
+      outcome: outcome.outcome,
+      name: outcome.name,
+      midpointProbability: null,
+      bestBid: null,
+      bestAsk: null,
+      emptyBook: true,
+    }));
+  const liquidityLabel = odds
+    ? odds.hasThinLiquidity
+      ? "Thin liquidity"
+      : `${Math.round(odds.totalDepth).toLocaleString()} contracts`
+    : "Loading books";
 
   return (
     <Link className="panel prediction-card" href={`/predictions/${question.questionId}`}>
       <div className="prediction-card-top">
-        <span className="state-pill account-warning">{status}</span>
-        <span>{predictionCategoryLabel(question)}</span>
+        <div>
+          <span>{predictionCategoryLabel(question)}</span>
+          <strong>{status}</strong>
+        </div>
+        <em>{(question.quoteToken ?? question.quoteTokens.join(", ")) || "Quote pending"}</em>
       </div>
       <h2>{question.name}</h2>
       <p>{question.criteria || question.description || "Resolution criteria unavailable from Hyperliquid metadata."}</p>
-      <div className="prediction-card-stats">
-        <span>{(question.quoteToken ?? question.quoteTokens.join(", ")) || "Quote pending"}</span>
-        <span>{question.namedOutcomes.length} named outcomes</span>
+      <div className="prediction-card-marketline">
+        <span>{question.namedOutcomes.length} outcomes</span>
         <span>{odds ? `${odds.nonEmptySideCount} active sides` : "Odds pending"}</span>
-        <span>{odds ? `${Math.round(odds.totalDepth)} contracts depth` : spreadText}</span>
+        <span>{liquidityLabel}</span>
       </div>
       <div className="prediction-outcome-strip">
-        {odds?.visibleOutcomes.length ? odds.visibleOutcomes.map((outcome) => (
-          <span key={outcome.outcome}>
-            <strong>{outcome.name}</strong>
-            <em>{outcome.emptyBook ? "Empty" : formatProbability(outcome.midpointProbability)}</em>
-          </span>
-        )) : question.namedOutcomes.slice(0, 4).map((outcome) => (
-          <span key={outcome.outcome}>
-            <strong>{outcome.name}</strong>
-            <em>Odds pending</em>
-          </span>
-        ))}
+        {visibleOutcomes.map((outcome) => {
+          const probability = outcome.emptyBook ? null : outcome.midpointProbability;
+          return (
+            <span key={outcome.outcome}>
+              <strong>{outcome.name}</strong>
+              <em>{outcome.emptyBook ? "Empty" : formatProbability(probability)}</em>
+              <b style={{ width: `${probabilityBarWidth(probability)}%` }} />
+            </span>
+          );
+        })}
       </div>
       <div className="prediction-card-foot">
         <span>{spreadText}</span>
-        <strong>Open detail</strong>
+        <strong>Open paper terminal</strong>
       </div>
     </Link>
   );
+}
+
+function probabilityBarWidth(probability: number | null | undefined): number {
+  if (probability === null || probability === undefined || !Number.isFinite(probability)) return 4;
+  return Math.min(100, Math.max(4, probability * 100));
 }
