@@ -145,7 +145,7 @@ describe("Agent.trade selected-market order action builder", () => {
     });
 
     expect(action.orders[0].a).toBe(0);
-    expect(action.orders[0].s).toBe("0.01235");
+    expect(action.orders[0].s).toBe("0.01234");
   });
 
   it("uses another supported perp asset index and precision", () => {
@@ -159,7 +159,7 @@ describe("Agent.trade selected-market order action builder", () => {
     });
 
     expect(action.orders[0].a).toBe(1);
-    expect(action.orders[0].s).toBe("1.2346");
+    expect(action.orders[0].s).toBe("1.2345");
   });
 
   it("unsupported symbol resolves to BTC before action building", () => {

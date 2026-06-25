@@ -5,6 +5,7 @@ import { loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapsho
 import { api } from "../lib/api";
 import { filterMarketsForSelector, sortMarketsForSelector, type JoinedMarket } from "../lib/agent-trade/markets";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
+import { buildHlOrderAction, formatOrderPrice, formatOrderSize } from "../lib/agent-trade/orders";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
   AGENT_PANEL_HEADING,
@@ -15,11 +16,13 @@ import {
   getTerminalEligibilityStatus,
   getTerminalFreshness,
   getTicketSource,
+  normalizeHexSignature,
   normalizeTerminalCandlesResponse,
   paperOrderEndpoint,
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
   terminalChartLabel,
+  withExplicitEip712Domain,
   TERMINAL_CHART_INTERVAL_GROUPS,
   TERMINAL_QUICK_CHART_INTERVALS,
   TERMINAL_ACCOUNT_STALE_MS,
@@ -119,6 +122,127 @@ describe("Agent.trade terminal product-loop helpers", () => {
 
   it("keeps the agent panel heading explicit for terminal layout smoke", () => {
     expect(AGENT_PANEL_HEADING).toBe("Ask Agent.trade");
+  });
+
+  it("normalizes raw wallet signatures into JSON-safe Hyperliquid signatures", () => {
+    const r = "11".repeat(32);
+    const s = "22".repeat(32);
+
+    expect(normalizeHexSignature(`0x${r}${s}00`)).toEqual({ r: `0x${r}`, s: `0x${s}`, v: 27 });
+    expect(normalizeHexSignature(`0x${r}${s}01`)).toEqual({ r: `0x${r}`, s: `0x${s}`, v: 28 });
+    expect(normalizeHexSignature(`0x${r}${s}1b`)).toEqual({ r: `0x${r}`, s: `0x${s}`, v: 27 });
+    expect(() => normalizeHexSignature("0xdeadbeef")).toThrow(/signature length/i);
+  });
+
+  it("keeps live exchange send bodies JSON serializable", () => {
+    const signature = normalizeHexSignature(`0x${"11".repeat(32)}${"22".repeat(32)}01`);
+    const action = { type: "order", orders: [{ a: 0, b: true, p: "100000", s: "0.001", r: false }] };
+    const body = JSON.stringify({ action, nonce: 1710000000000, signature });
+
+    expect(body).toContain("\"v\":28");
+    expect(JSON.parse(body).signature).toEqual(signature);
+  });
+
+  it("adds explicit EIP712Domain types for raw eth_signTypedData_v4 wallets", () => {
+    const typedData = withExplicitEip712Domain({
+      domain: {
+        name: "Exchange",
+        version: "1",
+        chainId: 1337,
+        verifyingContract: "0x0000000000000000000000000000000000000000",
+      },
+      primaryType: "Agent",
+      message: { source: "a", connectionId: "0xabc" },
+      types: { Agent: [{ name: "source", type: "string" }] },
+    });
+
+    expect(typedData.types.EIP712Domain).toEqual([
+      { name: "name", type: "string" },
+      { name: "version", type: "string" },
+      { name: "chainId", type: "uint256" },
+      { name: "verifyingContract", type: "address" },
+    ]);
+    expect(JSON.stringify(typedData)).toContain("\"chainId\":1337");
+  });
+
+  it("posts live order signatures as r/s hex and numeric v", async () => {
+    const built = {
+      typedData: withExplicitEip712Domain({
+        domain: {
+          name: "Exchange",
+          version: "1",
+          chainId: 1337,
+          verifyingContract: "0x0000000000000000000000000000000000000000",
+        },
+        primaryType: "Agent",
+        message: { source: "a", connectionId: "0xabc" },
+        types: { Agent: [{ name: "source", type: "string" }] },
+      }),
+      nonce: 1710000000000,
+      action: { type: "order", orders: [{ a: 0, b: true, p: "100000", s: "0.001", r: false }] },
+    };
+    const signature = normalizeHexSignature(`0x${"11".repeat(32)}${"22".repeat(32)}01`);
+    const sentBodies: unknown[] = [];
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.body) {
+        sentBodies.push(JSON.parse(String(init.body)));
+      }
+      return new Response(JSON.stringify(sentBodies.length === 1 ? built : { ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const buildResponse = await fetch("http://localhost:8080/agent-trade/exchange", {
+      method: "POST",
+      body: JSON.stringify({ user: "0x1234567890abcdef1234567890abcdef12345678", action: built.action }),
+    });
+    const buildJson = (await buildResponse.json()) as typeof built;
+    const sendBody = {
+      action: buildJson.action,
+      nonce: buildJson.nonce,
+      signature,
+    };
+    await fetch("http://localhost:8080/agent-trade/exchange", {
+      method: "POST",
+      body: JSON.stringify(sendBody),
+    });
+
+    expect(sentBodies[1]).toEqual(sendBody);
+    expect(typeof (sentBodies[1] as typeof sendBody).signature.v).toBe("number");
+  });
+
+  it("formats Hyperliquid order size and price with SDK-compatible wire rules", () => {
+    expect(formatOrderSize(0.01234567, 5)).toBe("0.01234");
+    expect(formatOrderSize(1.23456, 4)).toBe("1.2345");
+    expect(formatOrderPrice(12345.6789, 5, false)).toBe("12346");
+    expect(formatOrderPrice(0.000123456789, 2, false)).toBe("0.0001");
+    expect(formatOrderPrice(1e-7, 5, false)).not.toContain("e");
+  });
+
+  it("builds live order action with truncated size and JSON-safe decimal strings", () => {
+    const action = buildHlOrderAction({
+      symbol: "BTC-USD",
+      side: "long",
+      orderType: "market",
+      sizeBtc: 0.01234567,
+      leverage: 2,
+      marginMode: "isolated",
+      reduceOnly: false,
+      fromAgent: false,
+    }, {
+      assetIndex: 0,
+      markPrice: 100_000,
+      szDecimals: 5,
+    });
+
+    expect(action.orders[0]).toMatchObject({
+      a: 0,
+      b: true,
+      p: "100500",
+      s: "0.01234",
+      t: { limit: { tif: "Ioc" } },
+    });
   });
 
   it("merges paper ledger positions and fills into terminal snapshots", () => {

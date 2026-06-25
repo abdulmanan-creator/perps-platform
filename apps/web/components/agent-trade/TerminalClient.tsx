@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
-import { hexToSignature } from "viem";
 import type { Time } from "lightweight-charts";
 
 import { API_BASE_URL } from "@/lib/api";
@@ -44,15 +43,18 @@ import {
   getTerminalFreshness,
   getTerminalEligibilityStatus,
   getTicketSource,
+  normalizeHexSignature,
   paperOrderEndpoint,
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
   terminalChartLabel,
+  withExplicitEip712Domain,
   TERMINAL_CHART_INTERVAL_GROUPS,
   TERMINAL_QUICK_CHART_INTERVALS,
   type TerminalChartData,
   type TerminalFreshness,
   type TerminalChartInterval,
+  type HyperliquidTypedData,
 } from "@/lib/agent-trade/terminal";
 import type {
   AgentResponse,
@@ -588,14 +590,15 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       throw new Error(error.guidance ?? error.message ?? "Exchange build failed");
     }
     const built = (await buildRes.json()) as { typedData: unknown; nonce: number; action: unknown };
+    const typedData = built.typedData as HyperliquidTypedData;
     const rawSignature = await provider.request({
       method: "eth_signTypedData_v4",
-      params: [user, JSON.stringify(built.typedData)],
+      params: [user, JSON.stringify(withExplicitEip712Domain(typedData))],
     });
     if (typeof rawSignature !== "string") {
       throw new Error("Wallet returned an invalid signature.");
     }
-    const signature = hexToSignature(rawSignature as `0x${string}`);
+    const signature = normalizeHexSignature(rawSignature as `0x${string}`);
     const sendRes = await fetch(`${API_BASE_URL}/agent-trade/exchange`, {
       method: "POST",
       headers,

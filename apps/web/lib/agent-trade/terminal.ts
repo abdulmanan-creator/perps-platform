@@ -3,7 +3,60 @@ import type { ChartAnnotation, EligibilityMode, MarketSnapshot, OrderDraft } fro
 
 export type TicketSource = "manual" | "agent";
 
+export interface JsonSafeSignature {
+  r: `0x${string}`;
+  s: `0x${string}`;
+  v: number;
+}
+
+export interface HyperliquidTypedData {
+  domain: {
+    name: string;
+    version: string;
+    chainId: number;
+    verifyingContract: `0x${string}`;
+  };
+  primaryType: string;
+  message: Record<string, unknown>;
+  types: Record<string, { name: string; type: string }[]>;
+}
+
 export const AGENT_PANEL_HEADING = "Ask Agent.trade";
+
+export function normalizeHexSignature(hex: `0x${string}`): JsonSafeSignature {
+  const stripped = hex.replace(/^0x/u, "");
+  if (stripped.length !== 130) {
+    throw new Error(`Unexpected signature length ${stripped.length}; expected 130 hex chars (65 bytes).`);
+  }
+
+  let v = Number.parseInt(stripped.slice(128, 130), 16);
+  if (v < 27) {
+    v += 27;
+  }
+
+  return {
+    r: `0x${stripped.slice(0, 64)}`,
+    s: `0x${stripped.slice(64, 128)}`,
+    v,
+  };
+}
+
+export function withExplicitEip712Domain(typedData: HyperliquidTypedData): HyperliquidTypedData {
+  return {
+    domain: typedData.domain,
+    primaryType: typedData.primaryType,
+    message: typedData.message,
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+        { name: "verifyingContract", type: "address" },
+      ],
+      ...typedData.types,
+    },
+  };
+}
 
 export interface TerminalEligibilityStatus {
   visible: boolean;
