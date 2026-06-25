@@ -89,6 +89,8 @@ export interface OpenOrder {
   size: number;
   reduceOnly: boolean;
   timestamp: number;
+  status?: string;
+  statusTimestamp?: number;
   cancelAction?: {
     type: "cancel";
     cancels: { a: number; o: number }[];
