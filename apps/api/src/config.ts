@@ -100,6 +100,12 @@ const ConfigSchema = z.object({
    */
   METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().min(16).optional()),
   /**
+   * Optional Postgres connection string for Agent.trade DB-1 audit logging.
+   * If absent, audit logging no-ops so local development and tests stay
+   * database-free.
+   */
+  DATABASE_URL: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  /**
    * Hard server-side cap on leverage when the agent path signs an
    * updateLeverage action. Users can still set higher leverage via /exchange
    * with their primary wallet signature. Default 10 — conservative for AI

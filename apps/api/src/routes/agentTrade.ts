@@ -7,6 +7,12 @@ import {
   eligibilityForRequest,
   recordAgentTradeNotional,
 } from "../helpers/agentTradeSafety.js";
+import {
+  recordAuditEvent,
+  recordEligibilityCheck,
+  recordExchangeResponse,
+  recordExchangeSubmission,
+} from "../helpers/agentTradeAudit.js";
 import { registerExchangeEndpoint } from "./exchange.js";
 
 const PaperOrderSchema = z.object({
@@ -244,7 +250,27 @@ export async function agentTradeRoute(app: FastifyInstance): Promise<void> {
     path: "/agent-trade/exchange",
     metricRoute: "/agent-trade/exchange",
     hooks: {
-      beforeBuild: ({ req, body }) => {
+      beforeBuild: async ({ req, body, nonce }) => {
+        await recordExchangeSubmission({
+          req,
+          cfg: app.config,
+          phase: "build",
+          route: "/agent-trade/exchange",
+          status: "started",
+          action: body.action,
+          user: body.user,
+          nonce,
+        });
+        await recordAuditEvent({
+          req,
+          cfg: app.config,
+          actorType: "wallet",
+          actorId: body.user?.toLowerCase() ?? null,
+          walletAddress: body.user,
+          route: "/agent-trade/exchange",
+          eventType: "agent_trade.exchange.build_started",
+          payload: { action: body.action, nonce },
+        });
         assertAgentTradeExchangeAllowed({
           req,
           cfg: app.config,
@@ -252,7 +278,83 @@ export async function agentTradeRoute(app: FastifyInstance): Promise<void> {
           user: body.user,
         });
       },
-      beforeSend: ({ req, body, signer }) => {
+      afterBuild: async ({ req, body, response }) => {
+        await recordExchangeSubmission({
+          req,
+          cfg: app.config,
+          phase: "build",
+          route: "/agent-trade/exchange",
+          status: "built",
+          action: body.action,
+          user: body.user,
+          nonce: response.nonce,
+          builderFeeBps: response.builderFee,
+          redactedPayload: {
+            hash: response.hash,
+            nonce: response.nonce,
+            builder: response.builder,
+            builderFee: response.builderFee,
+            isSpot: response.isSpot,
+          },
+        });
+        await recordAuditEvent({
+          req,
+          cfg: app.config,
+          actorType: "wallet",
+          actorId: body.user?.toLowerCase() ?? null,
+          walletAddress: body.user,
+          route: "/agent-trade/exchange",
+          eventType: "agent_trade.exchange.build_built",
+          payload: { actionType: body.action.type, nonce: response.nonce, hash: response.hash },
+        });
+      },
+      onBuildError: async ({ req, body, error, nonce }) => {
+        await recordExchangeSubmission({
+          req,
+          cfg: app.config,
+          phase: "build",
+          route: "/agent-trade/exchange",
+          status: "failed",
+          action: body.action,
+          user: body.user,
+          nonce,
+          error,
+        });
+        await recordAuditEvent({
+          req,
+          cfg: app.config,
+          actorType: "wallet",
+          actorId: body.user?.toLowerCase() ?? null,
+          walletAddress: body.user,
+          route: "/agent-trade/exchange",
+          eventType: "agent_trade.exchange.build_failed",
+          severity: "warn",
+          payload: { actionType: body.action.type, error },
+        });
+      },
+      beforeSend: async ({ req, body, signer, builderFeeBps }) => {
+        await recordExchangeSubmission({
+          req,
+          cfg: app.config,
+          phase: "send",
+          route: "/agent-trade/exchange",
+          status: "started",
+          action: body.action,
+          signer,
+          nonce: body.nonce,
+          signature: body.signature,
+          builderFeeBps,
+        });
+        await recordAuditEvent({
+          req,
+          cfg: app.config,
+          actorType: "wallet",
+          actorId: signer.toLowerCase(),
+          walletAddress: signer,
+          route: "/agent-trade/exchange",
+          eventType: "agent_trade.exchange.send_started",
+          payload: { actionType: body.action.type, nonce: body.nonce },
+        });
         assertAgentTradeExchangeAllowed({
           req,
           cfg: app.config,
@@ -260,11 +362,76 @@ export async function agentTradeRoute(app: FastifyInstance): Promise<void> {
           user: signer,
         });
       },
-      afterSend: ({ req, body, signer }) => {
+      afterSend: async ({ req, body, signer, exchangeResponse, latencyMs, builderFeeBps }) => {
+        const submissionId = await recordExchangeSubmission({
+          req,
+          cfg: app.config,
+          phase: "send",
+          route: "/agent-trade/exchange",
+          status: "forwarded",
+          action: body.action,
+          signer,
+          nonce: body.nonce,
+          signature: body.signature,
+          builderFeeBps,
+        });
+        await recordExchangeResponse({
+          req,
+          cfg: app.config,
+          exchangeSubmissionId: submissionId,
+          walletAddress: signer,
+          success: true,
+          responsePayload: exchangeResponse,
+          latencyMs,
+        });
+        await recordAuditEvent({
+          req,
+          cfg: app.config,
+          actorType: "wallet",
+          actorId: signer.toLowerCase(),
+          walletAddress: signer,
+          route: "/agent-trade/exchange",
+          eventType: "agent_trade.exchange.send_forwarded",
+          payload: { actionType: body.action.type, nonce: body.nonce, latencyMs },
+        });
         recordAgentTradeNotional({
           req,
           action: body.action,
           user: signer,
+        });
+      },
+      onSendError: async ({ req, body, signer, error, builderFeeBps }) => {
+        const submissionId = await recordExchangeSubmission({
+          req,
+          cfg: app.config,
+          phase: "send",
+          route: "/agent-trade/exchange",
+          status: "failed",
+          action: body.action,
+          signer,
+          nonce: body.nonce,
+          signature: body.signature,
+          error,
+          builderFeeBps,
+        });
+        await recordExchangeResponse({
+          req,
+          cfg: app.config,
+          exchangeSubmissionId: submissionId,
+          walletAddress: signer,
+          success: false,
+          error,
+        });
+        await recordAuditEvent({
+          req,
+          cfg: app.config,
+          actorType: signer ? "wallet" : "system",
+          actorId: signer?.toLowerCase() ?? null,
+          walletAddress: signer,
+          route: "/agent-trade/exchange",
+          eventType: "agent_trade.exchange.send_failed",
+          severity: "warn",
+          payload: { actionType: body.action.type, nonce: body.nonce, error },
         });
       },
     },
@@ -272,6 +439,24 @@ export async function agentTradeRoute(app: FastifyInstance): Promise<void> {
 
   app.get("/agent-trade/eligibility", async (req, reply) => {
     const state = eligibilityForRequest(req, app.config);
+    await recordEligibilityCheck({
+      req,
+      cfg: app.config,
+      eligibilityState: state,
+    });
+    await recordAuditEvent({
+      req,
+      cfg: app.config,
+      route: "/agent-trade/eligibility",
+      eventType: "agent_trade.eligibility_checked",
+      eligibilityState: state,
+      payload: {
+        state,
+        executionVenue: app.config.isTestnet ? "hyperliquid-testnet" : "hyperliquid-mainnet",
+        mainnetExecutionEnabled: app.config.AGENT_TRADE_MAINNET_EXECUTION_ENABLED,
+        killSwitchEnabled: app.config.AGENT_TRADE_LIVE_TRADING_KILL_SWITCH,
+      },
+    });
     return reply.send({
       state,
       executionVenue: app.config.isTestnet ? "hyperliquid-testnet" : "hyperliquid-mainnet",

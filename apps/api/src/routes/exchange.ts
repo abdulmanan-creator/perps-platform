@@ -51,18 +51,40 @@ export interface ExchangeEndpointHooks {
   beforeBuild?: (args: {
     req: FastifyRequest;
     body: ExchangeBody;
-  }) => void;
+    nonce: number;
+  }) => void | Promise<void>;
+  afterBuild?: (args: {
+    req: FastifyRequest;
+    body: ExchangeBody;
+    response: BuildResponse;
+  }) => void | Promise<void>;
+  onBuildError?: (args: {
+    req: FastifyRequest;
+    body: ExchangeBody;
+    error: unknown;
+    nonce?: number;
+  }) => void | Promise<void>;
   beforeSend?: (args: {
     req: FastifyRequest;
     body: ExchangeBody;
     signer: `0x${string}`;
-  }) => void;
+    builderFeeBps?: number;
+  }) => void | Promise<void>;
   afterSend?: (args: {
     req: FastifyRequest;
     body: ExchangeBody;
     signer: `0x${string}`;
     exchangeResponse: unknown;
-  }) => void;
+    latencyMs: number;
+    builderFeeBps?: number;
+  }) => void | Promise<void>;
+  onSendError?: (args: {
+    req: FastifyRequest;
+    body: ExchangeBody;
+    signer?: `0x${string}`;
+    error: unknown;
+    builderFeeBps?: number;
+  }) => void | Promise<void>;
 }
 
 export async function registerExchangeEndpoint(
@@ -96,107 +118,121 @@ export async function registerExchangeEndpoint(
 
     if (body.signature) {
       // ---- Phase B: send -----------------------------------------------------
-      if (body.nonce === undefined) {
-        throw new ApiException(
-          "INVALID_PARAMS",
-          "Phase B requires `nonce` (the one returned by Phase A).",
-          "Echo back the nonce you got from the build response alongside the signature.",
-        );
-      }
-
-      // Re-inject builder for order actions. This protects against a client
-      // that built locally with one fee then tried to send a different one.
+      let signer: `0x${string}` | undefined;
       let builderFee: number | undefined;
-      if (body.action.type === "order") {
-        injectBuilder(body.action, app.config);
-        builderFee = body.action.builder?.f;
-      }
-
-      const signer = await recoverActionSigner(
-        body.action,
-        body.nonce,
-        body.signature,
-        app.config,
-      );
-      args.hooks?.beforeSend?.({ req, body, signer });
-
-      const replayKey = `${body.signature.r}:${body.signature.s}:${body.signature.v}:${body.nonce}`;
-      if (!seenSignatures.addIfAbsent(replayKey, true)) {
-        metrics.duplicatesRejected.inc({ route: args.metricRoute });
-        throw new ApiException(
-          "DUPLICATE_REQUEST",
-          "This signed payload was already submitted.",
-          "The same signature + nonce was forwarded within the last 10 minutes — the original request likely succeeded. Check order state via /openOrders or /orderStatus instead of retrying. To place the same order again, build and sign a fresh payload.",
-        );
-      }
-
-      req.log.info(
-        { route: args.metricRoute, type: body.action.type, signer, builderFee, nonce: body.nonce },
-        "exchange_send",
-      );
-
-      // Normalize signature recovery id (v) to 27/28 before forwarding to HL.
-      // Some signers (Privy embedded wallets via raw EIP-1193, certain smart
-      // signers) return v in 0/1 (yParity) format. viem normalizes on recovery
-      // — so OUR recoverActionSigner above returns the right signer — but HL's
-      // ecrecover uses v as-is. Without normalization HL recovers a different
-      // (random-looking) address and rejects with "User does not exist".
-      const originalV = body.signature.v;
-      const normalizedSignature = {
-        r: body.signature.r,
-        s: body.signature.s,
-        v: originalV < 27 ? originalV + 27 : originalV,
-      };
-      req.log.info(
-        {
-          signerWeRecovered: signer,
-          rawV: originalV,
-          normalizedV: normalizedSignature.v,
-          actionKeysOrder: Object.keys(body.action),
-        },
-        "forwarding_to_hl",
-      );
-
-      let exchangeResponse: unknown;
       try {
-        exchangeResponse = await hl.forwardExchange({
-          action: body.action as unknown,
-          nonce: body.nonce,
-          signature: normalizedSignature,
-        });
-      } catch (err) {
-        // The payload never reached HL — clear the replay guard so the
-        // client can legitimately retry the same signed payload. Rejections
-        // (HL saw it and said no) stay guarded.
-        if (err instanceof ApiException && err.code === "HL_EXCHANGE_UNREACHABLE") {
-          seenSignatures.delete(replayKey);
+        if (body.nonce === undefined) {
+          throw new ApiException(
+            "INVALID_PARAMS",
+            "Phase B requires `nonce` (the one returned by Phase A).",
+            "Echo back the nonce you got from the build response alongside the signature.",
+          );
         }
-        metrics.hlForwards.inc({ action: body.action.type, outcome: "error", path: "user" });
+
+        // Re-inject builder for order actions. This protects against a client
+        // that built locally with one fee then tried to send a different one.
+        if (body.action.type === "order") {
+          injectBuilder(body.action, app.config);
+          builderFee = feeBpsFor(body.action, app.config);
+        }
+
+        signer = await recoverActionSigner(
+          body.action,
+          body.nonce,
+          body.signature,
+          app.config,
+        );
+        await args.hooks?.beforeSend?.({ req, body, signer, builderFeeBps: builderFee });
+
+        const replayKey = `${body.signature.r}:${body.signature.s}:${body.signature.v}:${body.nonce}`;
+        if (!seenSignatures.addIfAbsent(replayKey, true)) {
+          metrics.duplicatesRejected.inc({ route: args.metricRoute });
+          throw new ApiException(
+            "DUPLICATE_REQUEST",
+            "This signed payload was already submitted.",
+            "The same signature + nonce was forwarded within the last 10 minutes — the original request likely succeeded. Check order state via /openOrders or /orderStatus instead of retrying. To place the same order again, build and sign a fresh payload.",
+          );
+        }
+
+        req.log.info(
+          { route: args.metricRoute, type: body.action.type, signer, builderFee, nonce: body.nonce },
+          "exchange_send",
+        );
+
+        // Normalize signature recovery id (v) to 27/28 before forwarding to HL.
+        // Some signers (Privy embedded wallets via raw EIP-1193, certain smart
+        // signers) return v in 0/1 (yParity) format. viem normalizes on recovery
+        // — so OUR recoverActionSigner above returns the right signer — but HL's
+        // ecrecover uses v as-is. Without normalization HL recovers a different
+        // (random-looking) address and rejects with "User does not exist".
+        const originalV = body.signature.v;
+        const normalizedSignature = {
+          r: body.signature.r,
+          s: body.signature.s,
+          v: originalV < 27 ? originalV + 27 : originalV,
+        };
+        req.log.info(
+          {
+            signerWeRecovered: signer,
+            rawV: originalV,
+            normalizedV: normalizedSignature.v,
+            actionKeysOrder: Object.keys(body.action),
+          },
+          "forwarding_to_hl",
+        );
+
+        const startedAt = Date.now();
+        let exchangeResponse: unknown;
+        try {
+          exchangeResponse = await hl.forwardExchange({
+            action: body.action as unknown,
+            nonce: body.nonce,
+            signature: normalizedSignature,
+          });
+        } catch (err) {
+          // The payload never reached HL — clear the replay guard so the
+          // client can legitimately retry the same signed payload. Rejections
+          // (HL saw it and said no) stay guarded.
+          if (err instanceof ApiException && err.code === "HL_EXCHANGE_UNREACHABLE") {
+            seenSignatures.delete(replayKey);
+          }
+          metrics.hlForwards.inc({ action: body.action.type, outcome: "error", path: "user" });
+          throw err;
+        }
+        const latencyMs = Date.now() - startedAt;
+        metrics.hlForwards.inc({ action: body.action.type, outcome: "ok", path: "user" });
+        if (body.action.type === "order") {
+          recordOrderOutcome(exchangeResponse, builderFee, "user");
+        }
+        await args.hooks?.afterSend?.({ req, body, signer, exchangeResponse, latencyMs, builderFeeBps: builderFee });
+
+        const out: SendResponse = {
+          success: true,
+          user: signer,
+          exchangeResponse,
+        };
+        return reply.send(out);
+      } catch (err) {
+        await args.hooks?.onSendError?.({ req, body, signer, error: err, builderFeeBps: builderFee });
         throw err;
       }
-      metrics.hlForwards.inc({ action: body.action.type, outcome: "ok", path: "user" });
-      if (body.action.type === "order") {
-        recordOrderOutcome(exchangeResponse, builderFee, "user");
-      }
-      args.hooks?.afterSend?.({ req, body, signer, exchangeResponse });
-
-      const out: SendResponse = {
-        success: true,
-        user: signer,
-        exchangeResponse,
-      };
-      return reply.send(out);
     }
 
     // ---- Phase A: build ------------------------------------------------------
     const nonce = body.nonce ?? Date.now();
-    args.hooks?.beforeBuild?.({ req, body });
-    const out = buildPhase(body.action, nonce, app.config, body.user);
-    req.log.info(
-      { route: args.metricRoute, type: body.action.type, nonce, hash: out.hash, builderFee: out.builderFee },
-      "exchange_build",
-    );
-    return reply.send(out);
+    try {
+      await args.hooks?.beforeBuild?.({ req, body, nonce });
+      const out = buildPhase(body.action, nonce, app.config, body.user);
+      await args.hooks?.afterBuild?.({ req, body, response: out });
+      req.log.info(
+        { route: args.metricRoute, type: body.action.type, nonce, hash: out.hash, builderFee: out.builderFee },
+        "exchange_build",
+      );
+      return reply.send(out);
+    } catch (err) {
+      await args.hooks?.onBuildError?.({ req, body, error: err, nonce });
+      throw err;
+    }
   });
 }
 
