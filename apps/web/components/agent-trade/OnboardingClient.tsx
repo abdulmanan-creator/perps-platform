@@ -11,18 +11,10 @@ import {
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
+import { normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { getFundingDisplay } from "@/lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
-import type { AccountValueKind, EligibilityMode } from "@/lib/agent-trade/types";
-
-interface EligibilityResponse {
-  state: EligibilityMode;
-  executionVenue: string;
-  mainnetExecutionEnabled: boolean;
-  killSwitchEnabled: boolean;
-  orderNotionalCapUsd: number;
-  dailyNotionalCapUsd: number;
-}
+import type { AccountValueKind, EligibilityMode, EligibilityResponse } from "@/lib/agent-trade/types";
 
 interface WalletSummary {
   status: "local-dev" | "loading" | "not-connected" | "connected";
@@ -44,6 +36,7 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
     executionVenue: "hyperliquid-testnet",
     mainnetExecutionEnabled: false,
     killSwitchEnabled: false,
+    minOrderNotionalUsd: 10,
     orderNotionalCapUsd: 250,
     dailyNotionalCapUsd: 1000,
   });
@@ -54,10 +47,7 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
     async function loadEligibility() {
       try {
         const res = await fetch(`${API_BASE_URL}/agent-trade/eligibility`, { cache: "no-store" });
-        if (!res.ok) {
-          throw new Error("eligibility request failed");
-        }
-        const next = (await res.json()) as EligibilityResponse;
+        const next = await normalizeEligibilityResponse(res);
         if (!cancelled) {
           setEligibility(next);
         }

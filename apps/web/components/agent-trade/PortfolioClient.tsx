@@ -9,6 +9,7 @@ import {
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
+import { normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
@@ -18,10 +19,6 @@ import {
   classifyPortfolioRisk,
 } from "@/lib/agent-trade/portfolio";
 import type { EligibilityMode, Fill, OpenOrder, Position, SharedTradingSnapshot } from "@/lib/agent-trade/types";
-
-interface EligibilityResponse {
-  state: EligibilityMode;
-}
 
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const LOCAL_DEV_WALLET: WalletReadinessSummary = { status: "local-dev" };
@@ -95,10 +92,7 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
         const res = await fetch(`${API_BASE_URL}/agent-trade/eligibility`, {
           cache: "no-store",
         });
-        if (!res.ok) {
-          throw new Error("eligibility request failed");
-        }
-        const next = (await res.json()) as EligibilityResponse;
+        const next = await normalizeEligibilityResponse(res);
         if (!cancelled) {
           setEligibility(next.state);
         }

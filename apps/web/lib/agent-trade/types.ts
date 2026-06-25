@@ -6,6 +6,16 @@ export type EligibilityMode =
   | "paper"
   | "killSwitchDisabled";
 
+export interface EligibilityResponse {
+  state: EligibilityMode;
+  executionVenue: string;
+  mainnetExecutionEnabled: boolean;
+  killSwitchEnabled: boolean;
+  minOrderNotionalUsd: number;
+  orderNotionalCapUsd: number;
+  dailyNotionalCapUsd: number;
+}
+
 export type TradeSide = "long" | "short";
 export type OrderType = "market" | "limit";
 export type MarginMode = "isolated" | "cross";

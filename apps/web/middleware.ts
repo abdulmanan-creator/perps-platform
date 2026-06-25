@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 /**
- * UI-side jurisdiction gate.
+ * Optional UI-side jurisdiction hard block.
  *
- * This is UX only — the authoritative block lives on the API (the relay that
- * forwards signed orders; see apps/api/src/helpers/geo.ts). Here we just keep
- * restricted-region visitors from seeing a trading UI they can't use, by
- * rewriting them to /restricted.
+ * The default Agent.trade behavior is UI accessible + paper-only for
+ * restricted or unknown users. Live trading remains blocked server-side by the
+ * API exchange guards. This middleware is reserved for a stricter legal mode
+ * where the product must hide app surfaces entirely.
  *
  * Country comes from the edge: Cloudflare's `cf-ipcountry` (the web app sits
  * behind the same CF zone as the relay), with a Vercel fallback. Unknown
@@ -27,6 +27,9 @@ function restrictedSet(): Set<string> {
 }
 
 export function middleware(req: NextRequest): NextResponse {
+  if (process.env.AGENT_TRADE_HARD_BLOCK_RESTRICTED_UI !== "true") {
+    return NextResponse.next();
+  }
   if (process.env.GEO_BLOCK_ENABLED === "false") return NextResponse.next();
 
   const country = (

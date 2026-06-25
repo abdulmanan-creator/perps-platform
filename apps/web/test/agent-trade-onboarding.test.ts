@@ -1,11 +1,47 @@
 import { describe, expect, it } from "vitest";
 
 import { getAccountReadinessDisplay, getLiveTradingReadiness } from "../lib/agent-trade/account-readiness";
+import { normalizeEligibilityResponse } from "../lib/agent-trade/eligibility";
 import { getFundingDisplay } from "../lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "../lib/agent-trade/onboarding";
 import type { EligibilityMode } from "../lib/agent-trade/types";
 
 describe("Agent.trade onboarding helpers", () => {
+  it("normalizes REGION_BLOCKED eligibility responses into restricted paper mode", async () => {
+    const display = await normalizeEligibilityResponse(new Response(JSON.stringify({
+      error: "REGION_BLOCKED",
+      message: "This service is not available in your region.",
+    }), { status: 451, headers: { "content-type": "application/json" } }));
+
+    expect(display.state).toBe("restricted");
+    expect(getEligibilityDisplay(display.state).paperAvailable).toBe(true);
+    expect(getEligibilityDisplay(display.state).liveTradingEnabled).toBe(false);
+  });
+
+  it("normalizes unavailable eligibility responses into unknown paper mode", async () => {
+    const display = await normalizeEligibilityResponse(new Response("unavailable", { status: 503 }));
+
+    expect(display.state).toBe("unknown");
+    expect(getEligibilityDisplay(display.state).paperAvailable).toBe(true);
+    expect(getEligibilityDisplay(display.state).liveTradingEnabled).toBe(false);
+  });
+
+  it("preserves live eligible server eligibility responses", async () => {
+    const display = await normalizeEligibilityResponse(new Response(JSON.stringify({
+      state: "liveEligible",
+      executionVenue: "hyperliquid-mainnet",
+      mainnetExecutionEnabled: true,
+      killSwitchEnabled: false,
+      minOrderNotionalUsd: 10,
+      orderNotionalCapUsd: 0,
+      dailyNotionalCapUsd: 0,
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    expect(display.state).toBe("liveEligible");
+    expect(display.mainnetExecutionEnabled).toBe(true);
+    expect(getEligibilityDisplay(display.state).liveTradingEnabled).toBe(true);
+  });
+
   it("keeps unknown, restricted, and kill switch states fail-closed for live CTAs", () => {
     for (const state of ["unknown", "restricted", "killSwitchDisabled"] satisfies EligibilityMode[]) {
       const display = getEligibilityDisplay(state);

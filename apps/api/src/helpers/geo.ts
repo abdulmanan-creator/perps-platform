@@ -25,6 +25,24 @@ export type GeoOutcome =
   | { allowed: true; country: string | null }
   | { allowed: false; country: string | null; reason: "restricted" | "tor" | "unknown" };
 
+const GLOBAL_GEO_EXEMPT_PATHS = new Set([
+  "/healthz",
+  "/metrics",
+  "/markets",
+  "/marketStats",
+  "/l2Book",
+  "/markPrice",
+  "/agent-trade/candles",
+  "/agent-trade/eligibility",
+  "/agent-trade/paper-account",
+  "/agent-trade/paper-orders",
+]);
+
+export function isGlobalGeoExemptPath(path: string): boolean {
+  const pathname = path.split("?")[0] ?? path;
+  return GLOBAL_GEO_EXEMPT_PATHS.has(pathname);
+}
+
 /**
  * Read the resolved country from the configured edge header. Returns an
  * uppercased ISO alpha-2 code, or null if the header is absent/empty. Fastify

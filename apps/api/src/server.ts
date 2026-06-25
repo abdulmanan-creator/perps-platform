@@ -9,7 +9,7 @@ import rateLimit from "@fastify/rate-limit";
 
 import { loadConfig } from "./config.js";
 import { ApiException, sendError } from "./errors.js";
-import { geoDecision } from "./helpers/geo.js";
+import { geoDecision, isGlobalGeoExemptPath } from "./helpers/geo.js";
 import { metrics } from "./helpers/metrics.js";
 import { registerRoutes } from "./routes/index.js";
 
@@ -85,16 +85,13 @@ await app.register(rateLimit, {
   // see WRITE_RATE_LIMIT in routes/exchange.ts.
 });
 
-// Jurisdiction gate. Runs before any route handler so a restricted caller
-// never reaches a trading surface (the relay forwards signed orders, so this
-// is the load-bearing block — the web UI gate is UX only). Operational
-// endpoints stay open: /healthz and /metrics are hit by monitoring from
-// uncountried networks and must not be geo-blocked. Country comes from the
-// edge (Cloudflare CF-IPCountry); see helpers/geo.ts and config GEO_*.
-const GEO_EXEMPT_PATHS = new Set(["/healthz", "/metrics"]);
+// Jurisdiction gate. Runs before route handlers for legacy/live mutation
+// surfaces. Agent.trade paper/read-only endpoints stay open so restricted or
+// unknown users can enter the app in paper-only mode; live order submission is
+// still enforced by /agent-trade/exchange's own eligibility guard.
 app.addHook("onRequest", async (req, reply) => {
   if (config.NODE_ENV === "test" || process.env.VITEST === "true") return;
-  if (GEO_EXEMPT_PATHS.has(req.routeOptions?.url ?? req.url)) return;
+  if (isGlobalGeoExemptPath(req.routeOptions?.url ?? req.url)) return;
   const decision = geoDecision(req, config);
   if (decision.allowed) return;
   metrics.geoBlocked.inc({ country: decision.country ?? "none", reason: decision.reason });

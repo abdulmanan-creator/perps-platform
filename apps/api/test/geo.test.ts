@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { loadConfig, type Config } from "../src/config.js";
 import { ApiException, sendError } from "../src/errors.js";
-import { geoDecision, resolveCountry } from "../src/helpers/geo.js";
+import { geoDecision, isGlobalGeoExemptPath, resolveCountry } from "../src/helpers/geo.js";
 
 const baseEnv = {
   ALCHEMY_BUILDER_ADDRESS: "0xAAAA000000000000000000000000000000000001",
@@ -101,9 +101,8 @@ describe("onRequest guard (integration)", () => {
   async function buildApp(env: Record<string, string> = {}): Promise<FastifyInstance> {
     const config = cfg(env);
     const app = Fastify({ logger: false });
-    const exempt = new Set(["/healthz", "/metrics"]);
     app.addHook("onRequest", async (request, reply) => {
-      if (exempt.has(request.routeOptions?.url ?? request.url)) return;
+      if (isGlobalGeoExemptPath(request.routeOptions?.url ?? request.url)) return;
       const decision = geoDecision(request, config);
       if (decision.allowed) return;
       return sendError(
@@ -112,6 +111,10 @@ describe("onRequest guard (integration)", () => {
       );
     });
     app.get("/healthz", async () => ({ ok: true }));
+    app.get("/markets", async () => ({ ok: true }));
+    app.get("/agent-trade/eligibility", async () => ({ state: "restricted" }));
+    app.post("/agent-trade/paper-orders", async () => ({ ok: true }));
+    app.post("/agent-trade/exchange", async () => ({ ok: true }));
     app.post("/exchange", async () => ({ ok: true }));
     return app;
   }
@@ -143,5 +146,30 @@ describe("onRequest guard (integration)", () => {
     const app = await buildApp();
     const res = await app.inject({ method: "GET", url: "/healthz", headers: { "cf-ipcountry": "US" } });
     expect(res.statusCode).toBe(200);
+  });
+
+  it("allows restricted users to access Agent.trade paper/read endpoints", async () => {
+    const app = await buildApp();
+    const headers = { "cf-ipcountry": "US" };
+
+    const markets = await app.inject({ method: "GET", url: "/markets", headers });
+    const eligibility = await app.inject({ method: "GET", url: "/agent-trade/eligibility", headers });
+    const paper = await app.inject({ method: "POST", url: "/agent-trade/paper-orders", headers, payload: {} });
+
+    expect(markets.statusCode).toBe(200);
+    expect(eligibility.statusCode).toBe(200);
+    expect(eligibility.json().state).toBe("restricted");
+    expect(paper.statusCode).toBe(200);
+  });
+
+  it("keeps live exchange routes blocked for restricted users", async () => {
+    const app = await buildApp();
+    const headers = { "cf-ipcountry": "US" };
+
+    const generic = await app.inject({ method: "POST", url: "/exchange", headers, payload: {} });
+    const agentTrade = await app.inject({ method: "POST", url: "/agent-trade/exchange", headers, payload: {} });
+
+    expect(generic.statusCode).toBe(451);
+    expect(agentTrade.statusCode).toBe(451);
   });
 });

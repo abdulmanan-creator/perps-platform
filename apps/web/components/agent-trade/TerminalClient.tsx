@@ -17,6 +17,7 @@ import {
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
+import { DEFAULT_ELIGIBILITY_RESPONSE, normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import {
@@ -64,21 +65,13 @@ import {
 import type {
   AgentResponse,
   ChartAnnotation,
+  EligibilityResponse,
   EligibilityMode,
   MarginMode,
   OrderDraft,
   OrderType,
   SharedTradingSnapshot,
 } from "@/lib/agent-trade/types";
-
-interface EligibilityResponse {
-  state: EligibilityMode;
-  executionVenue: string;
-  mainnetExecutionEnabled: boolean;
-  killSwitchEnabled: boolean;
-  orderNotionalCapUsd: number;
-  dailyNotionalCapUsd: number;
-}
 
 interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
@@ -185,10 +178,9 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
+    ...DEFAULT_ELIGIBILITY_RESPONSE,
     state: "loading",
     executionVenue: "hyperliquid-testnet",
-    mainnetExecutionEnabled: false,
-    killSwitchEnabled: false,
     orderNotionalCapUsd: 250,
     dailyNotionalCapUsd: 1000,
   });
@@ -282,10 +274,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     async function loadEligibility() {
       try {
         const res = await fetch(`${API_BASE_URL}/agent-trade/eligibility`, { cache: "no-store" });
-        if (!res.ok) {
-          throw new Error("eligibility request failed");
-        }
-        const next = (await res.json()) as EligibilityResponse;
+        const next = await normalizeEligibilityResponse(res);
         if (!cancelled) {
           setEligibility(next);
           setApiStatus("ok");

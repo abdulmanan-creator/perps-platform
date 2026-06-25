@@ -95,3 +95,79 @@ Use `AGENT_TRADE_E2E_ARTIFACT_DIR=/path` to change the output directory.
 - If Next throws a missing chunk or fallback chunk `500`, stop dev servers, delete `apps/web/.next`, and restart dev.
 - Do not run `next dev` and `next build` concurrently. Both write `apps/web/.next`.
 - Terminal candles use `GET /agent-trade/candles?symbol=BTC-USD&interval=15m` backed by Hyperliquid `candleSnapshot`. During manual QA, check BTC and ETH labels, interval switching, and the synthetic fallback label by temporarily stopping the API or forcing the candle route to fail.
+
+## Manual Geo / Trading Mode Controls
+
+Agent.trade should normally be reachable by restricted or unknown users in paper-only mode. Geo controls must block live trading and guarded mutation APIs, not ordinary app access.
+
+Service ownership:
+
+- `agent-trade-web`: frontend route access, eligibility display, paper/live copy, and public feature flags.
+- `agent-trade-api`: eligibility source of truth, paper order endpoints, live trading eligibility, mainnet/testnet execution venue, kill switch, and min/max notional policy.
+- Paper trading availability: web UI plus API `/agent-trade/paper-orders` and `/agent-trade/paper-account`.
+- Live trading eligibility: API `/agent-trade/exchange` guard. Frontend state is advisory only.
+- Mainnet execution: API env and `/agent-trade/exchange`; never controlled solely by the browser.
+- Kill switch and min/max notional caps: API env.
+
+Env controls:
+
+- `GEO_BLOCK_ENABLED`: API geo guard for live/legacy mutation surfaces. Keep `true` in production.
+- `GEO_FAIL_CLOSED`: when `true`, API treats missing/unknown country as ineligible for live trading.
+- `GEO_COUNTRY_HEADER`: edge country header, usually `cf-ipcountry`.
+- `RESTRICTED_COUNTRIES`: comma-separated restricted ISO country list.
+- `AGENT_TRADE_REQUIRE_GEO_ELIGIBILITY`: when `true`, missing/unknown country becomes unknown eligibility for Agent.trade live trading.
+- `AGENT_TRADE_MAINNET_EXECUTION_ENABLED`: enables Agent.trade mainnet forwarding for eligible users only.
+- `AGENT_TRADE_LIVE_TRADING_KILL_SWITCH`: emergency stop for all Agent.trade live trading.
+- `AGENT_TRADE_MIN_ORDER_NOTIONAL_USD`: minimum live order notional enforced before forwarding.
+- `AGENT_TRADE_ORDER_NOTIONAL_CAP_USD`: optional per-order product cap; `0` disables this app-level max.
+- `AGENT_TRADE_DAILY_NOTIONAL_CAP_USD`: optional daily app-level cap; `0` disables this app-level max.
+- `NEXT_PUBLIC_API_URL`: web-to-API base URL.
+- `AGENT_TRADE_HARD_BLOCK_RESTRICTED_UI`: web-only hard-block mode. Default `false`; set `true` only if legal requires hiding app routes entirely.
+
+Common Render changes:
+
+- Allow restricted users to access UI but paper-only trade:
+  - Edit `agent-trade-web`: keep `AGENT_TRADE_HARD_BLOCK_RESTRICTED_UI=false`.
+  - Edit `agent-trade-api`: keep `GEO_BLOCK_ENABLED=true`, `GEO_FAIL_CLOSED=true`, and `AGENT_TRADE_REQUIRE_GEO_ELIGIBILITY=true`.
+  - Redeploy/restart both services if env changed.
+  - Smoke: `/terminal`, `/markets`, `/portfolio`, `/onboarding`, `/settings`.
+  - Expected US result: app loads, live disabled, paper orders work.
+  - Expected Singapore result: if edge country resolves `SG` and account readiness passes, live can be enabled.
+
+- Fully block restricted regions if legal requires it:
+  - Edit `agent-trade-web`: set `AGENT_TRADE_HARD_BLOCK_RESTRICTED_UI=true`.
+  - Keep `agent-trade-api` geo vars enabled.
+  - Redeploy/restart `agent-trade-web`.
+  - Smoke: `/terminal` from a restricted country should show `/restricted`.
+  - Expected US result: app routes hard-blocked.
+  - Expected Singapore result: app routes load normally.
+
+- Enable live mainnet for eligible regions:
+  - Edit `agent-trade-api`: set `HYPERLIQUID_API_URL=https://api.hyperliquid.xyz`, `AGENT_TRADE_MAINNET_EXECUTION_ENABLED=true`, `GEO_BLOCK_ENABLED=true`, `GEO_FAIL_CLOSED=true`, `AGENT_TRADE_REQUIRE_GEO_ELIGIBILITY=true`, and `AGENT_TRADE_LIVE_TRADING_KILL_SWITCH=false`.
+  - Redeploy/restart `agent-trade-api`.
+  - Smoke: `/agent-trade/eligibility`, `/terminal`, `/settings`.
+  - Expected US result: restricted/paper-only.
+  - Expected Singapore result: `liveEligible` when the edge country header resolves `SG`; wallet/account/risk checks still apply.
+
+- Emergency disable all live trading:
+  - Edit `agent-trade-api`: set `AGENT_TRADE_LIVE_TRADING_KILL_SWITCH=true`.
+  - Redeploy/restart `agent-trade-api`.
+  - Smoke: `/agent-trade/eligibility` and `/terminal`.
+  - Expected US result: paper-only.
+  - Expected Singapore result: paper-only with kill-switch copy.
+
+- Switch API from mainnet to testnet:
+  - Edit `agent-trade-api`: set `HYPERLIQUID_API_URL=https://api.hyperliquid-testnet.xyz` and `AGENT_TRADE_MAINNET_EXECUTION_ENABLED=false`.
+  - Redeploy/restart `agent-trade-api`.
+  - Smoke: `/agent-trade/eligibility`, `/terminal`, and a tiny testnet order only after wallet/account readiness passes.
+  - Expected US result: restricted/paper-only.
+  - Expected Singapore result: testnet live path available after readiness checks.
+
+- Change min/max notional caps:
+  - Edit `agent-trade-api`: set `AGENT_TRADE_MIN_ORDER_NOTIONAL_USD`, `AGENT_TRADE_ORDER_NOTIONAL_CAP_USD`, and `AGENT_TRADE_DAILY_NOTIONAL_CAP_USD`.
+  - Redeploy/restart `agent-trade-api`.
+  - Smoke: `/agent-trade/eligibility` to confirm policy values, then `/terminal`.
+  - Expected US result: paper-only regardless of caps.
+  - Expected Singapore result: eligible live orders respect the configured minimum and any nonzero app-level caps.
+
+Warning: never use `GEO_BLOCK_ENABLED=false` as the normal way to allow paper trading. The correct production default is UI accessible plus server-enforced live execution blocking. Direct live order APIs must remain server-enforced regardless of frontend state.
