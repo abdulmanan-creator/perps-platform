@@ -49,6 +49,7 @@ export interface BookLevel {
 }
 
 export interface RecentTrade {
+  id?: string;
   side: "buy" | "sell";
   price: number;
   size: number;

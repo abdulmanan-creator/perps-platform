@@ -473,6 +473,7 @@ export interface TerminalChartData {
   fetchedAt: number;
   isFallback: boolean;
   error?: string;
+  livePriceAt?: number;
 }
 
 export type TerminalFreshnessState = "fresh" | "warming" | "degraded" | "apiUnavailable";
@@ -780,8 +781,10 @@ export function normalizeTerminalCandlesResponse(
 
 export function terminalChartLabel(data: TerminalChartData, now = Date.now()): string {
   if (data.source === "hyperliquid") {
-    const ageSeconds = Math.max(0, Math.floor((now - data.fetchedAt) / 1000));
-    return `Hyperliquid candles · ${data.interval} · updated ${ageSeconds}s ago`;
+    const updatedAt = data.livePriceAt ?? data.fetchedAt;
+    const ageSeconds = Math.max(0, Math.floor((now - updatedAt) / 1000));
+    const source = data.livePriceAt == null ? "updated" : "live price";
+    return `Hyperliquid candles · ${data.interval} · ${source} ${ageSeconds}s ago`;
   }
 
   return `Synthetic fallback · ${data.interval} · chart data degraded`;

@@ -1,18 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
-import { loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
+import { buildSwitchingMarketSnapshot, loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
 import { api } from "../lib/api";
 import { hypurrscanAddressUrl, normalizeHypurrscanAddress } from "../lib/agent-trade/hypurrscan";
 import { filterMarketsForSelector, sortMarketsForSelector, type JoinedMarket } from "../lib/agent-trade/markets";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { buildHlOrderAction, formatOrderPrice, formatOrderSize } from "../lib/agent-trade/orders";
+import {
+  fmtMarketNumber,
+  fmtMarketUsd,
+  marketPriceChartFormat,
+  marketPriceDisplayDecimals,
+} from "../lib/agent-trade/format";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
 import {
   applyTerminalCandleEvent,
+  applyTerminalPriceToChart,
   applyTerminalStreamEvent,
   mergeRecentTrades,
   normalizeTerminalWsMessage,
+  terminalMarketSubscriptions,
   terminalStreamStatusLabel,
   upsertTerminalCandles,
 } from "../lib/agent-trade/streaming";
@@ -265,6 +273,28 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(formatOrderPrice(12345.6789, 5, false)).toBe("12346");
     expect(formatOrderPrice(0.000123456789, 2, false)).toBe("0.0001");
     expect(formatOrderPrice(1e-7, 5, false)).not.toContain("e");
+  });
+
+  it("formats Hyperliquid market prices with selected-market display precision", () => {
+    const hype = { szDecimals: 2 };
+    const btc = { szDecimals: 5 };
+    const wholeTickMarket = { szDecimals: 6 };
+
+    expect(fmtMarketUsd({ price: 61.665, market: hype })).toBe("$61.665");
+    expect(marketPriceDisplayDecimals({ price: 61.665, market: hype })).toBe(3);
+    expect(fmtMarketUsd({ price: 104_820.5, market: btc })).toBe("$104,820.5");
+    expect(fmtMarketUsd({ price: 123.45, market: wholeTickMarket })).toBe("$123");
+  });
+
+  it("uses the same selected-market precision for order book rows and chart labels", () => {
+    const hype = { szDecimals: 2 };
+    const expectedPrecision = marketPriceDisplayDecimals({ price: 61.665, market: hype });
+
+    expect(fmtMarketNumber({ price: 61.665, market: hype })).toBe("61.665");
+    expect(marketPriceChartFormat({ price: 61.665, market: hype })).toEqual({
+      precision: expectedPrecision,
+      minMove: 0.001,
+    });
   });
 
   it("builds live order action with truncated size and JSON-safe decimal strings", () => {
@@ -530,6 +560,67 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(result.snapshot.account.fills[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
   });
 
+  it("does not seed successful live market snapshots with mock BTC recent trades", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/markets")) {
+        return new Response(JSON.stringify({
+          perps: [{ name: "HYPE", szDecimals: 2, maxLeverage: 5, assetIndex: 110 }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/marketStats")) {
+        return new Response(JSON.stringify({
+          perps: [{
+            assetIndex: 110,
+            name: "HYPE",
+            markPx: "37.5",
+            midPx: "37.49",
+            prevDayPx: "36",
+            dayNtlVlm: "1000000",
+            openInterest: "20000",
+            funding: "0.0001",
+          }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/l2Book")) {
+        return new Response(JSON.stringify({
+          levels: [
+            [{ px: "37.48", sz: "12" }],
+            [{ px: "37.52", sz: "8" }],
+          ],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/agent-trade/paper-account")) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await loadTradingSnapshot("HYPE");
+
+    expect(result.resolvedSymbol).toBe("HYPE");
+    expect(result.snapshot.market.base).toBe("HYPE");
+    expect(result.snapshot.recentTrades).toEqual([]);
+  });
+
+  it("clears prior-market book and trades immediately when switching to HYPE, ETH, or SOL", () => {
+    const current = {
+      ...MOCK_TRADING_SNAPSHOT,
+      recentTrades: [
+        { id: "BTC:1", side: "buy" as const, price: 100_000, size: 0.1, timestamp: 1 },
+      ],
+    };
+
+    for (const market of selectorMarkets().filter((item) => ["HYPE", "ETH", "SOL"].includes(item.symbol))) {
+      const reset = buildSwitchingMarketSnapshot({ current, market });
+
+      expect(reset.market.base).toBe(market.symbol);
+      expect(reset.orderBook).toEqual({ asks: [], bids: [] });
+      expect(reset.recentTrades).toEqual([]);
+      expect(reset.market.symbol).toBe(`${market.symbol}-USD`);
+    }
+  });
+
   it("builds deterministic synthetic OHLC candles from the selected market snapshot", () => {
     vi.setSystemTime(new Date("2026-06-24T12:00:00Z"));
 
@@ -633,16 +724,16 @@ describe("Agent.trade terminal product-loop helpers", () => {
 
   it("dedupes and prepends recent WS trades", () => {
     const merged = mergeRecentTrades(
-      [{ side: "buy", price: 100, size: 1, timestamp: 10 }],
+      [{ id: "BTC:10:1", side: "buy", price: 100, size: 1, timestamp: 10 }],
       [
-        { side: "buy", price: 100, size: 1, timestamp: 10 },
-        { side: "sell", price: 101, size: 2, timestamp: 20 },
+        { id: "BTC:10:1", side: "buy", price: 100, size: 1, timestamp: 10 },
+        { id: "BTC:20:2", side: "sell", price: 101, size: 2, timestamp: 20 },
       ],
     );
 
     expect(merged).toEqual([
-      { side: "sell", price: 101, size: 2, timestamp: 20 },
-      { side: "buy", price: 100, size: 1, timestamp: 10 },
+      { id: "BTC:20:2", side: "sell", price: 101, size: 2, timestamp: 20 },
+      { id: "BTC:10:1", side: "buy", price: 100, size: 1, timestamp: 10 },
     ]);
 
     const [event] = normalizeTerminalWsMessage({
@@ -651,15 +742,38 @@ describe("Agent.trade terminal product-loop helpers", () => {
       message: {
         channel: "trades",
         data: [
-          { coin: "BTC", side: "B", px: "100500", sz: "0.05", time: 1710000000000 },
+          { coin: "BTC", side: "B", px: "100500", sz: "0.05", time: 1710000000000, tid: 123 },
           { coin: "ETH", side: "A", px: "3000", sz: "1", time: 1710000000001 },
         ],
       },
     });
     expect(event).toMatchObject({
       type: "trades",
-      trades: [{ side: "buy", price: 100500, size: 0.05, timestamp: 1710000000000 }],
+      trades: [{ id: "BTC:1710000000000:123", side: "buy", price: 100500, size: 0.05, timestamp: 1710000000000 }],
     });
+  });
+
+  it("drops BTC trades when the selected stream coin is HYPE, ETH, or SOL", () => {
+    for (const selectedCoin of ["HYPE", "ETH", "SOL"]) {
+      const events = normalizeTerminalWsMessage({
+        selectedCoin,
+        interval: "15m",
+        message: {
+          channel: "trades",
+          data: [
+            { coin: "BTC", side: "B", px: "100500", sz: "0.05", time: 1710000000000, tid: 1 },
+            { coin: selectedCoin, side: "A", px: "37.50", sz: "10", time: 1710000000001, tid: 2 },
+          ],
+        },
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: "trades",
+        coin: selectedCoin,
+        trades: [{ id: `${selectedCoin}:1710000000001:2`, side: "sell", price: 37.5, size: 10 }],
+      });
+    }
   });
 
   it("upserts WS candles by candle time", () => {
@@ -700,9 +814,42 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(chart.candles.at(-1)).toEqual({ time: 1710000000, open: 100, high: 110, low: 90, close: 105, volume: 12 });
   });
 
+  it("updates the visible current candle from live price events between REST candle refreshes", () => {
+    const chart = applyTerminalPriceToChart({
+      interval: "15m",
+      candles: [
+        { time: 1710000000, open: 100, high: 105, low: 95, close: 101, volume: 10 },
+      ],
+      source: "hyperliquid",
+      fetchedAt: 1710000000000,
+      isFallback: false,
+    }, {
+      price: 107,
+      timestamp: 1710000100000,
+      receivedAt: 1710000101000,
+    }, "15m");
+
+    expect(chart.livePriceAt).toBe(1710000101000);
+    expect(chart.candles.at(-1)).toMatchObject({
+      time: 1710000000,
+      high: 107,
+      low: 95,
+      close: 107,
+    });
+  });
+
   it("exposes compact terminal stream status labels", () => {
     expect(terminalStreamStatusLabel("live")).toBe("Live stream");
     expect(terminalStreamStatusLabel("rest_fallback")).toBe("REST fallback");
+  });
+
+  it("subscribes to HYPE using Hyperliquid's raw coin symbol", () => {
+    expect(terminalMarketSubscriptions({ coin: "HYPE", interval: "15m" })).toEqual([
+      { type: "activeAssetCtx", coin: "HYPE" },
+      { type: "l2Book", coin: "HYPE", nSigFigs: 5, fast: true },
+      { type: "trades", coin: "HYPE" },
+      { type: "candle", coin: "HYPE", interval: "15m" },
+    ]);
   });
 
   it("exposes supported terminal interval groups without unsupported intervals", () => {

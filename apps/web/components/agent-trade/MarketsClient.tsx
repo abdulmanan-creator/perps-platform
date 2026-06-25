@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import { fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
+import { fmtCompactUsd, fmtMarketUsd, fmtNumber, fmtPct } from "@/lib/agent-trade/format";
 import {
   filterAndSortMarkets,
   joinPerpMarkets,
@@ -172,7 +172,7 @@ export function MarketsClient() {
         {visibleMarkets.map((market) => (
           <Link key={market.symbol} className="markets-row" href={`/terminal?symbol=${market.symbol}`}>
             <strong>{market.displaySymbol}</strong>
-            <span>{fmtUsd(market.markPrice, market.markPrice > 1000 ? 1 : 4)}</span>
+            <span>{fmtMarketUsd({ price: market.markPrice, market })}</span>
             <span className={market.change24hPct >= 0 ? "pos" : "neg"}>
               {fmtPct(market.change24hPct, 2)}
             </span>

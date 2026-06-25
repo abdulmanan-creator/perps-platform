@@ -10,7 +10,7 @@ import {
 } from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
-import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
+import { fmtAdaptiveUsd, fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
 import { loadPaperAccount, mergePaperAccount } from "@/lib/agent-trade/paper";
@@ -249,12 +249,12 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
                 <strong>{position.symbol}{position.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
                 <span className={position.side === "long" ? "pos" : "neg"}>{position.side}</span>
                 <span>{fmtNumber(position.size, 4)} {position.base}</span>
-                <span>{fmtUsd(position.entryPrice, 1)} / {fmtUsd(position.markPrice, 1)}</span>
+                <span>{fmtAdaptiveUsd(position.entryPrice)} / {fmtAdaptiveUsd(position.markPrice)}</span>
                 <span className={position.pnlUsd >= 0 ? "pos" : "neg"}>{fmtUsd(position.pnlUsd, 2)} ({fmtPct(position.pnlPct, 1)})</span>
                 <span>{fmtUsd(position.marginUsd, 2)}</span>
-                <span>{fmtUsd(position.liquidationPrice, 1)}</span>
+                <span>{fmtAdaptiveUsd(position.liquidationPrice)}</span>
                 <span className={position.fundingUsd >= 0 ? "pos" : "neg"}>{fmtUsd(position.fundingUsd, 2)}</span>
-                <span>{position.takeProfit ? fmtUsd(position.takeProfit, 1) : "--"} / {position.stopLoss ? fmtUsd(position.stopLoss, 1) : "--"}</span>
+                <span>{position.takeProfit ? fmtAdaptiveUsd(position.takeProfit) : "--"} / {position.stopLoss ? fmtAdaptiveUsd(position.stopLoss) : "--"}</span>
               </div>
             ))}
           </div>
@@ -270,7 +270,7 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
                 order.mode === "paper" ? `${order.symbol} Paper` : order.symbol,
                 order.side,
                 order.type,
-                fmtUsd(order.price, 1),
+                fmtAdaptiveUsd(order.price),
                 `${fmtNumber(order.size, 4)} ${order.reduceOnly ? "RO" : ""}`,
               ],
             }))}
@@ -283,7 +283,7 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
               cells: [
                 fill.mode === "paper" ? `${fill.symbol} Paper` : fill.symbol,
                 fill.side,
-                fmtUsd(fill.price, 1),
+                fmtAdaptiveUsd(fill.price),
                 fmtNumber(fill.size, 4),
                 `${fmtUsd(fill.feeUsd, 2)} ${fmtAgo(fill.timestamp, snapshot.asOf)}`,
               ],

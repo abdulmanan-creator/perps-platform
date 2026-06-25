@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 import type { Time } from "lightweight-charts";
@@ -15,8 +15,19 @@ import {
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
-import { fmtAgo, fmtCompactUsd, fmtNumber, fmtPct, fmtUsd } from "@/lib/agent-trade/format";
-import { loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
+import {
+  fmtAdaptiveUsd,
+  fmtAgo,
+  fmtCompactUsd,
+  fmtMarketNumber,
+  fmtMarketUsd,
+  fmtNumber,
+  fmtPct,
+  fmtUsd,
+  marketPriceChartFormat,
+  type HyperliquidPricePrecision,
+} from "@/lib/agent-trade/format";
+import { buildSwitchingMarketSnapshot, loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { DEFAULT_ELIGIBILITY_RESPONSE, normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
@@ -64,6 +75,7 @@ import {
 } from "@/lib/agent-trade/terminal";
 import {
   applyTerminalCandleEvent,
+  applyTerminalPriceToChart,
   applyTerminalStreamEvent,
   hyperliquidWsUrlForVenue,
   isTerminalStreamWarning,
@@ -94,6 +106,14 @@ interface TerminalWalletReadiness extends WalletReadinessSummary {
   getEthereumProvider?: () => Promise<Eip1193Provider>;
 }
 
+interface TerminalStreamDebug {
+  selectedMarket: string;
+  subscribedCoin: string;
+  lastTradeCoin?: string;
+  lastCandleUpdateTime?: number;
+  streamStatus: TerminalStreamStatus;
+}
+
 const agentService = new DeterministicAgentService();
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const LOCAL_DEV_WALLET: TerminalWalletReadiness = { status: "local-dev", authStatus: "not-configured" };
@@ -113,6 +133,49 @@ function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
     reduceOnly: false,
     fromAgent: false,
   };
+}
+
+function buildLoadingTerminalChartData(
+  market: SharedTradingSnapshot["market"],
+  interval: TerminalChartInterval,
+): TerminalChartData {
+  return {
+    interval,
+    candles: [],
+    source: "hyperliquid",
+    fetchedAt: Date.now(),
+    isFallback: false,
+    error: `Loading ${market.base} candles from Hyperliquid.`,
+  };
+}
+
+function mergeLoadedSnapshot(args: {
+  current: SharedTradingSnapshot;
+  next: SharedTradingSnapshot;
+}): SharedTradingSnapshot {
+  if (
+    normalizeSymbol(args.current.market.base) === normalizeSymbol(args.next.market.base) &&
+    args.current.recentTrades.some((trade) => trade.id)
+  ) {
+    return {
+      ...args.next,
+      recentTrades: args.current.recentTrades,
+    };
+  }
+
+  return args.next;
+}
+
+function updateTerminalStreamDebug(
+  ref: MutableRefObject<TerminalStreamDebug>,
+  patch: Partial<TerminalStreamDebug>,
+) {
+  if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
+    return;
+  }
+
+  ref.current = { ...ref.current, ...patch };
+  (window as Window & { __agentTradeTerminalStream?: TerminalStreamDebug }).__agentTradeTerminalStream = ref.current;
 }
 
 export function TerminalClient() {
@@ -220,6 +283,11 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   );
   const [isLoadingCandles, setIsLoadingCandles] = useState(false);
   const [streamStatus, setStreamStatus] = useState<TerminalStreamStatus>("disconnected");
+  const streamDebugRef = useRef<TerminalStreamDebug>({
+    selectedMarket: MOCK_TRADING_SNAPSHOT.market.symbol,
+    subscribedCoin: MOCK_TRADING_SNAPSHOT.market.base,
+    streamStatus: "disconnected",
+  });
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5_000);
@@ -236,7 +304,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       });
       if (!cancelled) {
         const next = result.snapshot;
-        setSnapshot(next);
+        setSnapshot((current) => mergeLoadedSnapshot({ current, next }));
         setDraft((current) =>
           current.symbol === next.market.symbol
             ? { ...current, symbol: next.market.symbol }
@@ -265,7 +333,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       accountAddress: wallet.status === "connected" ? wallet.address : undefined,
     });
     const next = result.snapshot;
-    setSnapshot(next);
+    setSnapshot((current) => mergeLoadedSnapshot({ current, next }));
     if (!options.preserveDraft) {
       setDraft((current) =>
         current.symbol === next.market.symbol
@@ -286,6 +354,11 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   useEffect(() => {
     if (typeof WebSocket === "undefined" || eligibility.state === "loading") {
       setStreamStatus("disconnected");
+      updateTerminalStreamDebug(streamDebugRef, {
+        selectedMarket: snapshot.market.symbol,
+        subscribedCoin: snapshot.market.base,
+        streamStatus: "disconnected",
+      });
       return;
     }
 
@@ -320,11 +393,18 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         return;
       }
 
-      setStreamStatus(reconnectAttempt === 0 ? "connecting" : "reconnecting");
+      const nextStatus = reconnectAttempt === 0 ? "connecting" : "reconnecting";
+      setStreamStatus(nextStatus);
+      updateTerminalStreamDebug(streamDebugRef, {
+        selectedMarket: snapshot.market.symbol,
+        subscribedCoin: selectedCoin,
+        streamStatus: nextStatus,
+      });
       try {
         socket = new WebSocket(wsUrl);
       } catch {
         setStreamStatus("rest_fallback");
+        updateTerminalStreamDebug(streamDebugRef, { streamStatus: "rest_fallback" });
         scheduleReconnect();
         return;
       }
@@ -335,9 +415,17 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         }
         reconnectAttempt = 0;
         setStreamStatus("live");
+        updateTerminalStreamDebug(streamDebugRef, {
+          selectedMarket: snapshot.market.symbol,
+          subscribedCoin: selectedCoin,
+          streamStatus: "live",
+        });
         subscriptions.forEach((subscription) => sendJson(subscriptionMessage(subscription)));
         heartbeatTimer = window.setInterval(() => sendJson({ method: "ping" }), 25_000);
-        void refreshTerminalSnapshot({ preserveDraft: true }).catch(() => setStreamStatus("rest_fallback"));
+        void refreshTerminalSnapshot({ preserveDraft: true }).catch(() => {
+          setStreamStatus("rest_fallback");
+          updateTerminalStreamDebug(streamDebugRef, { streamStatus: "rest_fallback" });
+        });
       });
 
       socket.addEventListener("message", (event) => {
@@ -353,22 +441,51 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
           });
           if (events.length > 0) {
             setStreamStatus("live");
+            updateTerminalStreamDebug(streamDebugRef, { streamStatus: "live" });
           }
           for (const streamEvent of events) {
             if (streamEvent.type === "candle") {
+              updateTerminalStreamDebug(streamDebugRef, {
+                lastCandleUpdateTime: streamEvent.receivedAt,
+              });
               setChartData((current) => applyTerminalCandleEvent(current, streamEvent, chartInterval));
+            } else if (streamEvent.type === "activeAssetCtx") {
+              setSnapshot((current) => applyTerminalStreamEvent(current, streamEvent));
+              const price = streamEvent.ctx.markPx ?? streamEvent.ctx.midPx ?? streamEvent.ctx.oraclePx;
+              if (price != null) {
+                setChartData((current) => applyTerminalPriceToChart(current, {
+                  price,
+                  timestamp: streamEvent.receivedAt,
+                  receivedAt: streamEvent.receivedAt,
+                }, chartInterval));
+              }
+            } else if (streamEvent.type === "trades") {
+              updateTerminalStreamDebug(streamDebugRef, {
+                lastTradeCoin: streamEvent.coin,
+              });
+              setSnapshot((current) => applyTerminalStreamEvent(current, streamEvent));
+              const latestTrade = [...streamEvent.trades].sort((a, b) => b.timestamp - a.timestamp)[0];
+              if (latestTrade) {
+                setChartData((current) => applyTerminalPriceToChart(current, {
+                  price: latestTrade.price,
+                  timestamp: latestTrade.timestamp,
+                  receivedAt: streamEvent.receivedAt,
+                }, chartInterval));
+              }
             } else {
               setSnapshot((current) => applyTerminalStreamEvent(current, streamEvent));
             }
           }
         } catch {
           setStreamStatus("degraded");
+          updateTerminalStreamDebug(streamDebugRef, { streamStatus: "degraded" });
         }
       });
 
       socket.addEventListener("error", () => {
         if (!cancelled) {
           setStreamStatus("degraded");
+          updateTerminalStreamDebug(streamDebugRef, { streamStatus: "degraded" });
         }
       });
 
@@ -376,10 +493,15 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         clearTimers();
         if (cancelled) {
           setStreamStatus("disconnected");
+          updateTerminalStreamDebug(streamDebugRef, { streamStatus: "disconnected" });
           return;
         }
         setStreamStatus("reconnecting");
-        void refreshTerminalSnapshot({ preserveDraft: true }).catch(() => setStreamStatus("rest_fallback"));
+        updateTerminalStreamDebug(streamDebugRef, { streamStatus: "reconnecting" });
+        void refreshTerminalSnapshot({ preserveDraft: true }).catch(() => {
+          setStreamStatus("rest_fallback");
+          updateTerminalStreamDebug(streamDebugRef, { streamStatus: "rest_fallback" });
+        });
         scheduleReconnect();
       });
     }
@@ -388,6 +510,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       reconnectAttempt += 1;
       if (reconnectAttempt >= 4) {
         setStreamStatus("rest_fallback");
+        updateTerminalStreamDebug(streamDebugRef, { streamStatus: "rest_fallback" });
       }
       const delay = Math.min(15_000, 500 * 2 ** Math.min(reconnectAttempt, 5));
       reconnectTimer = window.setTimeout(connect, delay + Math.floor(Math.random() * 250));
@@ -555,10 +678,39 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     setIsLoadingData(true);
     setIsLoadingCandles(true);
     setMarketNotice(undefined);
+    setAnnotations([]);
+    if (!options.question) {
+      setAgent(undefined);
+      setAgentQuestion(undefined);
+    }
+    const optimisticMarket = marketOptions.find((market) => normalizeSymbol(market.symbol) === resolved);
+    const optimisticSnapshot = optimisticMarket
+      ? buildSwitchingMarketSnapshot({ current: snapshot, market: optimisticMarket })
+      : undefined;
+
+    if (optimisticSnapshot) {
+      setSnapshot(optimisticSnapshot);
+      setDraft(buildDefaultDraft(optimisticSnapshot));
+      setChartData(buildLoadingTerminalChartData(optimisticSnapshot.market, chartInterval));
+      setStreamStatus("connecting");
+      updateTerminalStreamDebug(streamDebugRef, {
+        selectedMarket: optimisticSnapshot.market.symbol,
+        subscribedCoin: optimisticSnapshot.market.base,
+        lastTradeCoin: undefined,
+        lastCandleUpdateTime: undefined,
+        streamStatus: "connecting",
+      });
+      router.replace(`/terminal?symbol=${encodeURIComponent(resolved)}`, { scroll: false });
+    }
+
     try {
-      const result = await loadTradingSnapshot(resolved, {
+      const snapshotPromise = loadTradingSnapshot(resolved, {
         accountAddress: wallet.status === "connected" ? wallet.address : undefined,
       });
+      const candlePromise = optimisticSnapshot
+        ? loadTerminalCandles(optimisticSnapshot.market, chartInterval)
+        : undefined;
+      const result = await snapshotPromise;
       if (result.usedFallback || normalizeSymbol(result.resolvedSymbol) !== resolved) {
         setMarketNotice(`${resolved} is not available from /markets yet. Showing ${result.snapshot.market.base} instead.`);
         setSnapshot(result.snapshot);
@@ -568,8 +720,8 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         return { snapshot: result.snapshot, chartData, supported: false };
       }
 
-      const nextChartData = await loadTerminalCandles(result.snapshot.market, chartInterval);
-      setSnapshot(result.snapshot);
+      const nextChartData = await (candlePromise ?? loadTerminalCandles(result.snapshot.market, chartInterval));
+      setSnapshot((current) => mergeLoadedSnapshot({ current, next: result.snapshot }));
       setChartData(nextChartData);
       setDraft(buildDefaultDraft(result.snapshot));
       setApiStatus("ok");
@@ -914,13 +1066,14 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
             />
           </div>
           <div className="terminal-book-stack">
-            <BookPanel snapshot={snapshot} maxBookSize={maxBookSize} />
-            <TradesPanel snapshot={snapshot} />
+            <BookPanel snapshot={snapshot} maxBookSize={maxBookSize} isLoading={isLoadingData} />
+            <TradesPanel snapshot={snapshot} streamStatus={streamStatus} isLoading={isLoadingData} />
           </div>
           <div className="terminal-ticket-stack">
             <TicketPanel
               base={snapshot.market.base}
               symbol={snapshot.market.symbol}
+              pricePrecision={snapshot.market}
               szDecimals={snapshot.market.szDecimals}
               maxLeverage={Math.min(10, snapshot.market.maxLeverage)}
               draft={draft}
@@ -969,6 +1122,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         <ConfirmModal
           draft={draft}
           base={snapshot.market.base}
+          pricePrecision={snapshot.market}
           szDecimals={snapshot.market.szDecimals}
           mode={mode}
           entryPrice={entryPrice}
@@ -1124,9 +1278,9 @@ function TerminalMarketHeader({
   onSelectMarket: (symbol: string) => void;
 }) {
   const marketStats = [
-    ["Mark", fmtUsd(snapshot.market.markPrice, 1)],
-    ["Oracle", fmtUsd(snapshot.market.oraclePrice, 1)],
-    ["24h", `${fmtPct(snapshot.market.change24hPct, 2)} ${fmtUsd(snapshot.market.change24hAbs, 1)}`],
+    ["Mark", fmtMarketUsd({ price: snapshot.market.markPrice, market: snapshot.market })],
+    ["Oracle", fmtMarketUsd({ price: snapshot.market.oraclePrice, market: snapshot.market })],
+    ["24h", `${fmtPct(snapshot.market.change24hPct, 2)} ${fmtMarketUsd({ price: snapshot.market.change24hAbs, market: snapshot.market })}`],
     ["Volume", fmtCompactUsd(snapshot.market.volume24hUsd)],
     ["Open interest", fmtCompactUsd(snapshot.market.openInterestUsd)],
     ["OI 24h", snapshot.market.openInterestChangePct === null ? "--" : fmtPct(snapshot.market.openInterestChangePct, 1)],
@@ -1311,7 +1465,7 @@ function MarketSelector({
                     <strong>{market.displaySymbol}</strong>
                     <small>{market.base}</small>
                   </span>
-                  <span>{fmtUsd(market.markPrice, market.markPrice >= 100 ? 1 : 4)}</span>
+                  <span>{fmtMarketUsd({ price: market.markPrice, market })}</span>
                   <span className={market.change24hPct >= 0 ? "pos" : "neg"}>{fmtPct(market.change24hPct, 2)}</span>
                   <span>{fmtCompactUsd(market.volume24hUsd)}</span>
                 </button>
@@ -1450,6 +1604,7 @@ function ChartPanel({
   const chartRef = useRef<HTMLDivElement | null>(null);
   const candles = chartData.candles;
   const marketSymbol = snapshot.market.symbol;
+  const priceChartFormat = marketPriceChartFormat({ price: snapshot.market.markPrice, market: snapshot.market });
 
   useEffect(() => {
     let cancelled = false;
@@ -1521,6 +1676,7 @@ function ChartPanel({
         borderDownColor: "#ff5c6c",
         wickUpColor: "#27d6aa",
         wickDownColor: "#ff5c6c",
+        priceFormat: { type: "price", precision: priceChartFormat.precision, minMove: priceChartFormat.minMove },
       });
       candleSeries.setData(
         candles.map((candle) => ({
@@ -1567,7 +1723,7 @@ function ChartPanel({
       disposed = true;
       cleanup();
     };
-  }, [annotations, candles]);
+  }, [annotations, candles, priceChartFormat.minMove, priceChartFormat.precision]);
 
   const sourceLabel = terminalChartLabel(chartData);
 
@@ -1606,6 +1762,7 @@ function ChartPanel({
       <div className="chart-canvas" ref={chartRef} role="img" aria-label={`${snapshot.market.base} candlestick chart with agent annotations`} />
       <div className="chart-disclaimer">
         <span>{isLoadingCandles ? `Loading ${interval} Hyperliquid candles...` : sourceLabel}</span>
+        {chartData.livePriceAt ? <span>Last candle follows live price; REST candles remain source of truth.</span> : null}
         {chartData.error ? <span className="chart-degraded-note">{chartData.error}</span> : null}
         {annotations.length > 0 ? <strong>{annotations.length} agent annotation{annotations.length === 1 ? "" : "s"}</strong> : null}
       </div>
@@ -1630,50 +1787,87 @@ function annotationToneColor(tone: ChartAnnotation["tone"]): string {
 function BookPanel({
   snapshot,
   maxBookSize,
+  isLoading,
 }: {
   snapshot: SharedTradingSnapshot;
   maxBookSize: number;
+  isLoading: boolean;
 }) {
+  const hasBook = snapshot.orderBook.asks.length > 0 && snapshot.orderBook.bids.length > 0;
   return (
     <div className="panel compact-panel">
-      <div className="panel-head tight"><strong>Order book</strong><span>{fmtUsd(snapshot.market.markPrice, 1)}</span></div>
+      <div className="panel-head tight"><strong>Order book</strong><span>{fmtMarketUsd({ price: snapshot.market.markPrice, market: snapshot.market })}</span></div>
       <div className="book-table">
-        {[...snapshot.orderBook.asks].reverse().map((level) => (
-          <BookRow key={`ask-${level.price}`} level={level} max={maxBookSize} side="ask" />
-        ))}
-        <div className="spread-row">
-          Spread {fmtUsd(snapshot.orderBook.asks[0].price - snapshot.orderBook.bids[0].price, 1)}
-        </div>
-        {snapshot.orderBook.bids.map((level) => (
-          <BookRow key={`bid-${level.price}`} level={level} max={maxBookSize} side="bid" />
-        ))}
+        {hasBook ? (
+          <>
+            {[...snapshot.orderBook.asks].reverse().map((level) => (
+              <BookRow key={`ask-${level.price}`} level={level} max={maxBookSize} side="ask" market={snapshot.market} />
+            ))}
+            <div className="spread-row">
+              Spread {fmtMarketUsd({ price: snapshot.orderBook.asks[0].price - snapshot.orderBook.bids[0].price, market: snapshot.market })}
+            </div>
+            {snapshot.orderBook.bids.map((level) => (
+              <BookRow key={`bid-${level.price}`} level={level} max={maxBookSize} side="bid" market={snapshot.market} />
+            ))}
+          </>
+        ) : (
+          <div className="spread-row">
+            {isLoading ? `Loading ${snapshot.market.base} book...` : `${snapshot.market.base} book unavailable`}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function BookRow({ level, max, side }: { level: { price: number; size: number }; max: number; side: "bid" | "ask" }) {
+function BookRow({
+  level,
+  max,
+  side,
+  market,
+}: {
+  level: { price: number; size: number };
+  max: number;
+  side: "bid" | "ask";
+  market: HyperliquidPricePrecision;
+}) {
   return (
     <div className={`book-row ${side}`}>
       <span className="depth" style={{ width: `${(level.size / max) * 100}%` }} />
-      <strong>{fmtNumber(level.price, 1)}</strong>
+      <strong>{fmtMarketNumber({ price: level.price, market })}</strong>
       <span>{fmtNumber(level.size, 3)}</span>
     </div>
   );
 }
 
-function TradesPanel({ snapshot }: { snapshot: SharedTradingSnapshot }) {
+function TradesPanel({
+  snapshot,
+  streamStatus,
+  isLoading,
+}: {
+  snapshot: SharedTradingSnapshot;
+  streamStatus: TerminalStreamStatus;
+  isLoading: boolean;
+}) {
+  const emptyCopy = isLoading || streamStatus === "connecting" || streamStatus === "reconnecting"
+    ? `Waiting for ${snapshot.market.base} trades...`
+    : streamStatus === "live"
+      ? `No ${snapshot.market.base} trades received yet.`
+      : `${snapshot.market.base} trade stream unavailable; REST snapshot has no recent-trades fallback.`;
+
   return (
     <div className="panel compact-panel trades-panel">
       <div className="panel-head tight"><strong>Recent trades</strong><span>{snapshot.market.base}</span></div>
-      {snapshot.recentTrades.map((trade) => (
-        <div key={`${trade.timestamp}-${trade.price}`} className={`trade-row ${trade.side}`}>
+      {snapshot.recentTrades.length > 0 ? snapshot.recentTrades.map((trade) => (
+        <div key={trade.id ?? `${snapshot.market.base}-${trade.timestamp}-${trade.price}-${trade.size}`} className={`trade-row ${trade.side}`}>
           <strong>{trade.side === "buy" ? "Buy" : "Sell"}</strong>
-          <span>{fmtUsd(trade.price, 1)}</span>
+          <span>{fmtMarketUsd({ price: trade.price, market: snapshot.market })}</span>
           <span>{fmtNumber(trade.size, 4)}</span>
           <span>{fmtAgo(trade.timestamp, snapshot.asOf)}</span>
         </div>
-      ))}
+      )) : (
+        <div className="spread-row">{emptyCopy}</div>
+      )}
     </div>
   );
 }
@@ -1681,6 +1875,7 @@ function TradesPanel({ snapshot }: { snapshot: SharedTradingSnapshot }) {
 function TicketPanel(props: {
   base: string;
   symbol: string;
+  pricePrecision: HyperliquidPricePrecision;
   szDecimals: number;
   maxLeverage: number;
   draft: OrderDraft;
@@ -1775,10 +1970,10 @@ function TicketPanel(props: {
       <div className="ticket-summary">
         <span>Source <strong>{source === "agent" ? "Agent draft" : "Manual input"}</strong></span>
         <span>Account <strong>{props.accountReadiness.accountValueKind === "real" ? "Read-only live" : props.accountReadiness.accountValueKind === "hybrid" ? "Live + paper" : "Paper"}</strong></span>
-        <span>Entry <strong>{fmtUsd(props.entryPrice, 1)}</strong></span>
+        <span>Entry <strong>{fmtMarketUsd({ price: props.entryPrice, market: props.pricePrecision })}</strong></span>
         <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
         <span>Margin <strong>{fmtUsd(props.marginRequired, 2)}</strong></span>
-        <span>Est. liq <strong>{fmtUsd(props.liquidation, 1)}</strong></span>
+        <span>Est. liq <strong>{fmtMarketUsd({ price: props.liquidation, market: props.pricePrecision })}</strong></span>
         <span>Fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
       </div>
       {blocked ? <p className="block-note">{props.liveDisabledReason} Use paper mode.</p> : null}
@@ -1826,6 +2021,20 @@ function ImpactPanel(props: {
       </div>
     </div>
   );
+}
+
+function formatRowMarketPrice(
+  price: number,
+  symbol: string,
+  selectedMarket: SharedTradingSnapshot["market"],
+): string {
+  if (
+    normalizeSymbol(symbol) === normalizeSymbol(selectedMarket.symbol) ||
+    normalizeSymbol(symbol) === normalizeSymbol(selectedMarket.base)
+  ) {
+    return fmtMarketUsd({ price, market: selectedMarket });
+  }
+  return fmtAdaptiveUsd(price);
 }
 
 function AgentPanel(props: {
@@ -1932,6 +2141,7 @@ function BottomPanel(props: {
   cancelLiveOrder: (order: SharedTradingSnapshot["account"]["openOrders"][number]) => void;
 }) {
   const scannerUrl = hypurrscanAddressUrl(props.accountAddress);
+  const selectedMarket = props.snapshot.market;
   return (
     <div className="panel bottom-panel">
       <div className="bottom-tabs">
@@ -1947,10 +2157,10 @@ function BottomPanel(props: {
               <strong>{position.symbol}{position.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={position.side === "long" ? "pos" : "neg"}>{position.side} {position.size} {position.base}</span>
               <span>{position.leverage}x {position.marginMode}</span>
-              <span>Entry {fmtUsd(position.entryPrice, 1)}</span>
+              <span>Entry {formatRowMarketPrice(position.entryPrice, position.symbol, selectedMarket)}</span>
               <span>PnL <b className={position.pnlUsd >= 0 ? "pos" : "neg"}>{fmtUsd(position.pnlUsd, 2)}</b></span>
               <span>
-                Liq {fmtUsd(position.liquidationPrice, 1)}
+                Liq {formatRowMarketPrice(position.liquidationPrice, position.symbol, selectedMarket)}
                 {position.mode === "live" && scannerUrl ? <HypurrscanLink href={scannerUrl} label="Verify" /> : null}
               </span>
             </div>
@@ -1964,7 +2174,7 @@ function BottomPanel(props: {
               <strong>{order.symbol}{order.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={order.side === "buy" ? "pos" : "neg"}>{order.side}</span>
               <span>{order.type}</span>
-              <span>{fmtUsd(order.price, 1)}</span>
+              <span>{formatRowMarketPrice(order.price, order.symbol, selectedMarket)}</span>
               <span>{order.size}</span>
               <span className="row-actions-cell">
                 {order.reduceOnly ? "Reduce only" : "Open"}
@@ -1989,7 +2199,7 @@ function BottomPanel(props: {
             <div key={fillRowKey(fill)} className="data-row">
               <strong>{fill.symbol}{fill.mode === "paper" ? <span className="paper-ledger-badge">Paper</span> : null}</strong>
               <span className={fill.side === "buy" ? "pos" : "neg"}>{fill.side}</span>
-              <span>{fmtUsd(fill.price, 1)}</span>
+              <span>{formatRowMarketPrice(fill.price, fill.symbol, selectedMarket)}</span>
               <span>{fill.size}</span>
               <span>Fee {fmtUsd(fill.feeUsd, 2)}</span>
               <span>
@@ -2046,6 +2256,7 @@ function fillRowKey(fill: SharedTradingSnapshot["account"]["fills"][number]): st
 function ConfirmModal(props: {
   draft: OrderDraft;
   base: string;
+  pricePrecision: HyperliquidPricePrecision;
   szDecimals: number;
   mode: "paper" | "live";
   entryPrice: number;
@@ -2083,10 +2294,10 @@ function ConfirmModal(props: {
           <span>Order type <strong>{props.draft.orderType}</strong></span>
           <span>Leverage <strong>{props.draft.leverage}x</strong></span>
           <span>Margin mode <strong>{props.draft.marginMode}</strong></span>
-          <span>Estimated entry <strong>{fmtUsd(props.entryPrice, 1)}</strong></span>
-          <span>Est. liquidation <strong>{fmtUsd(props.liquidation, 1)}</strong></span>
-          <span>TP <strong>{props.draft.takeProfit ? fmtUsd(props.draft.takeProfit, 1) : "Not set"}</strong></span>
-          <span>SL <strong>{props.draft.stopLoss ? fmtUsd(props.draft.stopLoss, 1) : "Not set"}</strong></span>
+          <span>Estimated entry <strong>{fmtMarketUsd({ price: props.entryPrice, market: props.pricePrecision })}</strong></span>
+          <span>Est. liquidation <strong>{fmtMarketUsd({ price: props.liquidation, market: props.pricePrecision })}</strong></span>
+          <span>TP <strong>{props.draft.takeProfit ? fmtMarketUsd({ price: props.draft.takeProfit, market: props.pricePrecision }) : "Not set"}</strong></span>
+          <span>SL <strong>{props.draft.stopLoss ? fmtMarketUsd({ price: props.draft.stopLoss, market: props.pricePrecision }) : "Not set"}</strong></span>
           <span>Notional <strong>{fmtUsd(props.notional, 2)}</strong></span>
           <span>Est. fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
         </div>

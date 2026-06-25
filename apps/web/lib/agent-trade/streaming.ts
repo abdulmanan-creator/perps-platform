@@ -1,5 +1,5 @@
 import { estimateTopBookLiquidityUsd, normalizeSymbol, parseBookLevels } from "./markets";
-import type { TerminalCandle, TerminalChartData, TerminalChartInterval } from "./terminal";
+import { terminalIntervalSeconds, type TerminalCandle, type TerminalChartData, type TerminalChartInterval } from "./terminal";
 import type { RecentTrade, SharedTradingSnapshot } from "./types";
 
 export type TerminalStreamStatus =
@@ -52,6 +52,12 @@ export interface TerminalStreamSubscription {
   interval?: TerminalChartInterval;
   nSigFigs?: number;
   fast?: boolean;
+}
+
+export interface TerminalLivePriceUpdate {
+  price: number;
+  timestamp: number;
+  receivedAt: number;
 }
 
 export function hyperliquidWsUrlForVenue(executionVenue: string | undefined): string {
@@ -240,6 +246,56 @@ export function applyTerminalCandleEvent(
     source: "hyperliquid",
     fetchedAt: event.receivedAt,
     isFallback: false,
+  };
+}
+
+export function applyTerminalPriceToChart(
+  chartData: TerminalChartData,
+  priceUpdate: TerminalLivePriceUpdate,
+  interval: TerminalChartInterval,
+): TerminalChartData {
+  if (!Number.isFinite(priceUpdate.price) || priceUpdate.price <= 0 || chartData.candles.length === 0) {
+    return chartData;
+  }
+
+  const intervalSeconds = terminalIntervalSeconds(interval);
+  const tradeSeconds = Math.floor(priceUpdate.timestamp > 10_000_000_000
+    ? priceUpdate.timestamp / 1000
+    : priceUpdate.timestamp);
+  const bucketTime = Math.floor(tradeSeconds / intervalSeconds) * intervalSeconds;
+  const candles = [...chartData.candles];
+  const last = candles.at(-1);
+  if (!last) {
+    return chartData;
+  }
+
+  const updateCandle = (candle: TerminalCandle): TerminalCandle => ({
+    ...candle,
+    high: Math.max(candle.high, priceUpdate.price),
+    low: Math.min(candle.low, priceUpdate.price),
+    close: priceUpdate.price,
+  });
+
+  const existingIndex = candles.findIndex((candle) => candle.time === bucketTime);
+  if (existingIndex >= 0) {
+    candles[existingIndex] = updateCandle(candles[existingIndex]);
+  } else if (bucketTime > last.time) {
+    candles.push({
+      time: bucketTime,
+      open: last.close,
+      high: Math.max(last.close, priceUpdate.price),
+      low: Math.min(last.close, priceUpdate.price),
+      close: priceUpdate.price,
+      volume: 0,
+    });
+  } else {
+    candles[candles.length - 1] = updateCandle(last);
+  }
+
+  return {
+    ...chartData,
+    candles: candles.slice(-240),
+    livePriceAt: priceUpdate.receivedAt,
   };
 }
 
@@ -432,10 +488,13 @@ function parseTrade(raw: unknown): (RecentTrade & { coin: string }) | undefined 
   const size = finiteNumber(record?.sz);
   const timestamp = finiteNumber(record?.time);
   const side = parseSide(record?.side);
+  const hash = stringValue(record?.hash);
+  const tid = finiteNumber(record?.tid);
   if (!coin || price == null || size == null || timestamp == null || !side) {
     return undefined;
   }
   return {
+    id: tradeStableId({ coin, hash, tid, timestamp, side, price, size }),
     coin,
     side,
     price,
@@ -512,7 +571,28 @@ function isValidStreamCandle(candle: TerminalCandle): boolean {
 }
 
 function tradeKey(trade: RecentTrade): string {
+  if (trade.id) {
+    return trade.id;
+  }
   return [trade.side, trade.timestamp, trade.price, trade.size].join(":");
+}
+
+function tradeStableId(args: {
+  coin: string;
+  hash?: string;
+  tid?: number;
+  timestamp: number;
+  side: RecentTrade["side"];
+  price: number;
+  size: number;
+}): string {
+  if (args.tid != null) {
+    return [normalizeSymbol(args.coin), args.timestamp, args.tid].join(":");
+  }
+  if (args.hash) {
+    return [normalizeSymbol(args.coin), args.hash, args.timestamp].join(":");
+  }
+  return [normalizeSymbol(args.coin), args.side, args.timestamp, args.price, args.size].join(":");
 }
 
 function objectRecord(input: unknown): Record<string, unknown> | undefined {

@@ -1,4 +1,4 @@
-import { fmtCompactUsd, fmtPct, fmtUsd } from "./format";
+import { fmtCompactUsd, fmtMarketUsd, fmtPct, fmtUsd } from "./format";
 import {
   calculateDraftImpact,
   calculatePortfolioExposure,
@@ -27,6 +27,10 @@ export interface AgentService {
 
 function receipt(label: string, value: string, snapshot: SharedTradingSnapshot) {
   return { label, value, timestamp: snapshot.asOf };
+}
+
+function fmtSnapshotMarketUsd(snapshot: SharedTradingSnapshot, price: number): string {
+  return fmtMarketUsd({ price, market: snapshot.market });
 }
 
 export class DeterministicAgentService implements AgentService {
@@ -175,14 +179,14 @@ export class DeterministicAgentService implements AgentService {
         `Available balance is ${fmtUsd(account.availableUsd, 0)} with ${existingExposure}. ` +
         `I would only draft this as a controlled ${mode} trade with a defined invalidation.`,
       receipts: [
-        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Mark", fmtSnapshotMarketUsd(snapshot, market.markPrice), snapshot),
         receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
         receipt("Open interest", fmtCompactUsd(market.openInterestUsd), snapshot),
         receipt("24h volume", fmtCompactUsd(market.volume24hUsd), snapshot),
         receipt("Margin impact", fmtUsd(impact.marginRequiredUsd, 2), snapshot),
       ],
       riskNote:
-        `The risk is a failed breakout back through ${fmtUsd(stopLoss, 1)}. ${concentrationNote} Current labels: ${riskLabels.join(", ")}.`,
+        `The risk is a failed breakout back through ${fmtSnapshotMarketUsd(snapshot, stopLoss)}. ${concentrationNote} Current labels: ${riskLabels.join(", ")}.`,
       whyWrong:
         "If OI keeps rising while price loses the range high, this becomes crowded long positioning rather than confirmation.",
       orderDraft: draft,
@@ -260,14 +264,14 @@ export class DeterministicAgentService implements AgentService {
         `Available balance is ${fmtUsd(account.availableUsd, 0)} with ${existingExposure}. ` +
         `I would only draft this as a controlled ${mode} short with a defined invalidation above the rejection level.`,
       receipts: [
-        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Mark", fmtSnapshotMarketUsd(snapshot, market.markPrice), snapshot),
         receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
         receipt("Open interest", fmtCompactUsd(market.openInterestUsd), snapshot),
         receipt("24h volume", fmtCompactUsd(market.volume24hUsd), snapshot),
         receipt("Margin impact", fmtUsd(impact.marginRequiredUsd, 2), snapshot),
       ],
       riskNote:
-        `The risk is a squeeze back through ${fmtUsd(stopLoss, 1)}. ${concentrationNote} Current labels: ${riskLabels.join(", ")}.`,
+        `The risk is a squeeze back through ${fmtSnapshotMarketUsd(snapshot, stopLoss)}. ${concentrationNote} Current labels: ${riskLabels.join(", ")}.`,
       whyWrong:
         "If price reclaims the rejection level while OI stays elevated, trapped shorts can fuel a squeeze instead of continuation lower.",
       orderDraft: draft,
@@ -339,9 +343,9 @@ export class DeterministicAgentService implements AgentService {
       thesis:
         `No clean setup right now. Price is between actionable levels and the book already has ${selectedExposure}, so adding risk here is not justified.`,
       receipts: [
-        receipt("Upper liquidity", fmtUsd(market.markPrice * 1.052, 1), snapshot),
-        receipt("Lower liquidity", fmtUsd(market.markPrice * 0.971, 1), snapshot),
-        receipt("Spread", fmtUsd(Math.abs(snapshot.orderBook.asks[0].price - snapshot.orderBook.bids[0].price), 1), snapshot),
+        receipt("Upper liquidity", fmtSnapshotMarketUsd(snapshot, market.markPrice * 1.052), snapshot),
+        receipt("Lower liquidity", fmtSnapshotMarketUsd(snapshot, market.markPrice * 0.971), snapshot),
+        receipt("Spread", fmtSnapshotMarketUsd(snapshot, Math.abs(snapshot.orderBook.asks[0].price - snapshot.orderBook.bids[0].price)), snapshot),
         receipt("Portfolio labels", riskLabels.join(", "), snapshot),
       ],
       riskNote: `Chasing the middle of the range gives poor invalidation. Portfolio state: ${riskLabels.join(", ")}.`,
@@ -379,11 +383,11 @@ export class DeterministicAgentService implements AgentService {
       state: "answered",
       question: `Give me a ${market.base} market read.`,
       thesis:
-        `${market.base} is trading at ${fmtUsd(market.markPrice, 1)} with funding at ${fmtPct(market.fundingRatePct)} and ` +
+        `${market.base} is trading at ${fmtSnapshotMarketUsd(snapshot, market.markPrice)} with funding at ${fmtPct(market.fundingRatePct)} and ` +
         `${fmtCompactUsd(market.openInterestUsd)} open interest. Account context shows ${selectedExposure} and ` +
         `${fmtUsd(account.availableUsd, 0)} available balance. I would treat this as a market read, not an executable instruction.`,
       receipts: [
-        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Mark", fmtSnapshotMarketUsd(snapshot, market.markPrice), snapshot),
         receipt("Funding", fmtPct(market.fundingRatePct), snapshot),
         receipt("Open interest", fmtCompactUsd(market.openInterestUsd), snapshot),
         receipt("OI change", oiChange, snapshot),
@@ -428,7 +432,7 @@ export class DeterministicAgentService implements AgentService {
         "Ask me about funding, open interest, liquidation levels, portfolio risk, or a trade setup. I use the current terminal snapshot and can draft a paper proposal for your review when the setup is clean.",
       receipts: [
         receipt("Market", market.symbol, snapshot),
-        receipt("Mark", fmtUsd(market.markPrice, 1), snapshot),
+        receipt("Mark", fmtSnapshotMarketUsd(snapshot, market.markPrice), snapshot),
         receipt("Data age", `${market.dataAgeSeconds}s`, snapshot),
       ],
       riskNote:
@@ -451,7 +455,7 @@ export class DeterministicAgentService implements AgentService {
       question: "Should I trade this?",
       thesis:
         "I won’t draft a trade without a usable market price. Refresh market data before drafting an order.",
-      receipts: [receipt("Mark", fmtUsd(snapshot.market.markPrice, 1), snapshot)],
+      receipts: [receipt("Mark", fmtSnapshotMarketUsd(snapshot, snapshot.market.markPrice), snapshot)],
       riskNote: "A missing or invalid price makes entries, liquidation estimates, and stops unreliable.",
       whyWrong: "The setup could still be valid after a price refresh, but the current snapshot cannot produce a safe ticket.",
       annotations: [],

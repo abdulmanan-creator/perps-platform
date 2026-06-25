@@ -8,6 +8,7 @@ import {
   normalizeSymbol,
   parseBookLevels,
   resolveSelectedMarket,
+  type JoinedMarket,
   type L2BookWireResponse,
   type MarketStatsWireResponse,
   type MarketsWireResponse,
@@ -186,11 +187,7 @@ export async function loadTradingSnapshot(
       asOf: Date.now(),
       market: marketSnapshot,
       orderBook,
-      recentTrades: MOCK_TRADING_SNAPSHOT.recentTrades.map((trade, index) => ({
-        ...trade,
-        price: Number((selected.markPrice + (index - 2) * selected.markPrice * 0.00012).toFixed(2)),
-        size: Number((Math.max(1 / 10 ** selected.szDecimals, trade.size)).toFixed(selected.szDecimals)),
-      })),
+      recentTrades: [],
     };
 
     const marketAccountSnapshot = await applyAccountState(snapshot, options.accountAddress);
@@ -218,6 +215,30 @@ export async function loadTradingSnapshot(
   } finally {
     globalThis.clearTimeout(timeout);
   }
+}
+
+export function buildSwitchingMarketSnapshot(args: {
+  current: SharedTradingSnapshot;
+  market: JoinedMarket;
+}): SharedTradingSnapshot {
+  const orderBook: SharedTradingSnapshot["orderBook"] = { asks: [], bids: [] };
+  const market = marketToSnapshot(args.market, orderBook);
+  const next: SharedTradingSnapshot = {
+    ...args.current,
+    asOf: Date.now(),
+    market,
+    orderBook,
+    recentTrades: [],
+  };
+
+  if (next.account.valueKind === "real" || next.account.valueKind === "hybrid" || next.account.valueKind === "unavailable") {
+    return next;
+  }
+
+  return {
+    ...next,
+    account: applyMarketToAccount(next),
+  };
 }
 
 export async function loadTerminalCandles(
