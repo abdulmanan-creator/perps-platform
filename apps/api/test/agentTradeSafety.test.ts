@@ -559,6 +559,59 @@ describe("Agent.trade route safety", () => {
     await app.close();
   });
 
+  it("paper reduce-only close records a fill and removes the closed position without Hyperliquid exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const headers = { "x-agent-trade-session-id": "session-paper-close-long" };
+
+    await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "HYPE-USD",
+          side: "long",
+          orderType: "market",
+          sizeBtc: 0.16,
+          leverage: 5,
+          marginMode: "isolated",
+          reduceOnly: false,
+          fromAgent: false,
+        },
+        estimatedEntry: 64.24,
+      },
+    });
+
+    const close = await app.inject({
+      method: "POST",
+      url: "/agent-trade/paper-orders",
+      headers,
+      payload: {
+        draft: {
+          symbol: "HYPE-USD",
+          side: "short",
+          orderType: "market",
+          sizeBtc: 0.16,
+          leverage: 5,
+          marginMode: "isolated",
+          reduceOnly: true,
+          fromAgent: false,
+        },
+        estimatedEntry: 64.25,
+      },
+    });
+
+    expect(close.statusCode).toBe(200);
+    const body = close.json();
+    expect(body.fill).toMatchObject({ symbol: "HYPE-USD", side: "sell", mode: "paper", size: 0.16 });
+    expect(body.account.positions).toHaveLength(0);
+    expect(body.account.fills).toHaveLength(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("paper ledgers are isolated by session id", async () => {
     const app = await appWithConfig(cfg());
     await agentTradeRoute(app);

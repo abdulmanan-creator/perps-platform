@@ -32,6 +32,8 @@ import {
   applyManualDraftPatch,
   buildFallbackTerminalChartData,
   buildSyntheticTerminalCandles,
+  closePositionDraft,
+  closePositionSubmitState,
   getConfirmationAckCopy,
   getTerminalEligibilityStatus,
   getTerminalFreshness,
@@ -119,6 +121,12 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(getTicketSource({ fromAgent: true })).toBe("agent");
   });
 
+  it("uses close-specific confirmation copy for paper and live closes", () => {
+    expect(getConfirmationAckCopy("manual", "paper", "close")).toContain("paper close");
+    expect(getConfirmationAckCopy("manual", "live", "close")).toContain("reduce-only live perpetual order");
+    expect(getConfirmationAckCopy("manual", "live", "order")).toContain("live order");
+  });
+
   it("renders visible paper-only/live-disabled status for unknown and restricted eligibility", () => {
     const unknown = getTerminalEligibilityStatus("unknown");
     const restricted = getTerminalEligibilityStatus("restricted");
@@ -171,6 +179,28 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(paper.scannerUrl).toBeUndefined();
     expect(live.message).toContain("Live order submitted: HYPE-USD long $10.28 notional.");
     expect(live.detail).toBe("Hyperliquid returned ok (order).");
+    expect(live.scannerUrl).toBe(`https://hypurrscan.io/address/${address}`);
+  });
+
+  it("distinguishes paper close success from live close scanner verification", () => {
+    const address = "0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43";
+    const paper = closePositionSubmitState({
+      mode: "paper",
+      market: "BTC-USD",
+      side: "short",
+      notionalUsd: 1000,
+    });
+    const live = closePositionSubmitState({
+      mode: "live",
+      market: "HYPE-USD",
+      side: "short",
+      notionalUsd: 10.28,
+      scannerUrl: hypurrscanAddressUrl(address),
+    });
+
+    expect(paper.message).toContain("Paper close submitted");
+    expect(paper.scannerUrl).toBeUndefined();
+    expect(live.message).toContain("Live close submitted");
     expect(live.scannerUrl).toBe(`https://hypurrscan.io/address/${address}`);
   });
 
@@ -322,6 +352,77 @@ describe("Agent.trade terminal product-loop helpers", () => {
       p: "100500",
       s: "0.01234",
       t: { limit: { tif: "Ioc" } },
+    });
+  });
+
+  it("builds reduce-only close orders with the opposite side and market precision", () => {
+    const closeLong = closePositionDraft({
+      symbol: "HYPE-USD",
+      base: "HYPE",
+      mode: "live",
+      side: "long",
+      size: 0.160009,
+      leverage: 5,
+      marginMode: "isolated",
+      entryPrice: 64.24,
+      markPrice: 64.242,
+      liquidationPrice: 52,
+      pnlUsd: 0,
+      pnlPct: 0,
+      marginUsd: 2,
+      fundingUsd: 0,
+    });
+
+    const action = buildHlOrderAction(closeLong, {
+      assetIndex: 159,
+      markPrice: 64.242,
+      szDecimals: 2,
+    });
+
+    expect(closeLong).toMatchObject({
+      side: "short",
+      sizeBtc: 0.160009,
+      reduceOnly: true,
+      fromAgent: false,
+    });
+    expect(action.orders[0]).toMatchObject({
+      a: 159,
+      b: false,
+      r: true,
+      s: "0.16",
+      t: { limit: { tif: "Ioc" } },
+    });
+  });
+
+  it("builds buy reduce-only close orders for short positions", () => {
+    const closeShort = closePositionDraft({
+      symbol: "ETH-USD",
+      base: "ETH",
+      mode: "live",
+      side: "short",
+      size: 1.2345,
+      leverage: 3,
+      marginMode: "cross",
+      entryPrice: 3000,
+      markPrice: 2990,
+      liquidationPrice: 3600,
+      pnlUsd: 0,
+      pnlPct: 0,
+      marginUsd: 1200,
+      fundingUsd: 0,
+    });
+
+    const action = buildHlOrderAction(closeShort, {
+      assetIndex: 1,
+      markPrice: 2990,
+      szDecimals: 4,
+    });
+
+    expect(closeShort.side).toBe("long");
+    expect(action.orders[0]).toMatchObject({
+      b: true,
+      r: true,
+      s: "1.2345",
     });
   });
 

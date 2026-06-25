@@ -52,6 +52,8 @@ import {
   applyManualDraftPatch,
   annotationPriceLineTitle,
   buildFallbackTerminalChartData,
+  closePositionDraft,
+  closePositionSubmitState,
   getConfirmationAckCopy,
   getTerminalFreshness,
   getTerminalEligibilityStatus,
@@ -96,6 +98,7 @@ import type {
   MarginMode,
   OrderDraft,
   OrderType,
+  Position,
   SharedTradingSnapshot,
 } from "@/lib/agent-trade/types";
 
@@ -115,6 +118,20 @@ interface TerminalStreamDebug {
   lastAccountEvent?: string;
   subscribedAccount?: string;
   streamStatus: TerminalStreamStatus;
+}
+
+interface ClosePositionIntent {
+  position: Position;
+  draft: OrderDraft;
+  market: HyperliquidPricePrecision & {
+    symbol: string;
+    base: string;
+    assetIndex: number;
+    markPrice: number;
+    szDecimals: number;
+    isSpot?: boolean;
+  };
+  entryPrice: number;
 }
 
 const agentService = createAgentService();
@@ -280,6 +297,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const [isThinking, setIsThinking] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [cancellingOrderKey, setCancellingOrderKey] = useState<string | undefined>();
+  const [closeIntent, setCloseIntent] = useState<ClosePositionIntent | undefined>();
   const [isAcked, setIsAcked] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [submitState, setSubmitState] = useState<SubmitState | undefined>();
@@ -606,6 +624,26 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     };
   }, []);
 
+  const activeDraft = closeIntent?.draft ?? draft;
+  const activeMode = closeIntent?.position.mode === "live"
+    ? "live"
+    : closeIntent?.position.mode === "paper"
+      ? "paper"
+      : mode;
+  const activeOrderMarket = closeIntent?.market ?? snapshot.market;
+  const activeEntryPrice = closeIntent
+    ? closeIntent.entryPrice
+    : draft.orderType === "limit" && draft.limitPrice
+      ? draft.limitPrice
+      : snapshot.market.markPrice;
+  const activeNotional = activeDraft.sizeBtc * activeEntryPrice;
+  const activeMarginRequired = activeNotional / activeDraft.leverage;
+  const activeFees = activeNotional * 0.00045;
+  const activeLiquidation = closeIntent ? closeIntent.position.liquidationPrice : estimateDraftLiquidation({
+    side: activeDraft.side,
+    entryPrice: activeEntryPrice,
+    leverage: activeDraft.leverage,
+  });
   const entryPrice = draft.orderType === "limit" && draft.limitPrice ? draft.limitPrice : snapshot.market.markPrice;
   const notional = draft.sizeBtc * entryPrice;
   const marginRequired = notional / draft.leverage;
@@ -902,13 +940,13 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     setModalError(undefined);
   }
 
-  async function submitPaperOrder() {
+  async function submitPaperOrder(orderDraft: OrderDraft = draft, orderEntryPrice: number = entryPrice) {
     const endpoint = paperOrderEndpoint(API_BASE_URL);
     try {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", ...paperSessionHeaders() },
-        body: JSON.stringify({ draft, estimatedEntry: entryPrice }),
+        body: JSON.stringify({ draft: orderDraft, estimatedEntry: orderEntryPrice }),
       });
       if (!res.ok) {
         let message = `HTTP ${res.status}`;
@@ -926,7 +964,17 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         accountAddress: wallet.status === "connected" ? wallet.address : undefined,
       });
       setSnapshot(refreshed.snapshot);
-      setSubmitState(paperOrderSubmitState(`Paper fill recorded. Position updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`));
+      if (orderDraft.reduceOnly) {
+        setSubmitState(closePositionSubmitState({
+          mode: "paper",
+          market: orderDraft.symbol,
+          side: orderDraft.side,
+          notionalUsd: json.notionalUsd,
+          resultSummary: `Paper fill recorded. Position updated: ${json.id}.`,
+        }));
+      } else {
+        setSubmitState(paperOrderSubmitState(`Paper fill recorded. Position updated: ${json.id} (${fmtUsd(json.notionalUsd, 2)} notional).`));
+      }
     } catch (err) {
       setApiStatus("unavailable");
       throw new Error(paperOrderFailureMessage(err, endpoint));
@@ -975,7 +1023,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     return await readJsonOrEmpty(sendRes);
   }
 
-  async function submitLiveOrder() {
+  async function submitLiveOrder(orderDraft: OrderDraft = draft, orderMarket: ClosePositionIntent["market"] | SharedTradingSnapshot["market"] = snapshot.market, orderNotional: number = notional) {
     if (!canLiveTrade) {
       throw new Error(liveDisabledReason);
     }
@@ -984,20 +1032,23 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     }
     const provider = await wallet.getEthereumProvider();
     const user = wallet.address as `0x${string}`;
-    const action = buildHlOrderAction(draft, snapshot.market);
+    const action = buildHlOrderAction(orderDraft, orderMarket);
     const exchangeResponse = await buildSignAndSendLiveAction(action, user, provider);
     const refreshed = await loadTradingSnapshot(snapshot.market.base, {
       accountAddress: user,
     });
     setSnapshot(refreshed.snapshot);
     setBottomTab("fills");
-    setSubmitState(liveOrderSubmitState({
+    const submitStateArgs = {
       scannerUrl: hypurrscanAddressUrl(user),
-      market: draft.symbol,
-      side: draft.side,
-      notionalUsd: notional,
+      market: orderDraft.symbol,
+      side: orderDraft.side,
+      notionalUsd: orderNotional,
       resultSummary: summarizeExchangeResponse(exchangeResponse),
-    }));
+    };
+    setSubmitState(orderDraft.reduceOnly
+      ? closePositionSubmitState({ mode: "live", ...submitStateArgs })
+      : liveOrderSubmitState(submitStateArgs));
   }
 
   async function cancelLiveOrder(order: SharedTradingSnapshot["account"]["openOrders"][number]) {
@@ -1037,6 +1088,72 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     }
   }
 
+  function marketForPosition(position: Position): ClosePositionIntent["market"] | undefined {
+    const normalized = normalizeSymbol(position.symbol);
+    if (normalizeSymbol(snapshot.market.symbol) === normalized || normalizeSymbol(snapshot.market.base) === normalized) {
+      return {
+        ...snapshot.market,
+        symbol: snapshot.market.symbol,
+        base: snapshot.market.base,
+        assetIndex: snapshot.market.assetIndex,
+        markPrice: Number.isFinite(position.markPrice) && position.markPrice > 0 ? position.markPrice : snapshot.market.markPrice,
+        szDecimals: snapshot.market.szDecimals,
+      };
+    }
+
+    const market = marketOptions.find((item) => normalizeSymbol(item.symbol) === normalized || normalizeSymbol(item.base) === normalized);
+    if (!market) {
+      return undefined;
+    }
+    return {
+      symbol: `${market.base}-USD`,
+      base: market.base,
+      assetIndex: market.assetIndex,
+      markPrice: Number.isFinite(position.markPrice) && position.markPrice > 0 ? position.markPrice : market.markPrice,
+      szDecimals: market.szDecimals,
+    };
+  }
+
+  function openClosePositionModal(position: Position) {
+    if (!position.size || position.size <= 0) {
+      setSubmitState({ message: "Close unavailable: no position size to close." });
+      return;
+    }
+    const market = marketForPosition(position);
+    if (!market) {
+      setSubmitState({ message: `Close unavailable: market metadata for ${position.symbol} is not loaded.` });
+      return;
+    }
+    if (position.mode === "live") {
+      if (mode !== "live") {
+        setSubmitState({ message: "Switch to Live mode to close a live Hyperliquid position. Paper mode remains available for simulated positions." });
+        return;
+      }
+      if (!liveReadiness.allowed) {
+        setSubmitState({ message: liveReadiness.disabledReason });
+        return;
+      }
+      if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {
+        setSubmitState({ message: "Close unavailable: wallet required." });
+        return;
+      }
+      if (snapshot.account.liveAccountDataUnavailable) {
+        setSubmitState({ message: "Close unavailable: Hyperliquid account state is unavailable. Refresh before live trading." });
+        return;
+      }
+    }
+
+    setCloseIntent({
+      position,
+      draft: closePositionDraft(position),
+      market,
+      entryPrice: market.markPrice,
+    });
+    setIsAcked(false);
+    setModalError(undefined);
+    setModalOpen(true);
+  }
+
   async function confirmOrder() {
     if (!isAcked) {
       return;
@@ -1045,12 +1162,13 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     setSubmitState(undefined);
     setModalError(undefined);
     try {
-      if (mode === "paper") {
-        await submitPaperOrder();
+      if (activeMode === "paper") {
+        await submitPaperOrder(activeDraft, activeEntryPrice);
       } else {
-        await submitLiveOrder();
+        await submitLiveOrder(activeDraft, activeOrderMarket, activeNotional);
       }
       setModalOpen(false);
+      setCloseIntent(undefined);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Order submission failed.";
       setModalError(message);
@@ -1112,6 +1230,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               accountAddress={wallet.status === "connected" ? wallet.address : undefined}
               cancellingOrderKey={cancellingOrderKey}
               cancelLiveOrder={(order) => void cancelLiveOrder(order)}
+              openClosePositionModal={openClosePositionModal}
             />
           </div>
           <div className="terminal-book-stack">
@@ -1169,24 +1288,26 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
 
       {modalOpen ? (
         <ConfirmModal
-          draft={draft}
-          base={snapshot.market.base}
-          pricePrecision={snapshot.market}
-          szDecimals={snapshot.market.szDecimals}
-          mode={mode}
-          entryPrice={entryPrice}
-          notional={notional}
-          marginRequired={marginRequired}
-          fees={fees}
-          liquidation={liquidation}
+          draft={activeDraft}
+          base={activeOrderMarket.base}
+          pricePrecision={activeOrderMarket}
+          szDecimals={activeOrderMarket.szDecimals}
+          mode={activeMode}
+          entryPrice={activeEntryPrice}
+          notional={activeNotional}
+          marginRequired={activeMarginRequired}
+          fees={activeFees}
+          liquidation={activeLiquidation}
           canLiveTrade={canLiveTrade}
           liveDisabledReason={liveDisabledReason}
           eligibility={eligibility}
+          intent={closeIntent ? "close" : "order"}
           modalError={modalError}
           isAcked={isAcked}
           setIsAcked={setIsAcked}
           close={() => {
             setModalError(undefined);
+            setCloseIntent(undefined);
             setModalOpen(false);
           }}
           confirm={confirmOrder}
@@ -2188,6 +2309,7 @@ function BottomPanel(props: {
   accountAddress?: string;
   cancellingOrderKey?: string;
   cancelLiveOrder: (order: SharedTradingSnapshot["account"]["openOrders"][number]) => void;
+  openClosePositionModal: (position: SharedTradingSnapshot["account"]["positions"][number]) => void;
 }) {
   const scannerUrl = hypurrscanAddressUrl(props.accountAddress);
   const selectedMarket = props.snapshot.market;
@@ -2208,9 +2330,18 @@ function BottomPanel(props: {
               <span>{position.leverage}x {position.marginMode}</span>
               <span>Entry {formatRowMarketPrice(position.entryPrice, position.symbol, selectedMarket)}</span>
               <span>PnL <b className={position.pnlUsd >= 0 ? "pos" : "neg"}>{fmtUsd(position.pnlUsd, 2)}</b></span>
-              <span>
+              <span className="row-actions-cell">
                 Liq {formatRowMarketPrice(position.liquidationPrice, position.symbol, selectedMarket)}
                 {position.mode === "live" && scannerUrl ? <HypurrscanLink href={scannerUrl} label="Verify" /> : null}
+                {position.mode === "paper" || position.mode === "live" ? (
+                  <button
+                    type="button"
+                    className="mini-action-button"
+                    onClick={() => props.openClosePositionModal(position)}
+                  >
+                    Close
+                  </button>
+                ) : null}
               </span>
             </div>
           ))}
@@ -2316,6 +2447,7 @@ function ConfirmModal(props: {
   canLiveTrade: boolean;
   liveDisabledReason: string;
   eligibility: EligibilityResponse;
+  intent: "order" | "close";
   modalError: string | undefined;
   isAcked: boolean;
   setIsAcked: (value: boolean) => void;
@@ -2325,12 +2457,16 @@ function ConfirmModal(props: {
 }) {
   const liveBlocked = props.mode === "live" && !props.canLiveTrade;
   const source = getTicketSource(props.draft);
+  const title = props.intent === "close" ? "Close position" : props.mode === "paper" ? "Paper confirmation" : "Live confirmation";
+  const actionLabel = props.intent === "close"
+    ? `Confirm ${props.mode} close`
+    : `Confirm ${props.mode} order`;
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Confirm order">
       <div className={`confirm-modal ${props.mode}`}>
         <div className="panel-head">
           <div>
-            <span>{props.mode === "paper" ? "Paper confirmation" : "Live confirmation"}</span>
+            <span>{title}</span>
             <strong>{props.draft.symbol} {props.draft.side}</strong>
           </div>
           {source === "agent" ? <span className="from-agent-badge">From Agent</span> : null}
@@ -2343,6 +2479,7 @@ function ConfirmModal(props: {
           <span>Order type <strong>{props.draft.orderType}</strong></span>
           <span>Leverage <strong>{props.draft.leverage}x</strong></span>
           <span>Margin mode <strong>{props.draft.marginMode}</strong></span>
+          <span>Reduce only <strong>{props.draft.reduceOnly ? "Yes" : "No"}</strong></span>
           <span>Estimated entry <strong>{fmtMarketUsd({ price: props.entryPrice, market: props.pricePrecision })}</strong></span>
           <span>Est. liquidation <strong>{fmtMarketUsd({ price: props.liquidation, market: props.pricePrecision })}</strong></span>
           <span>TP <strong>{props.draft.takeProfit ? fmtMarketUsd({ price: props.draft.takeProfit, market: props.pricePrecision }) : "Not set"}</strong></span>
@@ -2352,15 +2489,16 @@ function ConfirmModal(props: {
         </div>
         <label className="ack-row">
           <input type="checkbox" checked={props.isAcked} onChange={(event) => props.setIsAcked(event.target.checked)} />
-          {getConfirmationAckCopy(source)}
+          {getConfirmationAckCopy(source, props.mode, props.intent)}
         </label>
-        {props.mode === "paper" ? <p className="paper-note">Paper orders are simulated and never call /exchange.</p> : null}
+        {props.mode === "paper" ? <p className="paper-note">Paper {props.intent === "close" ? "closes" : "orders"} are simulated and never call /exchange.</p> : null}
+        {props.mode === "live" && props.intent === "close" ? <p className="paper-note">Live close submits an opposite-side reduce-only market order through the guarded Agent.trade path.</p> : null}
         {liveBlocked ? <p className="block-note">{props.liveDisabledReason}</p> : null}
         {props.modalError ? <p className="modal-error">{props.modalError}</p> : null}
         <div className="modal-actions">
           <button className="secondary-action" onClick={props.close}>Cancel</button>
           <button className="primary-action" disabled={!props.isAcked || liveBlocked || props.isConfirming} onClick={props.confirm}>
-            {props.isConfirming ? "Submitting..." : `Confirm ${props.mode} order`}
+            {props.isConfirming ? "Submitting..." : actionLabel}
           </button>
         </div>
       </div>

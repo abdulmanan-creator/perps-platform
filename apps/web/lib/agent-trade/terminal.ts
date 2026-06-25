@@ -1,5 +1,5 @@
 import { marketSearchAliases, normalizeSymbol } from "./markets";
-import type { ChartAnnotation, EligibilityMode, MarketSnapshot, OrderDraft } from "./types";
+import type { ChartAnnotation, EligibilityMode, MarketSnapshot, OrderDraft, Position } from "./types";
 
 export type TicketSource = "manual" | "agent";
 
@@ -79,12 +79,24 @@ export function applyManualDraftPatch(draft: OrderDraft, patch: Partial<OrderDra
   return { ...draft, ...patch, fromAgent: false };
 }
 
-export function getConfirmationAckCopy(source: TicketSource): string {
+export function getConfirmationAckCopy(
+  source: TicketSource,
+  mode: "paper" | "live" = "paper",
+  intent: "order" | "close" = "order",
+): string {
+  if (intent === "close") {
+    return mode === "paper"
+      ? "I understand this close is simulated. I am confirming this paper close."
+      : "I understand this submits a reduce-only live perpetual order. I am confirming this live close.";
+  }
+
   if (source === "agent") {
     return "I understand this is a leveraged perpetual order. The agent drafted, but I am confirming.";
   }
 
-  return "I understand this is a leveraged perpetual order. I am confirming this paper order.";
+  return mode === "paper"
+    ? "I understand this is a leveraged perpetual order. I am confirming this paper order."
+    : "I understand this is a leveraged perpetual order. I am confirming this live order.";
 }
 
 export function liveOrderSubmitState(args: {
@@ -97,6 +109,34 @@ export function liveOrderSubmitState(args: {
   return {
     message: `Live order submitted: ${args.market} ${args.side} ${formatSubmitUsd(args.notionalUsd)} notional.`,
     detail: args.resultSummary ?? "Refreshing live Hyperliquid account state.",
+    scannerUrl: args.scannerUrl ?? undefined,
+  };
+}
+
+export function closePositionDraft(position: Position): OrderDraft {
+  return {
+    symbol: position.symbol,
+    side: position.side === "long" ? "short" : "long",
+    orderType: "market",
+    sizeBtc: position.size,
+    leverage: position.leverage,
+    marginMode: position.marginMode,
+    reduceOnly: true,
+    fromAgent: false,
+  };
+}
+
+export function closePositionSubmitState(args: {
+  mode: "paper" | "live";
+  scannerUrl?: string | null;
+  market: string;
+  side: string;
+  notionalUsd: number;
+  resultSummary?: string;
+}): SubmitState {
+  return {
+    message: `${args.mode === "paper" ? "Paper" : "Live"} close submitted: ${args.market} ${args.side} ${formatSubmitUsd(args.notionalUsd)} notional.`,
+    detail: args.resultSummary ?? (args.mode === "paper" ? "Paper fill recorded. Position updated." : "Refreshing live Hyperliquid account state."),
     scannerUrl: args.scannerUrl ?? undefined,
   };
 }
