@@ -17,6 +17,7 @@ const ROUTES = [
   ["/markets", "Market discovery"],
   ["/portfolio", "Portfolio risk"],
   ["/onboarding", "Account readiness"],
+  ["/settings", "Agent.trade readiness"],
   ["/connectors", "Connector"],
   ["/connect/claude", "Claude"],
   ["/connect/chatgpt", "ChatGPT"],
@@ -492,10 +493,10 @@ async function terminalDefaultSafety(page) {
   assert(/Hyperliquid candles|Synthetic fallback/i.test(text), "Chart candle source label missing");
   assert(/Live market data|Refreshing|Market data stale|Candles stale|API unavailable/i.test(text), "Terminal compact freshness label missing");
   assert(/Manual/i.test(text), "Ticket did not show Manual source by default");
-  assert(!await evaluate(page, `(() => {
-    const live = [...document.querySelectorAll('.mode-control button')].find((button) => button.textContent.trim() === 'Live');
-    return Boolean(live && !live.disabled);
-  })()`), "Live mode was selectable under local default eligibility");
+  assert(await evaluate(page, `(() => {
+    const testnet = [...document.querySelectorAll('.mode-control button')].find((button) => button.textContent.trim() === 'Testnet');
+    return Boolean(testnet && testnet.disabled);
+  })()`), "Testnet mode was not disabled under local default readiness");
 
   await evaluate(page, `(() => {
     const trigger = document.querySelector(".market-selector-trigger");

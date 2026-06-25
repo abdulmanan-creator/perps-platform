@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { getAccountReadinessDisplay } from "../lib/agent-trade/account-readiness";
+import { getAccountReadinessDisplay, getLiveTradingReadiness } from "../lib/agent-trade/account-readiness";
+import { getFundingDisplay } from "../lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "../lib/agent-trade/onboarding";
 import type { EligibilityMode } from "../lib/agent-trade/types";
 
@@ -100,5 +101,126 @@ describe("Agent.trade onboarding helpers", () => {
     expect(display.liveTradingEnabled).toBe(false);
     expect(display.paperTradingEnabled).toBe(true);
     expect(display.accountValueLabel).toBe("Account data unavailable");
+  });
+
+  it("blocks testnet trading when Privy env is missing", () => {
+    const readiness = getLiveTradingReadiness({
+      wallet: { status: "local-dev", authStatus: "not-configured" },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+    });
+
+    expect(readiness.allowed).toBe(false);
+    expect(readiness.reason).toBe("privy_not_configured");
+    expect(readiness.disabledReason).toContain("Sign-in is not configured");
+  });
+
+  it("blocks testnet trading until a configured Privy user signs in", () => {
+    const readiness = getLiveTradingReadiness({
+      wallet: { status: "not-connected", authStatus: "unauthenticated" },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+    });
+
+    expect(readiness.allowed).toBe(false);
+    expect(readiness.reason).toBe("not_authenticated");
+    expect(readiness.disabledReason).toBe("Sign in to enable testnet trading.");
+  });
+
+  it("blocks authenticated users without a usable wallet", () => {
+    const readiness = getLiveTradingReadiness({
+      wallet: { status: "not-connected", authStatus: "authenticated" },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+    });
+
+    expect(readiness.allowed).toBe(false);
+    expect(readiness.reason).toBe("wallet_missing");
+    expect(readiness.disabledReason).toContain("Wallet required.");
+  });
+
+  it("blocks authenticated wallets while eligibility is unknown", () => {
+    const readiness = getLiveTradingReadiness({
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "embedded",
+      },
+      eligibilityState: "unknown",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+    });
+
+    expect(readiness.allowed).toBe(false);
+    expect(readiness.reason).toBe("eligibility_unknown");
+    expect(readiness.disabledReason).toBe("Eligibility not confirmed.");
+  });
+
+  it("allows authenticated wallet plus live eligibility on testnet", () => {
+    const readiness = getLiveTradingReadiness({
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "external",
+      },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+    });
+
+    expect(readiness.allowed).toBe(true);
+    expect(readiness.reason).toBe("ready");
+    expect(readiness.summary).toContain("testnet execution policy");
+  });
+
+  it("blocks restricted and kill-switch states even with an authenticated wallet", () => {
+    const wallet = {
+      status: "connected" as const,
+      authStatus: "authenticated" as const,
+      address: "0x1234567890abcdef1234567890abcdef12345678",
+    };
+    const restricted = getLiveTradingReadiness({
+      wallet,
+      eligibilityState: "restricted",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+    });
+    const killSwitch = getLiveTradingReadiness({
+      wallet,
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: true,
+    });
+
+    expect(restricted.allowed).toBe(false);
+    expect(restricted.reason).toBe("restricted");
+    expect(killSwitch.allowed).toBe(false);
+    expect(killSwitch.reason).toBe("kill_switch");
+  });
+
+  it("keeps funding disabled when the product flag is off", () => {
+    const funding = getFundingDisplay({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: false,
+      providerAvailable: true,
+    });
+
+    expect(funding.liveFundingEnabled).toBe(false);
+    expect(funding.primaryCtaKind).toBe("paper");
+    expect(funding.summary).toContain("not enabled");
   });
 });

@@ -7,6 +7,7 @@ import { useFundWallet, usePrivy, useWallets } from "@privy-io/react-auth";
 import { API_BASE_URL } from "@/lib/api";
 import {
   getAccountReadinessDisplay,
+  getLiveTradingReadiness,
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
 import { getFundingDisplay } from "@/lib/agent-trade/funding";
@@ -24,16 +25,19 @@ interface EligibilityResponse {
 
 interface WalletSummary {
   status: "local-dev" | "loading" | "not-connected" | "connected";
+  authStatus?: "not-configured" | "loading" | "unauthenticated" | "authenticated";
   address?: string;
   walletType?: string;
+  walletKind?: "embedded" | "external" | "unknown";
   login?: () => void;
   logout?: () => void;
 }
 
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const PRIVY_FUNDING_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING === "true";
+const HL_BRIDGE_DEPOSIT_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT === "true";
 
-export function OnboardingClient() {
+export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboarding" | "settings" }) {
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
     state: "loading",
     executionVenue: "hyperliquid-testnet",
@@ -70,16 +74,25 @@ export function OnboardingClient() {
   }, []);
 
   const display = getEligibilityDisplay(eligibility.state);
+  const copy = surface === "settings"
+    ? {
+        kicker: "Settings",
+        title: "Agent.trade readiness",
+        intro: "Review sign-in, wallet, eligibility, execution, and funding readiness before internal testnet trading.",
+      }
+    : {
+        kicker: "Account readiness",
+        title: "Account readiness",
+        intro: "Set up Agent.trade for paper exploration first, then connect a wallet and funding path only if live trading is eligible.",
+      };
 
   return (
     <main className="onboarding-page">
       <section className="onboarding-head">
         <div>
-          <p className="at-kicker">Account readiness</p>
-          <h1>Account readiness</h1>
-          <p>
-            Set up Agent.trade for paper exploration first, then connect a wallet and funding path only if live trading is eligible.
-          </p>
+          <p className="at-kicker">{copy.kicker}</p>
+          <h1>{copy.title}</h1>
+          <p>{copy.intro}</p>
         </div>
         <div className="onboarding-actions">
           <Link className="secondary-action" href="/markets">View markets</Link>
@@ -179,17 +192,21 @@ function PrivyWalletCard() {
     : authenticated && activeWallet
       ? {
           status: "connected",
+          authStatus: "authenticated",
           address: activeWallet.address,
           walletType: activeWallet.walletClientType,
+          walletKind: walletKindForType(activeWallet.walletClientType),
           logout,
         }
-      : { status: "not-connected", login };
+      : authenticated
+        ? { status: "not-connected", authStatus: "authenticated", login }
+        : { status: "not-connected", authStatus: "unauthenticated", login };
 
   return <WalletCard wallet={wallet} />;
 }
 
 function LocalDevWalletCard() {
-  return <WalletCard wallet={{ status: "local-dev" }} />;
+  return <WalletCard wallet={{ status: "local-dev", authStatus: "not-configured" }} />;
 }
 
 function useWalletSummary(): WalletSummary {
@@ -201,17 +218,22 @@ function useWalletSummary(): WalletSummary {
   }, [wallets]);
 
   if (!ready) {
-    return { status: "loading" };
+    return { status: "loading", authStatus: "loading" };
   }
   if (authenticated && activeWallet) {
     return {
       status: "connected",
+      authStatus: "authenticated",
       address: activeWallet.address,
       walletType: activeWallet.walletClientType,
+      walletKind: walletKindForType(activeWallet.walletClientType),
       logout,
     };
   }
-  return { status: "not-connected", login };
+  if (authenticated) {
+    return { status: "not-connected", authStatus: "authenticated", login };
+  }
+  return { status: "not-connected", authStatus: "unauthenticated", login };
 }
 
 function WalletCard({ wallet }: { wallet: WalletSummary }) {
@@ -237,10 +259,14 @@ function WalletCard({ wallet }: { wallet: WalletSummary }) {
         </span>
       </div>
       <div className="wallet-summary">
+        <span>Sign-in</span>
+        <strong>{authStatusLabel(wallet.authStatus)}</strong>
         <span>Address</span>
         <strong>{formatWalletAddress(wallet.address)}</strong>
         <span>Provider</span>
         <strong>{wallet.walletType ?? (wallet.status === "local-dev" ? "Privy env missing" : "Not selected")}</strong>
+        <span>Wallet type</span>
+        <strong>{walletKindLabel(wallet.walletKind)}</strong>
       </div>
       <p className="onboarding-note">
         Wallet connection does not change the current MVP confirmation
@@ -264,7 +290,7 @@ function FundingCardShell({ eligibility }: { eligibility: EligibilityResponse })
     return (
       <FundingCard
         eligibility={eligibility}
-        wallet={{ status: "local-dev" }}
+        wallet={{ status: "local-dev", authStatus: "not-configured" }}
         providerEnabled={PRIVY_FUNDING_ENABLED}
         providerAvailable={false}
       />
@@ -299,6 +325,13 @@ function AccountReadinessCard({
     liveAccountDataLoaded: false,
     liveAccountDataUnavailable: false,
   });
+  const liveReadiness = getLiveTradingReadiness({
+    wallet: toReadinessWallet(wallet),
+    eligibilityState: eligibility.state,
+    executionVenue: eligibility.executionVenue,
+    mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
+    killSwitchEnabled: eligibility.killSwitchEnabled,
+  });
 
   return (
     <div className="panel onboarding-card">
@@ -310,12 +343,16 @@ function AccountReadinessCard({
         <span className={`readiness-pill ${readiness.tone}`}>{readiness.accountValueLabel}</span>
       </div>
       <div className="readiness-list">
+        <ReadinessRow label="Privy sign-in" value={authStatusLabel(wallet.authStatus)} ok={wallet.authStatus === "authenticated"} />
         <ReadinessRow label="Wallet readiness" value={readiness.walletLabel} ok={wallet.status === "connected"} />
+        <ReadinessRow label="Wallet type" value={walletKindLabel(wallet.walletKind)} ok={wallet.status === "connected"} />
         <ReadinessRow label="Account values" value={readiness.accountValueLabel} ok={readiness.accountValueKind === "real" || readiness.accountValueKind === "hybrid"} />
+        <ReadinessRow label="Eligibility" value={getEligibilityDisplay(eligibility.state).label} ok={eligibility.state === "liveEligible"} />
+        <ReadinessRow label="Execution unlock" value={liveReadiness.label} ok={liveReadiness.allowed} />
         <ReadinessRow label="Paper trading" value={readiness.paperTradingEnabled ? "Available" : "Unavailable"} ok={readiness.paperTradingEnabled} />
-        <ReadinessRow label="Live trading" value={readiness.liveTradingEnabled ? "Eligible" : "Unavailable"} ok={readiness.liveTradingEnabled} />
+        <ReadinessRow label="Testnet trading" value={liveReadiness.allowed ? "Ready after confirmation" : liveReadiness.disabledReason} ok={liveReadiness.allowed} />
       </div>
-      <p className="onboarding-note">{readiness.summary}</p>
+      <p className="onboarding-note">{liveReadiness.allowed ? liveReadiness.summary : `${readiness.summary} ${liveReadiness.summary}`}</p>
     </div>
   );
 }
@@ -324,6 +361,9 @@ function toReadinessWallet(wallet: WalletSummary): WalletReadinessSummary {
   return {
     status: wallet.status,
     address: wallet.address,
+    authStatus: wallet.authStatus,
+    walletType: wallet.walletType,
+    walletKind: wallet.walletKind,
   };
 }
 
@@ -389,6 +429,7 @@ function FundingCard(props: {
   });
   const eligibilityDisplay = getEligibilityDisplay(props.eligibility.state);
   const liveEligible = eligibilityDisplay.liveFundingEnabled;
+  const bridgeDepositEnabled = HL_BRIDGE_DEPOSIT_ENABLED && liveEligible;
   const walletAddress = formatWalletAddress(props.wallet.address);
 
   const primaryAction =
@@ -429,7 +470,7 @@ function FundingCard(props: {
       <div className="funding-methods">
         <FundingMethod
           title="Provider wallet funding"
-          body="Open Privy's supported funding flow for the connected wallet when eligibility, wallet, and provider configuration are all ready."
+          body="Privy dashboard providers may be configured, but Agent.trade only exposes a funding CTA when the product flag, wallet, eligibility, and provider hook are all ready."
           status={
             display.liveFundingEnabled
               ? "Provider available"
@@ -440,20 +481,26 @@ function FundingCard(props: {
           enabled={display.liveFundingEnabled}
         />
         <FundingMethod
-          title="Crypto deposit to Hyperliquid"
-          body="Funding a wallet is not the same as depositing into Hyperliquid. Live trading also requires Hyperliquid account readiness and Agent.trade confirmation."
-          status={liveEligible ? "Eligible after account readiness" : "Disabled until live eligible"}
-          enabled={liveEligible}
+          title="Hyperliquid deposit"
+          body="Wallet funding is separate from depositing into Hyperliquid. The legacy bridge/deposit surface is hidden unless explicitly enabled for an approved internal environment."
+          status={
+            bridgeDepositEnabled
+              ? "Flag enabled; still requires confirmation"
+              : HL_BRIDGE_DEPOSIT_ENABLED
+                ? "Disabled until live eligible"
+                : "Default-off"
+          }
+          enabled={bridgeDepositEnabled}
         />
         <FundingMethod
           title="Testnet funds"
-          body="MVP execution defaults to Hyperliquid testnet. Internal testers should use the configured testnet funding path before live order smoke tests."
+          body="MVP execution defaults to Hyperliquid testnet. Internal testers can proceed with separately funded testnet wallets before product-gated funding is exposed."
           status={props.eligibility.mainnetExecutionEnabled ? "Mainnet env enabled" : "Testnet default"}
           enabled
         />
         <FundingMethod
-          title="Card, bank, and wallet methods"
-          body="Payment methods are provider-dependent and may require KYC, regional support, and provider configuration. Agent.trade does not process card details."
+          title="MoonPay, Stripe, and deposit address"
+          body="MoonPay fiat onramp and deposit address funding are future/product-gated. Stripe requires SDK compatibility validation before Agent.trade exposes it in-app."
           status={display.status === "provider_ready" ? "Provider-dependent" : "Not available in this state"}
           enabled={display.status === "provider_ready"}
         />
@@ -503,6 +550,39 @@ function FundingMethod(props: { title: string; body: string; status: string; ena
       <span>{props.status}</span>
     </div>
   );
+}
+
+function authStatusLabel(status: WalletSummary["authStatus"]): string {
+  switch (status) {
+    case "authenticated":
+      return "Signed in";
+    case "unauthenticated":
+      return "Sign-in required";
+    case "loading":
+      return "Checking session";
+    case "not-configured":
+    default:
+      return "Local-dev paper only";
+  }
+}
+
+function walletKindForType(walletType?: string): "embedded" | "external" | "unknown" {
+  if (!walletType) {
+    return "unknown";
+  }
+  return walletType === "privy" ? "embedded" : "external";
+}
+
+function walletKindLabel(kind: WalletSummary["walletKind"]): string {
+  switch (kind) {
+    case "embedded":
+      return "Privy embedded";
+    case "external":
+      return "External wallet";
+    case "unknown":
+    default:
+      return "Not detected";
+  }
 }
 
 function ActionTile(props: { title: string; body: string; href: string; cta: string; enabled: boolean }) {

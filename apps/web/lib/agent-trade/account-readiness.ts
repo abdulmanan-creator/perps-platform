@@ -2,6 +2,10 @@ import type { AccountValueKind, EligibilityMode } from "./types";
 
 export type WalletConnectionStatus = "local-dev" | "loading" | "not-connected" | "connected";
 
+export type PrivyAuthStatus = "not-configured" | "loading" | "unauthenticated" | "authenticated";
+
+export type WalletKind = "embedded" | "external" | "unknown";
+
 export type AccountReadinessMode =
   | "disconnected_paper"
   | "connected_unknown_eligibility"
@@ -11,9 +15,25 @@ export type AccountReadinessMode =
   | "api_unavailable_paper"
   | "kill_switch_paper";
 
+export type LiveTradingBlockReason =
+  | "privy_not_configured"
+  | "privy_loading"
+  | "not_authenticated"
+  | "wallet_missing"
+  | "eligibility_loading"
+  | "eligibility_unknown"
+  | "restricted"
+  | "paper_only"
+  | "kill_switch"
+  | "execution_disabled"
+  | "ready";
+
 export interface WalletReadinessSummary {
   status: WalletConnectionStatus;
   address?: string;
+  authStatus?: PrivyAuthStatus;
+  walletType?: string;
+  walletKind?: WalletKind;
 }
 
 export interface AccountReadinessInput {
@@ -34,6 +54,137 @@ export interface AccountReadinessDisplay {
   accountValueLabel: string;
   walletLabel: string;
   tone: "green" | "amber" | "red" | "blue";
+}
+
+export interface LiveTradingReadinessInput {
+  wallet: WalletReadinessSummary;
+  eligibilityState: EligibilityMode;
+  executionVenue: string;
+  mainnetExecutionEnabled: boolean;
+  killSwitchEnabled: boolean;
+}
+
+export interface LiveTradingReadiness {
+  allowed: boolean;
+  reason: LiveTradingBlockReason;
+  label: string;
+  disabledReason: string;
+  summary: string;
+  tone: "green" | "amber" | "red" | "blue";
+}
+
+export function getLiveTradingReadiness(input: LiveTradingReadinessInput): LiveTradingReadiness {
+  if (input.wallet.status === "local-dev" || input.wallet.authStatus === "not-configured") {
+    return blockLiveTrading(
+      "privy_not_configured",
+      "Privy not configured",
+      "Sign-in is not configured in this environment. Paper mode remains available.",
+      "Set Privy configuration before enabling testnet trading.",
+      "amber",
+    );
+  }
+
+  if (input.wallet.status === "loading" || input.wallet.authStatus === "loading") {
+    return blockLiveTrading(
+      "privy_loading",
+      "Checking sign-in",
+      "Checking Privy session before enabling testnet trading.",
+      "Wait for Privy session readiness.",
+      "amber",
+    );
+  }
+
+  if (input.wallet.authStatus !== "authenticated") {
+    return blockLiveTrading(
+      "not_authenticated",
+      "Sign-in required",
+      "Sign in to enable testnet trading.",
+      "Sign in to enable testnet trading.",
+      "amber",
+    );
+  }
+
+  if (input.wallet.status !== "connected" || !input.wallet.address) {
+    return blockLiveTrading(
+      "wallet_missing",
+      "Wallet required",
+      "Wallet required. Sign in again or enable embedded wallet creation in Privy.",
+      "Wallet required.",
+      "amber",
+    );
+  }
+
+  if (input.killSwitchEnabled || input.eligibilityState === "killSwitchDisabled") {
+    return blockLiveTrading(
+      "kill_switch",
+      "Execution disabled",
+      "Execution disabled by safety switch.",
+      "Execution disabled by safety switch.",
+      "red",
+    );
+  }
+
+  if (input.eligibilityState === "restricted") {
+    return blockLiveTrading(
+      "restricted",
+      "Restricted region",
+      "Restricted region: paper only.",
+      "Restricted region: paper only.",
+      "red",
+    );
+  }
+
+  if (input.eligibilityState === "loading") {
+    return blockLiveTrading(
+      "eligibility_loading",
+      "Checking eligibility",
+      "Eligibility not confirmed.",
+      "Eligibility not confirmed.",
+      "amber",
+    );
+  }
+
+  if (input.eligibilityState === "unknown") {
+    return blockLiveTrading(
+      "eligibility_unknown",
+      "Eligibility not confirmed",
+      "Eligibility not confirmed.",
+      "Eligibility not confirmed.",
+      "amber",
+    );
+  }
+
+  if (input.eligibilityState === "paper") {
+    return blockLiveTrading(
+      "paper_only",
+      "Paper only",
+      "Paper mode is active while account readiness is incomplete.",
+      "Paper mode only.",
+      "blue",
+    );
+  }
+
+  const isTestnet = input.executionVenue === "hyperliquid-testnet";
+  if (!isTestnet && !input.mainnetExecutionEnabled) {
+    return blockLiveTrading(
+      "execution_disabled",
+      "Execution disabled",
+      "Execution is not on testnet and mainnet execution is disabled.",
+      "Execution disabled by policy.",
+      "red",
+    );
+  }
+
+  return {
+    allowed: true,
+    reason: "ready",
+    label: isTestnet ? "Testnet ready" : "Live ready",
+    disabledReason: "Testnet trading is available after confirmation.",
+    summary: isTestnet
+      ? "Privy sign-in, wallet, eligibility, and testnet execution policy are ready."
+      : "Privy sign-in, wallet, eligibility, and explicit mainnet execution policy are ready.",
+    tone: "green",
+  };
 }
 
 export function getAccountReadinessDisplay(input: AccountReadinessInput): AccountReadinessDisplay {
@@ -138,6 +289,23 @@ export function getAccountReadinessDisplay(input: AccountReadinessInput): Accoun
     accountValueLabel: accountValueKindLabel(accountValueKind),
     walletLabel,
     tone: "amber",
+  };
+}
+
+function blockLiveTrading(
+  reason: Exclude<LiveTradingBlockReason, "ready">,
+  label: string,
+  disabledReason: string,
+  summary: string,
+  tone: "amber" | "red" | "blue",
+): LiveTradingReadiness {
+  return {
+    allowed: false,
+    reason,
+    label,
+    disabledReason,
+    summary,
+    tone,
   };
 }
 

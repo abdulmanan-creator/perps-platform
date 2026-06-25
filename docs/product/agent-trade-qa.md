@@ -30,8 +30,56 @@ The script launches a temporary headless Chrome session through the Chrome DevTo
 - Portfolio reflection: paper positions/fills are visible and labelled as simulated, not live Hyperliquid exposure. Disconnected/local sessions must not present demo balances as real funds.
 - Session isolation: a second browser context gets a separate local paper ledger.
 - Legacy fail-closed behavior: `/approve` and `/oauth/authorize` do not expose approval, Bridge2 deposit, Get USDC, or `/exchange` compatibility calls by default.
-- Privy truth-in-copy: public copy claims only configured email, Google, existing-wallet login, and embedded-wallet creation; funding/on-ramp and Hyperliquid deposit copy stays disabled, legacy, planned, or provider-dependent.
+- Privy truth-in-copy: public copy claims only configured email, Google, existing-wallet login, and embedded-wallet creation; funding/on-ramp and Hyperliquid deposit copy stays disabled, legacy, planned, or provider-dependent. Privy dashboard providers may be configured, but Agent.trade funding CTAs remain disabled unless app feature flags and provider compatibility are enabled.
+- Privy readiness for 9A: `/onboarding`, `/settings`, and `/terminal` expose whether Privy is configured, the user is signed in, a wallet exists, the wallet address/type is known, eligibility is live eligible, execution is testnet/default-safe, and the kill switch is clear. The terminal testnet toggle remains disabled until all readiness gates pass.
 - API safety checks for guarded live actions and session-scoped paper ledger endpoints.
+
+## Privy Readiness Checklist For 9A
+
+Local paper-only development:
+
+```bash
+NEXT_PUBLIC_PRIVY_APP_ID=
+PRIVY_APP_ID=
+PRIVY_APP_SECRET=
+NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING=false
+NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT=false
+```
+
+Configured Privy testnet readiness:
+
+```bash
+NEXT_PUBLIC_PRIVY_APP_ID=<privy-app-id>
+PRIVY_APP_ID=<same-privy-app-id>
+PRIVY_APP_SECRET=<privy-secret>
+HYPERLIQUID_API_URL=https://api.hyperliquid-testnet.xyz
+AGENT_TRADE_MAINNET_EXECUTION_ENABLED=false
+AGENT_TRADE_LIVE_TRADING_KILL_SWITCH=false
+AGENT_TRADE_REQUIRE_GEO_ELIGIBILITY=true
+NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING=false
+NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT=false
+NEXT_PUBLIC_AGENT_TRADE_ENABLE_LEGACY_APPROVALS=false
+NEXT_PUBLIC_AGENT_TRADE_ENABLE_OAUTH_COMPAT_APPROVALS=false
+```
+
+Manual 9A readiness checks:
+
+- No Privy env: app renders, onboarding/settings show local-dev paper-only readiness, terminal testnet toggle is disabled.
+- Privy configured but signed out: onboarding/settings invite sign-in, terminal says sign-in is required.
+- Signed in without a usable wallet: onboarding/settings show wallet missing, terminal stays paper-only.
+- Signed in with wallet and unknown/restricted eligibility: paper remains available, testnet trading is disabled with the specific eligibility or restricted-region reason.
+- Signed in with wallet, `liveEligible`, Hyperliquid testnet API, and kill switch clear: terminal testnet mode can be selected, but orders still require user confirmation and server `/agent-trade/exchange` guards.
+- Kill switch active: terminal returns to paper-only and the disabled reason mentions the safety switch.
+- Privy auth/wallet readiness is required for 9A testnet trading. Funding readiness is separate: testnet trading can proceed with separately funded testnet wallets while app funding remains product-gated.
+
+Funding provider notes:
+
+- MoonPay and fiat onramp can be configured in the Privy dashboard, but Agent.trade should treat them as future/product-gated until `NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING=true`, eligibility, wallet readiness, compliance review, and end-to-end QA are complete.
+- Deposit Address/Relay can be configured in the Privy dashboard, but generic deposit-address funding remains product-gated and must not be presented as normal MVP funding.
+- Stripe requires SDK compatibility validation in the installed Privy package before any in-app claim or CTA is exposed.
+- Hyperliquid Bridge2 remains a separate legacy/default-off compatibility path controlled by `NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT=false`.
+
+Intentionally not supported in the app yet unless separately configured, legally approved, and verified end-to-end: debit cards, credit cards, ACH, Apple Pay, Google Pay, bank deposits, generic crypto deposit addresses, Coinbase/Meld/Stripe-style claims, and Hyperliquid Bridge2 as a generally available deposit flow.
 
 Screenshots are written to `/tmp` by default:
 

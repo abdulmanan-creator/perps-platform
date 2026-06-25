@@ -10,7 +10,9 @@ import type { Time } from "lightweight-charts";
 import { API_BASE_URL } from "@/lib/api";
 import {
   getAccountReadinessDisplay,
+  getLiveTradingReadiness,
   type AccountReadinessDisplay,
+  type LiveTradingReadiness,
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
 import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
@@ -39,7 +41,6 @@ import {
   annotationPriceLineTitle,
   buildFallbackTerminalChartData,
   getConfirmationAckCopy,
-  getLiveDisabledReason,
   getTerminalFreshness,
   getTerminalEligibilityStatus,
   getTicketSource,
@@ -76,13 +77,13 @@ interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
 }
 
-interface BrowserWallet {
-  ethereum?: Eip1193Provider;
+interface TerminalWalletReadiness extends WalletReadinessSummary {
+  getEthereumProvider?: () => Promise<Eip1193Provider>;
 }
 
 const agentService = new DeterministicAgentService();
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
-const LOCAL_DEV_WALLET: WalletReadinessSummary = { status: "local-dev" };
+const LOCAL_DEV_WALLET: TerminalWalletReadiness = { status: "local-dev", authStatus: "not-configured" };
 
 function buildDefaultDraft(snapshot: SharedTradingSnapshot): OrderDraft {
   const size = Number(
@@ -113,7 +114,7 @@ function PrivyTerminalClient() {
   return <TerminalExperience wallet={wallet} />;
 }
 
-function useTerminalWalletSummary(): WalletReadinessSummary {
+function useTerminalWalletSummary(): TerminalWalletReadiness {
   const { ready, authenticated } = usePrivy();
   const { wallets } = useWallets();
   const activeWallet = useMemo(() => {
@@ -122,15 +123,29 @@ function useTerminalWalletSummary(): WalletReadinessSummary {
   }, [wallets]);
 
   if (!ready) {
-    return { status: "loading" };
+    return { status: "loading", authStatus: "loading" };
   }
   if (authenticated && activeWallet) {
     return {
       status: "connected",
+      authStatus: "authenticated",
       address: activeWallet.address,
+      walletType: activeWallet.walletClientType,
+      walletKind: walletKindForType(activeWallet.walletClientType),
+      getEthereumProvider: () => activeWallet.getEthereumProvider(),
     };
   }
-  return { status: "not-connected" };
+  if (authenticated) {
+    return { status: "not-connected", authStatus: "authenticated" };
+  }
+  return { status: "not-connected", authStatus: "unauthenticated" };
+}
+
+function walletKindForType(walletType?: string): "embedded" | "external" | "unknown" {
+  if (!walletType) {
+    return "unknown";
+  }
+  return walletType === "privy" ? "embedded" : "external";
 }
 
 function buildUnsupportedPromptMarketResponse(
@@ -156,7 +171,7 @@ function buildUnsupportedPromptMarketResponse(
   };
 }
 
-function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
+function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedSymbol = normalizeSymbol(searchParams.get("symbol"));
@@ -266,7 +281,6 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
         if (!cancelled) {
           setEligibility(next);
           setApiStatus("ok");
-          setMode(next.state === "liveEligible" ? "live" : "paper");
         }
       } catch {
         if (!cancelled) {
@@ -318,8 +332,31 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
       snapshot.asOf,
     ],
   );
-  const canLiveTrade = mode === "live" && eligibility.state === "liveEligible" && freshness.isDraftSafe;
   const eligibilityStatus = getTerminalEligibilityStatus(eligibility.state);
+  const accountReadiness = getAccountReadinessDisplay({
+    wallet,
+    eligibilityState: eligibility.state,
+    accountValueKind: snapshot.account.valueKind,
+    liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+    liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
+  });
+  const liveReadiness = getLiveTradingReadiness({
+    wallet,
+    eligibilityState: eligibility.state,
+    executionVenue: eligibility.executionVenue,
+    mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
+    killSwitchEnabled: eligibility.killSwitchEnabled,
+  });
+  const liveDisabledReason = liveReadiness.allowed && !freshness.isDraftSafe
+    ? freshness.detail
+    : liveReadiness.disabledReason;
+  const canLiveTrade = mode === "live" && liveReadiness.allowed && freshness.isDraftSafe;
+
+  useEffect(() => {
+    if (mode === "live" && !liveReadiness.allowed) {
+      setMode("paper");
+    }
+  }, [liveReadiness.allowed, mode]);
   const draftImpact = useMemo(
     () => calculateDraftImpact({ account: snapshot.account, market: snapshot.market, draft, entryPrice }),
     [snapshot.account, snapshot.market, draft, entryPrice],
@@ -522,27 +559,15 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
     }
   }
 
-  const accountReadiness = getAccountReadinessDisplay({
-    wallet,
-    eligibilityState: eligibility.state,
-    accountValueKind: snapshot.account.valueKind,
-    liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
-    liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
-  });
-
   async function submitLiveOrder() {
     if (!canLiveTrade) {
-      throw new Error("Live trading is not available for this account/state.");
+      throw new Error(liveDisabledReason);
     }
-    const provider = (globalThis as unknown as BrowserWallet).ethereum;
-    if (!provider) {
-      throw new Error("Connect an EIP-1193 wallet or use paper mode for this local demo.");
+    if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {
+      throw new Error("Wallet required.");
     }
-    const accounts = await provider.request({ method: "eth_requestAccounts" });
-    if (!Array.isArray(accounts) || typeof accounts[0] !== "string") {
-      throw new Error("Wallet did not return an account.");
-    }
-    const user = accounts[0] as `0x${string}`;
+    const provider = await wallet.getEthereumProvider();
+    const user = wallet.address as `0x${string}`;
     const action = buildHlOrderAction(draft, snapshot.market);
     const headers = {
       "content-type": "application/json",
@@ -611,6 +636,7 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
           snapshot={snapshot}
           eligibility={eligibility}
           eligibilityStatus={eligibilityStatus}
+          liveReadiness={liveReadiness}
           mode={mode}
           setMode={setMode}
           apiStatus={apiStatus}
@@ -670,6 +696,7 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
               fees={fees}
               liquidation={liquidation}
               canLiveTrade={canLiveTrade}
+              liveDisabledReason={liveDisabledReason}
               mode={mode}
               eligibility={eligibility}
               apiStatus={apiStatus}
@@ -714,6 +741,7 @@ function TerminalExperience({ wallet }: { wallet: WalletReadinessSummary }) {
           fees={fees}
           liquidation={liquidation}
           canLiveTrade={canLiveTrade}
+          liveDisabledReason={liveDisabledReason}
           eligibility={eligibility}
           modalError={modalError}
           isAcked={isAcked}
@@ -766,6 +794,7 @@ function TerminalMarketHeader({
   snapshot,
   eligibility,
   eligibilityStatus,
+  liveReadiness,
   mode,
   setMode,
   apiStatus,
@@ -779,6 +808,7 @@ function TerminalMarketHeader({
   snapshot: SharedTradingSnapshot;
   eligibility: EligibilityResponse;
   eligibilityStatus: ReturnType<typeof getTerminalEligibilityStatus>;
+  liveReadiness: LiveTradingReadiness;
   mode: "paper" | "live";
   setMode: (mode: "paper" | "live") => void;
   apiStatus: "checking" | "ok" | "unavailable";
@@ -807,6 +837,11 @@ function TerminalMarketHeader({
     [`${accountLabelPrefix} available`, fmtUsd(snapshot.account.availableUsd, 2)],
     ["Unrealized", fmtUsd(snapshot.account.unrealizedPnlUsd, 2)],
   ];
+  const statusCopy = apiStatus === "unavailable"
+    ? "API unavailable"
+    : liveReadiness.allowed
+      ? accountReadiness.summary
+      : liveReadiness.disabledReason;
 
   return (
     <header className="terminal-market-header">
@@ -856,13 +891,13 @@ function TerminalMarketHeader({
             Account values may be stale
           </span>
         ) : null}
-        <ModeControl eligibility={eligibility} mode={mode} setMode={setMode} />
+        <ModeControl liveReadiness={liveReadiness} mode={mode} setMode={setMode} />
         <span className={`terminal-eligibility-pill ${eligibilityStatus.tone}`}>
           <span className="terminal-status-copy-full">
-            {apiStatus === "unavailable" ? "API unavailable" : accountReadiness.summary}
+            {statusCopy}
           </span>
           <span className="terminal-status-copy-mobile">
-            {apiStatus === "unavailable" ? "API unavailable" : compactMobileStatus(accountReadiness, eligibility.state)}
+            {apiStatus === "unavailable" ? "API unavailable" : compactMobileStatus(accountReadiness, eligibility.state, liveReadiness)}
           </span>
         </span>
       </div>
@@ -870,7 +905,14 @@ function TerminalMarketHeader({
   );
 }
 
-function compactMobileStatus(readiness: AccountReadinessDisplay, eligibilityState: EligibilityMode): string {
+function compactMobileStatus(
+  readiness: AccountReadinessDisplay,
+  eligibilityState: EligibilityMode,
+  liveReadiness: LiveTradingReadiness,
+): string {
+  if (!liveReadiness.allowed) {
+    return liveReadiness.disabledReason;
+  }
   if (eligibilityState === "restricted") {
     return "Paper mode active. Live unavailable.";
   }
@@ -975,15 +1017,15 @@ function MarketSelector({
 }
 
 function ModeControl({
-  eligibility,
+  liveReadiness,
   mode,
   setMode,
 }: {
-  eligibility: EligibilityResponse;
+  liveReadiness: LiveTradingReadiness;
   mode: "paper" | "live";
   setMode: (mode: "paper" | "live") => void;
 }) {
-  const liveDisabled = eligibility.state !== "liveEligible";
+  const liveDisabled = !liveReadiness.allowed;
   return (
     <div className="mode-control" aria-label="Trading mode">
       <button className={mode === "paper" ? "active" : ""} onClick={() => setMode("paper")}>
@@ -993,9 +1035,9 @@ function ModeControl({
         className={mode === "live" ? "active" : ""}
         disabled={liveDisabled}
         onClick={() => setMode("live")}
-        title={liveDisabled ? getLiveDisabledReason(eligibility.state) : "Live eligible"}
+        title={liveDisabled ? liveReadiness.disabledReason : "Testnet trading ready after confirmation"}
       >
-        Live
+        Testnet
       </button>
     </div>
   );
@@ -1337,6 +1379,7 @@ function TicketPanel(props: {
   fees: number;
   liquidation: number;
   canLiveTrade: boolean;
+  liveDisabledReason: string;
   mode: "paper" | "live";
   eligibility: EligibilityResponse;
   apiStatus: "checking" | "ok" | "unavailable";
@@ -1347,7 +1390,6 @@ function TicketPanel(props: {
   const blocked = props.mode === "live" && !props.canLiveTrade;
   const source = getTicketSource(props.draft);
   const largePaperOrder = props.mode === "paper" && props.notional > props.simulatedBalanceUsd;
-  const liveDisabledReason = getLiveDisabledReason(props.eligibility.state);
   return (
     <div className={`panel ticket-panel ${source === "agent" ? "from-agent" : ""}`}>
       <div className="panel-head">
@@ -1427,7 +1469,7 @@ function TicketPanel(props: {
         <span>Est. liq <strong>{fmtUsd(props.liquidation, 1)}</strong></span>
         <span>Fees <strong>{fmtUsd(props.fees, 2)}</strong></span>
       </div>
-      {blocked ? <p className="block-note">{liveDisabledReason} Use paper mode.</p> : null}
+      {blocked ? <p className="block-note">{props.liveDisabledReason} Use paper mode.</p> : null}
       <p className="account-mode-note">{props.accountReadiness.summary}</p>
       {largePaperOrder ? (
         <p className="paper-note">
@@ -1658,6 +1700,7 @@ function ConfirmModal(props: {
   fees: number;
   liquidation: number;
   canLiveTrade: boolean;
+  liveDisabledReason: string;
   eligibility: EligibilityResponse;
   modalError: string | undefined;
   isAcked: boolean;
@@ -1698,7 +1741,7 @@ function ConfirmModal(props: {
           {getConfirmationAckCopy(source)}
         </label>
         {props.mode === "paper" ? <p className="paper-note">Paper orders are simulated and never call /exchange.</p> : null}
-        {liveBlocked ? <p className="block-note">{getLiveDisabledReason(props.eligibility.state)}</p> : null}
+        {liveBlocked ? <p className="block-note">{props.liveDisabledReason}</p> : null}
         {props.modalError ? <p className="modal-error">{props.modalError}</p> : null}
         <div className="modal-actions">
           <button className="secondary-action" onClick={props.close}>Cancel</button>
