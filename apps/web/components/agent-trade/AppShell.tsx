@@ -8,6 +8,7 @@ const navItems = [
   { href: "/onboarding", label: "Onboarding" },
   { href: "/terminal", label: "Terminal" },
   { href: "/markets", label: "Markets" },
+  { href: "/predictions", label: "Predictions" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/connectors", label: "Connectors" },
   { href: "/rewards", label: "Rewards" },
@@ -32,7 +33,13 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
-              className={pathname === item.href || (pathname === "/" && item.href === "/terminal") ? "active" : ""}
+              className={
+                pathname === item.href ||
+                (item.href !== "/" && pathname.startsWith(`${item.href}/`)) ||
+                (pathname === "/" && item.href === "/terminal")
+                  ? "active"
+                  : ""
+              }
             >
               {item.label}
             </Link>
