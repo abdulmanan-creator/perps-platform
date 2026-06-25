@@ -101,10 +101,11 @@ Expected tables:
 After migration is applied:
 
 1. Open Render service `agent-trade-api`.
-2. Add secret env var `DATABASE_URL`.
-3. Use the Render Postgres internal URL if the database is in the same Render account and region.
-4. Do not change trading policy env vars in this step.
-5. Redeploy `agent-trade-api`.
+2. Click `Environment` in the left pane.
+3. Under `Environment Variables`, add `DATABASE_URL`.
+4. Paste the Render Postgres internal URL if the database is in the same Render account and region.
+5. Save with `Save and deploy` or `Save, rebuild, and deploy`.
+6. Confirm the deploy succeeds before running audit-write smoke tests.
 
 Do not change:
 
@@ -166,6 +167,126 @@ Search API logs for:
 - `exchange_response_write_failed`
 
 Any of those warnings means audit durability is degraded, but request behavior should remain unchanged by design.
+
+## Operator Verification
+
+Use these checks after the `agent-trade-api` redeploy. Do not print or paste the connection string in logs.
+
+### Confirm Audit Logging Is Enabled
+
+1. Confirm `agent-trade-api` has a `DATABASE_URL` env var in Render.
+2. Confirm the latest `agent-trade-api` deploy finished successfully.
+3. Call `/agent-trade/eligibility` once through the production API.
+4. Check the database for a new `eligibility_checks` row and an `agent_trade.eligibility_checked` audit event.
+5. Check API logs for absence of audit write warnings.
+
+Schema and enabled-state queries:
+
+```bash
+read -s DATABASE_URL
+export DATABASE_URL
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select to_regclass('public.audit_events') as audit_events, to_regclass('public.eligibility_checks') as eligibility_checks, to_regclass('public.exchange_submissions') as exchange_submissions, to_regclass('public.exchange_responses') as exchange_responses;"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select count(*) as eligibility_check_count from eligibility_checks;"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select event_type, count(*) from audit_events group by event_type order by event_type;"
+unset DATABASE_URL
+```
+
+Recent eligibility checks:
+
+```sql
+select
+  created_at,
+  request_id,
+  eligibility_state,
+  country_code,
+  country_source,
+  geo_fail_closed,
+  require_geo_eligibility,
+  kill_switch_enabled,
+  mainnet_execution_enabled,
+  execution_venue,
+  decision_reason
+from eligibility_checks
+order by created_at desc
+limit 20;
+```
+
+Recent exchange submissions:
+
+```sql
+select
+  created_at,
+  request_id,
+  wallet_address,
+  phase,
+  status,
+  action_type,
+  nonce,
+  signer_wallet_address,
+  builder_fee_bps,
+  is_mainnet,
+  error_code,
+  error_message
+from exchange_submissions
+order by created_at desc
+limit 20;
+```
+
+Recent Hyperliquid response summaries:
+
+```sql
+select
+  created_at,
+  request_id,
+  wallet_address,
+  success,
+  response_status,
+  error_code,
+  error_message,
+  error_guidance,
+  hl_oid,
+  hl_cloid,
+  latency_ms
+from exchange_responses
+order by created_at desc
+limit 20;
+```
+
+Audit integrity spot check:
+
+```sql
+select
+  occurred_at,
+  request_id,
+  event_type,
+  severity,
+  payload_hash,
+  previous_event_hash,
+  event_hash
+from audit_events
+order by occurred_at desc
+limit 20;
+```
+
+Expected results:
+
+- `eligibility_checks` increments after `/agent-trade/eligibility`.
+- `audit_events` includes `agent_trade.eligibility_checked`.
+- Live exchange attempts create `exchange_submissions` rows only through the existing guarded `/agent-trade/exchange` flow.
+- Successful forwarded exchange sends create `exchange_responses` rows.
+- API responses remain unchanged.
+- No `audit_event_write_failed`, `eligibility_check_write_failed`, `exchange_submission_write_failed`, or `exchange_response_write_failed` warnings appear in logs.
+
+### Roll Back Audit Logging
+
+1. Open Render service `agent-trade-api`.
+2. Click `Environment`.
+3. Remove or unset `DATABASE_URL`.
+4. Save with `Save and deploy`.
+5. Confirm `/healthz` and `/agent-trade/eligibility` still return the same response shape.
+6. Confirm no new audit rows are written after rollback.
+
+Rollback does not require dropping tables. Leave the DB intact unless the incident owner explicitly decides otherwise.
 
 ## Rollback / No-op Plan
 
