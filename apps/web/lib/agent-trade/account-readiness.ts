@@ -193,7 +193,7 @@ export function getLiveTradingReadiness(input: LiveTradingReadinessInput): LiveT
     allowed: true,
     reason: "ready",
     label: isTestnet ? "Testnet ready" : "Live ready",
-    disabledReason: "Testnet trading is available after confirmation.",
+    disabledReason: "Live trading is available after confirmation.",
     summary: isTestnet
       ? "Privy sign-in, wallet, eligibility, and testnet execution policy are ready."
       : "Privy sign-in, wallet, eligibility, and explicit mainnet execution policy are ready.",

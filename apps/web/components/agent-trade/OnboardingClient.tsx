@@ -143,7 +143,7 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
           />
           <ActionTile
             title="Live setup"
-            body={display.liveTradingEnabled ? "Eligible for testnet-default live execution after confirmation." : display.summary}
+            body={display.liveTradingEnabled ? "Eligible for Hyperliquid live execution after wallet, account, and confirmation checks." : display.summary}
             href="/terminal"
             cta="Open live ticket"
             enabled={display.liveTradingEnabled}
@@ -157,8 +157,8 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
 function StatusCard({ eligibility }: { eligibility: EligibilityResponse }) {
   const display = getEligibilityDisplay(eligibility.state);
   const executionPolicy = eligibility.mainnetExecutionEnabled
-    ? "Mainnet enabled by env"
-    : "Hyperliquid testnet default";
+    ? "Hyperliquid mainnet"
+    : "Hyperliquid testnet";
   return (
     <div className="panel onboarding-card">
       <div className="panel-head">
@@ -172,9 +172,13 @@ function StatusCard({ eligibility }: { eligibility: EligibilityResponse }) {
         <ReadinessRow label="Paper mode" value={display.paperAvailable ? "Available" : "Unavailable"} ok={display.paperAvailable} />
         <ReadinessRow label="Live trading" value={display.liveTradingEnabled ? "Eligible" : "Disabled"} ok={display.liveTradingEnabled} />
         <ReadinessRow label="Server funding eligibility" value={display.liveFundingEnabled ? "Eligible" : "Disabled"} ok={display.liveFundingEnabled} />
-        <ReadinessRow label="Execution policy" value={executionPolicy} ok={!eligibility.mainnetExecutionEnabled} />
+        <ReadinessRow label="Execution venue" value={executionPolicy} ok />
         <ReadinessRow label="Kill switch" value={eligibility.killSwitchEnabled ? "Active" : "Clear"} ok={!eligibility.killSwitchEnabled} />
-        <ReadinessRow label="Mainnet execution" value={eligibility.mainnetExecutionEnabled ? "Enabled by env" : "Disabled by default"} ok={!eligibility.mainnetExecutionEnabled} />
+        <ReadinessRow
+          label="Mainnet execution"
+          value={eligibility.mainnetExecutionEnabled ? "Eligible users only" : "Disabled by policy"}
+          ok={eligibility.mainnetExecutionEnabled ? display.liveTradingEnabled && !eligibility.killSwitchEnabled : false}
+        />
       </div>
       <p className="onboarding-note">{display.summary}</p>
     </div>
@@ -534,9 +538,9 @@ function FundingCard(props: {
           enabled={bridgeDepositEnabled}
         />
         <FundingMethod
-          title="Testnet funds"
-          body="MVP execution defaults to Hyperliquid testnet. Internal testers can proceed with separately funded testnet wallets before product-gated funding is exposed."
-          status={props.eligibility.mainnetExecutionEnabled ? "Mainnet env enabled" : "Testnet default"}
+          title="Hyperliquid account funds"
+          body="Funding is handled outside this surface. Agent.trade reads Hyperliquid account state and only enables live orders after eligibility, wallet, account, and confirmation checks."
+          status={props.eligibility.mainnetExecutionEnabled ? "Mainnet account required" : "Testnet account required"}
           enabled
         />
         <FundingMethod

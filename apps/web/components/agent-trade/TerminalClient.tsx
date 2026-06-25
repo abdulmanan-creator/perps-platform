@@ -790,8 +790,8 @@ function TerminalRail() {
       </nav>
       <div className="terminal-rail-note">
         <span>Execution</span>
-        <strong>Testnet default</strong>
-        <p>Mainnet execution remains disabled unless explicitly enabled and allowlisted.</p>
+        <strong>Policy gated</strong>
+        <p>Live orders require eligibility, real account state, risk acknowledgement, and confirmation.</p>
       </div>
     </aside>
   );
@@ -1042,9 +1042,9 @@ function ModeControl({
         className={mode === "live" ? "active" : ""}
         disabled={liveDisabled}
         onClick={() => setMode("live")}
-        title={liveDisabled ? liveReadiness.disabledReason : "Testnet trading ready after confirmation"}
+        title={liveDisabled ? liveReadiness.disabledReason : "Live trading ready after confirmation"}
       >
-        Testnet
+        Live
       </button>
     </div>
   );
