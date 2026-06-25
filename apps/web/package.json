@@ -15,6 +15,7 @@
     "@alchemy-hl/sdk-preview": "*",
     "@alchemy-hl/shared": "*",
     "@privy-io/react-auth": "^1.92.0",
+    "@privy-io/server-auth": "^1.32.5",
     "@privy-io/wagmi": "^0.2.13",
     "@tanstack/react-query": "^5.51.23",
     "lightweight-charts": "^4.2.3",

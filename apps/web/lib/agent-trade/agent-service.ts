@@ -86,6 +86,9 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
     if (/\b(short|sell|bearish)\b/u.test(normalized)) {
       return "short";
     }
+    if (/\b(should i trade|clean setup|cleaner setup|wait|no trade|stand aside)\b/u.test(normalized)) {
+      return "noTrade";
+    }
     if (/\b(long|setup|buy|bullish)\b/u.test(normalized)) {
       return "long";
     }
@@ -94,9 +97,6 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
     }
     if (/\b(risk|portfolio|size|sizing|balance|exposure)\b/u.test(normalized)) {
       return "marketRead";
-    }
-    if (/\b(should i trade|clean setup|wait|no trade|stand aside)\b/u.test(normalized)) {
-      return "noTrade";
     }
 
     return "marketRead";

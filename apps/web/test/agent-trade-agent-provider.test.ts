@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createServerAgentProvider } from "../lib/agent-trade/agent-provider-factory";
-import { buildAgentInput, type AgentAnalysis } from "../lib/agent-trade/agent-provider";
+import { handleAgentAnalysisPost } from "../lib/agent-trade/agent-analysis-route";
+import {
+  createServerAgentProvider,
+  resolveServerAgentProviderConfig,
+} from "../lib/agent-trade/agent-provider-factory";
+import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/agent-trade/agent-provider";
+import type { AgentRouteAuthFailureReason, AgentRouteAuthResult } from "../lib/agent-trade/agent-route-auth";
+import type { AgentRouteRateLimitDecision } from "../lib/agent-trade/agent-route-rate-limit";
+import type { AgentRouteTelemetryEvent } from "../lib/agent-trade/agent-route-telemetry";
 import { OpenAIAgentProvider } from "../lib/agent-trade/openai-agent-provider";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 
@@ -43,6 +50,23 @@ describe("Agent.trade real agent provider wiring", () => {
     });
 
     expect(provider.name).toBe("openai");
+  });
+
+  it("documents deterministic default and server-only OpenAI env gates", () => {
+    expect(resolveServerAgentProviderConfig({})).toMatchObject({
+      requested: "deterministic",
+      isLiveModelEnabled: false,
+    });
+    expect(resolveServerAgentProviderConfig({
+      AGENT_TRADE_AGENT_PROVIDER: "openai",
+      AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+      OPENAI_API_KEY: "sk-test",
+      AGENT_TRADE_AGENT_MODEL: "test-agent-model",
+    })).toMatchObject({
+      requested: "openai",
+      isLiveModelEnabled: true,
+      model: "test-agent-model",
+    });
   });
 
   it("returns validated OpenAI model output with provider metadata", async () => {
@@ -148,6 +172,125 @@ describe("Agent.trade real agent provider wiring", () => {
     expect(analysis.orderDraft).toBeUndefined();
     expect(analysis.provider.fallbackReason).toContain("timed out");
   });
+
+  it("does not call OpenAI from the route when Privy auth is missing", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn();
+    const telemetry: AgentRouteTelemetryEvent[] = [];
+
+    const response = await handleAgentAnalysisPost(agentRequest(input), {
+      env: openAiEnabledEnv(),
+      fetchImpl,
+      authVerifier: async () => unauthenticated("missing_auth"),
+      rateLimiter: allowAllLimiter(),
+      telemetry: (event) => telemetry.push(event),
+      now: () => 1_710_000_000_000,
+    });
+    const analysis = await response.json() as AgentAnalysis;
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.provider.fallbackReason).toBe("missing_auth");
+    expect(telemetry[0]).toMatchObject({
+      provider: "deterministic",
+      authRejected: true,
+      fallbackReason: "missing_auth",
+    });
+  });
+
+  it("does not call OpenAI when the analysis route is rate limited", async () => {
+    const input = buildTestAgentInput();
+    const provider: AgentProvider = {
+      name: "openai",
+      analyzeMarket: vi.fn(async () => validModelAnalysis(input)),
+    };
+    const telemetry: AgentRouteTelemetryEvent[] = [];
+
+    const response = await handleAgentAnalysisPost(agentRequest(input), {
+      env: openAiEnabledEnv(),
+      provider,
+      authVerifier: async () => authenticated(),
+      rateLimiter: denyLimiter(17),
+      telemetry: (event) => telemetry.push(event),
+      now: () => 1_710_000_000_000,
+    });
+    const analysis = await response.json() as AgentAnalysis;
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("retry-after")).toBe("17");
+    expect(provider.analyzeMarket).not.toHaveBeenCalled();
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.summary).toContain("rate limited");
+    expect(telemetry[0]).toMatchObject({
+      rateLimited: true,
+      fallbackReason: "Rate limited for 17 seconds.",
+    });
+  });
+
+  it("rejects malformed route provider output without filling a ticket", async () => {
+    const input = buildTestAgentInput();
+    const invalidProvider = {
+      name: "openai",
+      analyzeMarket: vi.fn(async () => ({
+        responseType: "trade_proposal",
+        summary: "Bad",
+        thesis: "Missing orderDraft must fail.",
+        side: "long",
+        confidence: 0.9,
+        receipts: [],
+        riskNote: "bad",
+        whyWrong: "bad",
+        warnings: [],
+        provider: { name: "openai", deterministic: false, generatedAt: input.timestamp },
+      })),
+    } as unknown as AgentProvider;
+    const telemetry: AgentRouteTelemetryEvent[] = [];
+
+    const response = await handleAgentAnalysisPost(agentRequest(input), {
+      env: openAiEnabledEnv(),
+      provider: invalidProvider,
+      authVerifier: async () => authenticated(),
+      rateLimiter: allowAllLimiter(),
+      telemetry: (event) => telemetry.push(event),
+      now: () => 1_710_000_000_000,
+    });
+    const analysis = await response.json() as AgentAnalysis;
+
+    expect(response.status).toBe(200);
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(telemetry[0]).toMatchObject({
+      invalidOutput: true,
+      fallbackReason: "Provider returned invalid analysis.",
+    });
+  });
+
+  it("degrades safely when the route provider throws", async () => {
+    const input = buildTestAgentInput();
+    const throwingProvider: AgentProvider = {
+      name: "openai",
+      analyzeMarket: vi.fn(async () => {
+        throw new Error("provider failed");
+      }),
+    };
+
+    const response = await handleAgentAnalysisPost(agentRequest(input), {
+      env: openAiEnabledEnv(),
+      provider: throwingProvider,
+      authVerifier: async () => authenticated(),
+      rateLimiter: allowAllLimiter(),
+      now: () => 1_710_000_000_000,
+    });
+    const analysis = await response.json() as AgentAnalysis;
+
+    expect(response.status).toBe(200);
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.provider.fallbackReason).toBe("Agent provider failed before returning validated output.");
+  });
 });
 
 function buildTestAgentInput() {
@@ -186,5 +329,68 @@ function validModelAnalysis(input: ReturnType<typeof buildTestAgentInput>): Agen
     id: "btc-openai-market-read",
     question: input.requestedPrompt,
     annotations: [],
+  };
+}
+
+function openAiEnabledEnv() {
+  return {
+    AGENT_TRADE_AGENT_PROVIDER: "openai",
+    AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+    AGENT_TRADE_AGENT_MODEL: "test-agent-model",
+    OPENAI_API_KEY: "sk-test",
+  };
+}
+
+function agentRequest(input: ReturnType<typeof buildTestAgentInput>): Request {
+  return new Request("http://localhost/api/agent-trade/agent-analysis", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.10",
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+function authenticated(): AgentRouteAuthResult {
+  return {
+    authenticated: true,
+    privyUserId: "did:privy:test",
+    walletAddress: "0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43",
+    rateLimitKey: "privy:did:privy:test:0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43",
+  };
+}
+
+function unauthenticated(reason: AgentRouteAuthFailureReason): AgentRouteAuthResult {
+  return {
+    authenticated: false,
+    reason,
+    rateLimitKey: "ip:203.0.113.10",
+  };
+}
+
+function allowAllLimiter() {
+  return {
+    check: ({ key }: { key: string }): AgentRouteRateLimitDecision => ({
+      allowed: true,
+      key,
+      limit: 100,
+      remaining: 99,
+      resetAt: 1_710_000_060_000,
+      retryAfterSeconds: 60,
+    }),
+  };
+}
+
+function denyLimiter(retryAfterSeconds: number) {
+  return {
+    check: ({ key }: { key: string }): AgentRouteRateLimitDecision => ({
+      allowed: false,
+      key,
+      limit: 1,
+      remaining: 0,
+      resetAt: 1_710_000_017_000,
+      retryAfterSeconds,
+    }),
   };
 }

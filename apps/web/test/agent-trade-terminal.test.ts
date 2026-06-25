@@ -9,6 +9,7 @@ import {
 } from "../lib/agent-trade/connector-draft";
 import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/agent-trade/agent-provider";
 import { buildAgentPrompt } from "../lib/agent-trade/agent-prompt";
+import { parseAgentAnalysis } from "../lib/agent-trade/agent-validation";
 import {
   agentDataReadSummary,
   agentProviderDisplay,
@@ -68,6 +69,7 @@ import {
   isTerminalChartInterval,
 } from "../lib/agent-trade/terminal";
 import type { PaperAccountSnapshot } from "../lib/agent-trade/types";
+import { AGENT_TRADE_GOLDEN_PROMPT_FIXTURES } from "./fixtures/agent-trade-golden-prompts";
 
 const paperAccount: PaperAccountSnapshot = {
   sessionId: "paper-test-session",
@@ -1685,6 +1687,37 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(analysis.side).toBe("long");
     expect(analysis.orderDraft).toMatchObject({ symbol: "BTC-USD", side: "long", fromAgent: true });
     expect(analysis.provider).toMatchObject({ name: "deterministic", deterministic: true });
+  });
+
+  it("keeps golden agent prompts schema-safe and draft-safe", async () => {
+    vi.useFakeTimers();
+    const service = new DeterministicAgentService();
+
+    for (const fixture of AGENT_TRADE_GOLDEN_PROMPT_FIXTURES) {
+      const input = buildAgentInput({
+        prompt: fixture.prompt,
+        snapshot: MOCK_TRADING_SNAPSHOT,
+        mode: fixture.mode,
+        eligibilityState: fixture.eligibilityState,
+        liveAllowed: fixture.liveAllowed,
+        paperAllowed: true,
+      });
+      const promise = service.analyzeMarket(input);
+      await vi.advanceTimersByTimeAsync(700);
+      const analysis = await promise;
+
+      expect(parseAgentAnalysis(analysis), fixture.name).toBeTruthy();
+      expect(analysis.responseType, fixture.name).toBe(fixture.responseType);
+      expect(analysis.side, fixture.name).toBe(fixture.side);
+      if (fixture.expectsDraft) {
+        expect(analysis.orderDraft, fixture.name).toMatchObject({
+          symbol: "BTC-USD",
+          fromAgent: true,
+        });
+      } else {
+        expect(analysis.orderDraft, fixture.name).toBeUndefined();
+      }
+    }
   });
 
   it("rejects invalid provider output safely without filling a malformed ticket", async () => {

@@ -14,16 +14,50 @@ export interface ServerAgentProviderOptions {
   fetchImpl?: AgentFetch;
 }
 
-export function createServerAgentProvider(options: ServerAgentProviderOptions = {}): AgentProvider {
-  const env = options.env ?? process.env;
-  const requested = readProviderName(env.AGENT_TRADE_AGENT_PROVIDER);
+export interface ServerAgentProviderConfig {
+  requested: AgentProviderName;
+  isLiveModelEnabled: boolean;
+  liveCallsEnabled: boolean;
+  hasOpenAIKey: boolean;
+  model?: string;
+  fallbackReason?: string;
+}
 
-  if (requested === "deterministic") {
+/**
+ * Server-only model env:
+ * - AGENT_TRADE_AGENT_PROVIDER=openai
+ * - AGENT_TRADE_ENABLE_LIVE_LLM=true
+ * - OPENAI_API_KEY=<server secret>
+ * - AGENT_TRADE_AGENT_MODEL optional
+ *
+ * Never expose an OpenAI key through NEXT_PUBLIC_* env vars.
+ */
+export function resolveServerAgentProviderConfig(env: AgentProviderEnv = readAgentProviderEnv()): ServerAgentProviderConfig {
+  const requested = readProviderName(env.AGENT_TRADE_AGENT_PROVIDER);
+  const liveCallsEnabled = env.AGENT_TRADE_ENABLE_LIVE_LLM === "true";
+  const hasOpenAIKey = Boolean(env.OPENAI_API_KEY);
+  const isLiveModelEnabled = requested === "openai" && liveCallsEnabled && hasOpenAIKey;
+  return {
+    requested,
+    isLiveModelEnabled,
+    liveCallsEnabled,
+    hasOpenAIKey,
+    model: env.AGENT_TRADE_AGENT_MODEL,
+    fallbackReason: isLiveModelEnabled
+      ? undefined
+      : fallbackReason({ requested, hasApiKey: hasOpenAIKey, liveCallsEnabled }),
+  };
+}
+
+export function createServerAgentProvider(options: ServerAgentProviderOptions = {}): AgentProvider {
+  const env = options.env ?? readAgentProviderEnv();
+  const config = resolveServerAgentProviderConfig(env);
+
+  if (config.requested === "deterministic") {
     return new DeterministicAgentService();
   }
 
-  const liveCallsEnabled = env.AGENT_TRADE_ENABLE_LIVE_LLM === "true";
-  if (requested === "openai" && env.OPENAI_API_KEY && liveCallsEnabled) {
+  if (config.isLiveModelEnabled && env.OPENAI_API_KEY) {
     return new OpenAIAgentProvider({
       apiKey: env.OPENAI_API_KEY,
       model: env.AGENT_TRADE_AGENT_MODEL,
@@ -31,12 +65,19 @@ export function createServerAgentProvider(options: ServerAgentProviderOptions = 
     });
   }
 
-  const reason = fallbackReason({
-    requested,
-    hasApiKey: Boolean(env.OPENAI_API_KEY),
-    liveCallsEnabled,
-  });
-  return new DeterministicFallbackProvider(requested, reason);
+  return new DeterministicFallbackProvider(
+    config.requested,
+    config.fallbackReason ?? "Model provider unavailable; using deterministic fallback.",
+  );
+}
+
+function readAgentProviderEnv(): AgentProviderEnv {
+  return {
+    AGENT_TRADE_AGENT_PROVIDER: process.env.AGENT_TRADE_AGENT_PROVIDER,
+    AGENT_TRADE_ENABLE_LIVE_LLM: process.env.AGENT_TRADE_ENABLE_LIVE_LLM,
+    AGENT_TRADE_AGENT_MODEL: process.env.AGENT_TRADE_AGENT_MODEL,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  };
 }
 
 function readProviderName(input: string | undefined): AgentProviderName {
