@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
+import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/agent-trade/agent-provider";
+import { buildAgentPrompt } from "../lib/agent-trade/agent-prompt";
 import { buildSwitchingMarketSnapshot, loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
 import { api } from "../lib/api";
 import { hypurrscanAddressUrl, normalizeHypurrscanAddress } from "../lib/agent-trade/hypurrscan";
@@ -20,6 +22,7 @@ import {
   applyTerminalStreamEvent,
   mergeRecentTrades,
   normalizeTerminalWsMessage,
+  terminalAccountSubscriptions,
   terminalMarketSubscriptions,
   terminalStreamStatusLabel,
   upsertTerminalCandles,
@@ -852,6 +855,236 @@ describe("Agent.trade terminal product-loop helpers", () => {
     ]);
   });
 
+  it("builds account WebSocket subscriptions only from a wallet address", () => {
+    const user = "0x1234567890abcdef1234567890abcdef12345678";
+
+    expect(terminalAccountSubscriptions({ user })).toEqual([
+      { type: "clearinghouseState", user },
+      { type: "openOrders", user },
+      { type: "userFills", user },
+      { type: "userEvents", user },
+      { type: "orderUpdates", user },
+    ]);
+  });
+
+  it("replaces live account and positions from clearinghouseState while preserving paper ledger rows", () => {
+    const user = MOCK_TRADING_SNAPSHOT.account.address;
+    const hybrid = mergePaperAccount({
+      ...MOCK_TRADING_SNAPSHOT,
+      account: {
+        ...MOCK_TRADING_SNAPSHOT.account,
+        address: user,
+        valueKind: "real",
+        liveAccountDataLoaded: true,
+        positions: [{
+          ...MOCK_TRADING_SNAPSHOT.account.positions[0],
+          symbol: "ETH-USD",
+          base: "ETH",
+          mode: "live",
+        }],
+        openOrders: [],
+        fills: [],
+      },
+    }, paperAccount);
+    const [event] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      accountAddress: user,
+      now: 1710000000000,
+      message: {
+        channel: "clearinghouseState",
+        data: {
+          user,
+          marginSummary: {
+            accountValue: "2000",
+            totalMarginUsed: "300",
+          },
+          withdrawable: "1700",
+          assetPositions: [{
+            position: {
+              coin: "HYPE",
+              szi: "2.5",
+              entryPx: "61.5",
+              positionValue: "155",
+              unrealizedPnl: "1.25",
+              returnOnEquity: "0.008",
+              liquidationPx: "45",
+              leverage: { type: "isolated", value: 3 },
+              marginUsed: "52",
+            },
+          }],
+        },
+      },
+    });
+
+    const patched = applyTerminalStreamEvent(hybrid, event);
+
+    expect(event.type).toBe("clearinghouseState");
+    expect(patched.account.valueKind).toBe("hybrid");
+    expect(patched.account.liveAccountDataLoaded).toBe(true);
+    expect(patched.account.positions[0]).toMatchObject({ mode: "paper", symbol: "BTC-USD" });
+    expect(patched.account.positions[1]).toMatchObject({ mode: "live", symbol: "HYPE-USD", size: 2.5 });
+    expect(patched.account.equityUsd).toBe(2000);
+    expect(patched.account.marginUsedUsd).toBe(800);
+    expect(patched.account.availableUsd).toBe(1200);
+  });
+
+  it("replaces live open orders from openOrders while preserving paper orders", () => {
+    const user = MOCK_TRADING_SNAPSHOT.account.address;
+    const paperOrderSnapshot = {
+      ...MOCK_TRADING_SNAPSHOT,
+      account: {
+        ...MOCK_TRADING_SNAPSHOT.account,
+        address: user,
+        valueKind: "hybrid" as const,
+        liveAccountDataLoaded: true,
+        openOrders: [
+          {
+            symbol: "BTC-USD",
+            mode: "paper" as const,
+            side: "sell" as const,
+            type: "limit" as const,
+            price: 120_000,
+            size: 0.01,
+            reduceOnly: true,
+            timestamp: 1,
+          },
+          {
+            oid: 1,
+            symbol: "ETH-USD",
+            mode: "live" as const,
+            side: "buy" as const,
+            type: "limit" as const,
+            price: 3000,
+            size: 1,
+            reduceOnly: false,
+            timestamp: 2,
+          },
+        ],
+      },
+    };
+    const [event] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      accountAddress: user,
+      now: 1710000000000,
+      message: {
+        channel: "openOrders",
+        data: {
+          user,
+          orders: [{ coin: "HYPE", oid: 77, side: "B", limitPx: "62.5", sz: "3", timestamp: 1710000000000 }],
+        },
+      },
+    });
+
+    const patched = applyTerminalStreamEvent(paperOrderSnapshot, event);
+
+    expect(event.type).toBe("openOrders");
+    expect(patched.account.openOrders).toHaveLength(2);
+    expect(patched.account.openOrders[0]).toMatchObject({ mode: "paper", symbol: "BTC-USD" });
+    expect(patched.account.openOrders[1]).toMatchObject({ mode: "live", symbol: "HYPE-USD", oid: 77 });
+  });
+
+  it("appends and dedupes live fills from userFills and userEvents without touching paper fills", () => {
+    const user = MOCK_TRADING_SNAPSHOT.account.address;
+    const hybrid = mergePaperAccount({
+      ...MOCK_TRADING_SNAPSHOT,
+      account: {
+        ...MOCK_TRADING_SNAPSHOT.account,
+        address: user,
+        valueKind: "real",
+        liveAccountDataLoaded: true,
+        fills: [],
+      },
+    }, paperAccount);
+    const fillMessage = {
+      user,
+      fills: [
+        { coin: "HYPE", side: "B", px: "62.1", sz: "2", time: 1710000000000, oid: 10, tid: 999, fee: "0.01" },
+      ],
+    };
+    const [snapshotEvent] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      accountAddress: user,
+      now: 1710000001000,
+      message: { channel: "userFills", data: { ...fillMessage, isSnapshot: true } },
+    });
+    const afterSnapshot = applyTerminalStreamEvent(hybrid, snapshotEvent);
+    const [streamEvent] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      accountAddress: user,
+      now: 1710000002000,
+      message: { channel: "userEvents", data: fillMessage },
+    });
+
+    const patched = applyTerminalStreamEvent(afterSnapshot, streamEvent);
+
+    expect(snapshotEvent.type).toBe("userFills");
+    expect(streamEvent.type).toBe("userEvents");
+    expect(patched.account.fills.filter((fill) => fill.mode === "paper")).toHaveLength(1);
+    expect(patched.account.fills.filter((fill) => fill.mode === "live")).toHaveLength(1);
+    expect(patched.account.fills[1]).toMatchObject({ symbol: "HYPE-USD", orderId: "HYPE:10:999" });
+  });
+
+  it("patches live order lifecycle from orderUpdates and non-user cancel events", () => {
+    const user = MOCK_TRADING_SNAPSHOT.account.address;
+    const withLiveOrder = {
+      ...MOCK_TRADING_SNAPSHOT,
+      account: {
+        ...MOCK_TRADING_SNAPSHOT.account,
+        address: user,
+        valueKind: "real" as const,
+        liveAccountDataLoaded: true,
+        openOrders: [{
+          oid: 77,
+          symbol: "HYPE-USD",
+          mode: "live" as const,
+          side: "buy" as const,
+          type: "limit" as const,
+          price: 62.5,
+          size: 3,
+          reduceOnly: false,
+          timestamp: 1710000000000,
+        }],
+      },
+    };
+    const [filledEvent] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      accountAddress: user,
+      now: 1710000003000,
+      message: {
+        channel: "orderUpdates",
+        data: [{
+          status: "filled",
+          statusTimestamp: 1710000003000,
+          order: { coin: "HYPE", oid: 77, side: "B", limitPx: "62.5", sz: "3", timestamp: 1710000000000 },
+        }],
+      },
+    });
+    const afterFill = applyTerminalStreamEvent(withLiveOrder, filledEvent);
+
+    expect(afterFill.account.openOrders).toEqual([]);
+
+    const [cancelEvent] = normalizeTerminalWsMessage({
+      selectedCoin: "BTC",
+      interval: "15m",
+      accountAddress: user,
+      now: 1710000004000,
+      message: {
+        channel: "userEvents",
+        data: { user, nonUserCancel: [{ coin: "HYPE", oid: 77 }] },
+      },
+    });
+    const afterCancel = applyTerminalStreamEvent(withLiveOrder, cancelEvent);
+
+    expect(filledEvent.type).toBe("orderUpdates");
+    expect(cancelEvent.type).toBe("userEvents");
+    expect(afterCancel.account.openOrders).toEqual([]);
+  });
+
   it("exposes supported terminal interval groups without unsupported intervals", () => {
     const intervals = TERMINAL_CHART_INTERVAL_GROUPS.flatMap((group) => group.intervals);
 
@@ -1118,6 +1351,146 @@ describe("Agent.trade terminal product-loop helpers", () => {
     const edited = applyManualDraftPatch(draft!, { sizeBtc: draft!.sizeBtc + 0.01 });
     expect(getTicketSource(edited)).toBe("manual");
   });
+
+  it("builds structured agent input from terminal snapshot, order book, trades, candles, and freshness", () => {
+    const chartData = buildFallbackTerminalChartData(MOCK_TRADING_SNAPSHOT.market, "15m", "test fallback");
+    const freshness = getTerminalFreshness({
+      now: MOCK_TRADING_SNAPSHOT.asOf + 5_000,
+      marketAsOf: MOCK_TRADING_SNAPSHOT.asOf,
+      candlesFetchedAt: chartData.fetchedAt,
+      candlesFallback: chartData.isFallback,
+      candlesError: chartData.error,
+      accountUpdatedAt: MOCK_TRADING_SNAPSHOT.account.updatedAt,
+      apiStatus: "ok",
+    });
+
+    const input = buildAgentInput({
+      prompt: "Should I short BTC?",
+      scenario: "short",
+      snapshot: MOCK_TRADING_SNAPSHOT,
+      chartData,
+      freshness,
+      mode: "paper",
+      eligibilityState: "restricted",
+      liveAllowed: false,
+      paperAllowed: true,
+    });
+
+    expect(input.market).toMatchObject({
+      symbol: "BTC-USD",
+      base: "BTC",
+      markPrice: MOCK_TRADING_SNAPSHOT.market.markPrice,
+      oraclePrice: MOCK_TRADING_SNAPSHOT.market.oraclePrice,
+      fundingRatePct: MOCK_TRADING_SNAPSHOT.market.fundingRatePct,
+      openInterestUsd: MOCK_TRADING_SNAPSHOT.market.openInterestUsd,
+    });
+    expect(input.orderBook.bids[0]).toEqual(MOCK_TRADING_SNAPSHOT.orderBook.bids[0]);
+    expect(input.orderBook.asks[0]).toEqual(MOCK_TRADING_SNAPSHOT.orderBook.asks[0]);
+    expect(input.recentTrades).toHaveLength(MOCK_TRADING_SNAPSHOT.recentTrades.length);
+    expect(input.candleSummary.count).toBeGreaterThan(0);
+    expect(input.account.availableUsd).toBe(MOCK_TRADING_SNAPSHOT.account.availableUsd);
+    expect(input.selectedPosition?.symbol).toBe("BTC-USD");
+    expect(input.eligibility).toMatchObject({ state: "restricted", mode: "paper", liveAllowed: false, paperAllowed: true });
+  });
+
+  it("builds a prompt with market data, order book state, safety rules, and JSON output schema", () => {
+    const input = buildAgentInput({
+      prompt: "sell ETH",
+      snapshot: MOCK_TRADING_SNAPSHOT,
+      mode: "paper",
+      eligibilityState: "restricted",
+      liveAllowed: false,
+    });
+
+    const prompt = buildAgentPrompt(input);
+
+    expect(prompt).toContain("Order book state");
+    expect(prompt).toContain("Market snapshot");
+    expect(prompt).toContain("user confirmation");
+    expect(prompt).toContain("Restricted, unknown, loading, paper, or kill-switch users may draft paper orders only");
+    expect(prompt).toContain('"responseType"');
+    expect(prompt).toContain('"trade_proposal"');
+  });
+
+  it("deterministic provider returns valid structured analysis", async () => {
+    vi.useFakeTimers();
+    const service = new DeterministicAgentService();
+    const input = buildAgentInput({
+      prompt: "Should I long BTC?",
+      scenario: "long",
+      snapshot: MOCK_TRADING_SNAPSHOT,
+      mode: "paper",
+      eligibilityState: "restricted",
+      liveAllowed: false,
+    });
+    const promise = service.analyzeMarket(input);
+    await vi.advanceTimersByTimeAsync(700);
+    const analysis = await promise;
+
+    expect(analysis.responseType).toBe("trade_proposal");
+    expect(analysis.side).toBe("long");
+    expect(analysis.orderDraft).toMatchObject({ symbol: "BTC-USD", side: "long", fromAgent: true });
+    expect(analysis.provider).toMatchObject({ name: "deterministic", deterministic: true });
+  });
+
+  it("rejects invalid provider output safely without filling a malformed ticket", async () => {
+    const invalidProvider: AgentProvider = {
+      name: "deterministic",
+      analyzeMarket: async () => ({
+        responseType: "trade_proposal",
+        summary: "bad",
+        thesis: "bad",
+        side: "long",
+        confidence: 0.8,
+        receipts: [],
+        riskNote: "bad",
+        whyWrong: "bad",
+        warnings: [],
+        provider: { name: "deterministic", deterministic: true, generatedAt: Date.now() },
+      } as AgentAnalysis),
+    };
+    const service = new DeterministicAgentService(invalidProvider);
+
+    const response = await service.runPrompt({
+      prompt: "Should I long BTC?",
+      snapshot: MOCK_TRADING_SNAPSHOT,
+      isStale: false,
+      mode: "paper",
+    });
+
+    expect(response.state).toBe("staleRefusal");
+    expect(response.orderDraft).toBeUndefined();
+    expect(response.thesis).toContain("could not validate");
+  });
+
+  it("allows restricted users to draft paper orders but not live orders", async () => {
+    const paper = await runTypedPrompt("Should I short BTC?", false, undefined, {}, {
+      mode: "paper",
+      eligibilityState: "restricted",
+      liveAllowed: false,
+    });
+    const live = await runTypedPrompt("Should I short BTC?", false, undefined, {}, {
+      mode: "live",
+      eligibilityState: "restricted",
+      liveAllowed: false,
+    });
+
+    expect(paper.state).toBe("tradeProposal");
+    expect(paper.orderDraft).toMatchObject({ side: "short" });
+    expect(live.state).toBe("staleRefusal");
+    expect(live.orderDraft).toBeUndefined();
+    expect(live.thesis).toContain("live trading is not allowed");
+  });
+
+  it("does not call exchange or any network endpoint from agent analysis", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const response = await runTypedPrompt("Should I long BTC?");
+
+    expect(response.state).toBe("tradeProposal");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
 
 async function runTypedPrompt(
@@ -1125,6 +1498,11 @@ async function runTypedPrompt(
   isStale = false,
   accountFreshnessWarning?: string,
   marketPatch: Partial<typeof MOCK_TRADING_SNAPSHOT.market> = {},
+  options: {
+    mode?: "paper" | "live";
+    eligibilityState?: "loading" | "liveEligible" | "restricted" | "unknown" | "paper" | "killSwitchDisabled";
+    liveAllowed?: boolean;
+  } = {},
 ) {
   vi.useFakeTimers();
   const service = new DeterministicAgentService();
@@ -1141,7 +1519,9 @@ async function runTypedPrompt(
     snapshot,
     isStale,
     accountFreshnessWarning,
-    mode: "paper",
+    mode: options.mode ?? "paper",
+    eligibilityState: options.eligibilityState,
+    liveAllowed: options.liveAllowed,
   });
   await vi.advanceTimersByTimeAsync(700);
   return await promise;

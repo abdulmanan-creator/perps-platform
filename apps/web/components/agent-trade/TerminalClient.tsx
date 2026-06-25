@@ -14,7 +14,7 @@ import {
   type LiveTradingReadiness,
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
-import { DeterministicAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
+import { createAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import {
   fmtAdaptiveUsd,
   fmtAgo,
@@ -81,6 +81,7 @@ import {
   isTerminalStreamWarning,
   normalizeTerminalWsMessage,
   subscriptionMessage,
+  terminalAccountSubscriptions,
   terminalMarketSubscriptions,
   terminalStreamStatusDetail,
   terminalStreamStatusLabel,
@@ -111,10 +112,12 @@ interface TerminalStreamDebug {
   subscribedCoin: string;
   lastTradeCoin?: string;
   lastCandleUpdateTime?: number;
+  lastAccountEvent?: string;
+  subscribedAccount?: string;
   streamStatus: TerminalStreamStatus;
 }
 
-const agentService = new DeterministicAgentService();
+const agentService = createAgentService();
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const LOCAL_DEV_WALLET: TerminalWalletReadiness = { status: "local-dev", authStatus: "not-configured" };
 
@@ -176,6 +179,14 @@ function updateTerminalStreamDebug(
 
   ref.current = { ...ref.current, ...patch };
   (window as Window & { __agentTradeTerminalStream?: TerminalStreamDebug }).__agentTradeTerminalStream = ref.current;
+}
+
+function terminalAccountAddress(wallet: TerminalWalletReadiness): `0x${string}` | undefined {
+  const address = wallet.status === "connected" ? wallet.address : undefined;
+  if (!address || !/^0x[a-fA-F0-9]{40}$/u.test(address)) {
+    return undefined;
+  }
+  return address.toLowerCase() as `0x${string}`;
 }
 
 export function TerminalClient() {
@@ -363,8 +374,12 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     }
 
     const selectedCoin = snapshot.market.base;
+    const accountAddress = terminalAccountAddress(wallet);
     const wsUrl = hyperliquidWsUrlForVenue(eligibility.executionVenue);
-    const subscriptions = terminalMarketSubscriptions({ coin: selectedCoin, interval: chartInterval });
+    const subscriptions = [
+      ...terminalMarketSubscriptions({ coin: selectedCoin, interval: chartInterval }),
+      ...(accountAddress ? terminalAccountSubscriptions({ user: accountAddress }) : []),
+    ];
     let socket: WebSocket | undefined;
     let cancelled = false;
     let reconnectTimer: number | undefined;
@@ -398,6 +413,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       updateTerminalStreamDebug(streamDebugRef, {
         selectedMarket: snapshot.market.symbol,
         subscribedCoin: selectedCoin,
+        subscribedAccount: accountAddress,
         streamStatus: nextStatus,
       });
       try {
@@ -418,6 +434,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         updateTerminalStreamDebug(streamDebugRef, {
           selectedMarket: snapshot.market.symbol,
           subscribedCoin: selectedCoin,
+          subscribedAccount: accountAddress,
           streamStatus: "live",
         });
         subscriptions.forEach((subscription) => sendJson(subscriptionMessage(subscription)));
@@ -438,6 +455,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
             message: parsed,
             selectedCoin,
             interval: chartInterval,
+            accountAddress,
           });
           if (events.length > 0) {
             setStreamStatus("live");
@@ -472,6 +490,17 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
                   receivedAt: streamEvent.receivedAt,
                 }, chartInterval));
               }
+            } else if (
+              streamEvent.type === "clearinghouseState" ||
+              streamEvent.type === "openOrders" ||
+              streamEvent.type === "userFills" ||
+              streamEvent.type === "userEvents" ||
+              streamEvent.type === "orderUpdates"
+            ) {
+              updateTerminalStreamDebug(streamDebugRef, {
+                lastAccountEvent: streamEvent.type,
+              });
+              setSnapshot((current) => applyTerminalStreamEvent(current, streamEvent));
             } else {
               setSnapshot((current) => applyTerminalStreamEvent(current, streamEvent));
             }
@@ -744,9 +773,18 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         ...snapshot,
         market: { ...snapshot.market, dataAgeSeconds: freshness.marketAgeSeconds },
       },
+      chartData,
+      freshness,
       isStale: !freshness.isDraftSafe,
       accountFreshnessWarning: [marketDataWarning, freshness.accountFreshness.warning].filter(Boolean).join(" ") || undefined,
+      marketDataWarning,
       mode,
+      eligibilityState: eligibility.state,
+      liveAllowed: liveReadiness.allowed,
+      paperAllowed: true,
+      mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
+      killSwitchEnabled: eligibility.killSwitchEnabled,
+      executionVenue: eligibility.executionVenue,
     });
     setAgent(response);
     setAgentQuestion(response.question);
@@ -767,6 +805,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     setMarketNotice(undefined);
     let agentSnapshot = snapshot;
     let agentFreshness = freshness;
+    let agentChartData = chartData;
 
     try {
       const discovery = await loadMarketDiscoverySnapshot();
@@ -793,6 +832,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
 
         const nextNow = Date.now();
         agentSnapshot = switched.snapshot;
+        agentChartData = switched.chartData;
         agentFreshness = getTerminalFreshness({
           now: nextNow,
           marketAsOf: switched.snapshot.asOf,
@@ -830,12 +870,21 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
         ...agentSnapshot,
         market: { ...agentSnapshot.market, dataAgeSeconds: agentFreshness.marketAgeSeconds },
       },
+      chartData: agentChartData,
+      freshness: agentFreshness,
       isStale: !agentFreshness.isDraftSafe,
       accountFreshnessWarning: [
         marketDataWarning,
         agentFreshness.accountFreshness.warning,
       ].filter(Boolean).join(" ") || undefined,
+      marketDataWarning,
       mode,
+      eligibilityState: eligibility.state,
+      liveAllowed: liveReadiness.allowed,
+      paperAllowed: true,
+      mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
+      killSwitchEnabled: eligibility.killSwitchEnabled,
+      executionVenue: eligibility.executionVenue,
     });
     setAgent(response);
     setAnnotations(response.annotations);

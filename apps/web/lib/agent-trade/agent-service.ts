@@ -4,7 +4,22 @@ import {
   calculatePortfolioExposure,
   classifyPortfolioRisk,
 } from "./portfolio";
+import {
+  buildAgentInput,
+  snapshotFromAgentInput,
+  type AgentAnalysis,
+  type AgentInput,
+  type AgentProvider,
+  type AgentProviderName,
+  type AgentResponseType,
+} from "./agent-provider";
+import {
+  agentAnalysisToResponse,
+  invalidAgentOutputRefusal,
+  parseAgentAnalysis,
+} from "./agent-validation";
 import type { AgentResponse, SharedTradingSnapshot } from "./types";
+import type { TerminalChartData, TerminalFreshness } from "./terminal";
 
 export type AgentScenario = "long" | "short" | "explain" | "noTrade" | "marketRead" | "capability";
 
@@ -12,16 +27,34 @@ export interface AgentService {
   run(args: {
     scenario: AgentScenario;
     snapshot: SharedTradingSnapshot;
+    chartData?: TerminalChartData;
+    freshness?: TerminalFreshness;
     isStale: boolean;
     accountFreshnessWarning?: string;
+    marketDataWarning?: string;
     mode: "paper" | "live";
+    eligibilityState?: AgentInput["eligibility"]["state"];
+    liveAllowed?: boolean;
+    paperAllowed?: boolean;
+    mainnetExecutionEnabled?: boolean;
+    killSwitchEnabled?: boolean;
+    executionVenue?: string;
   }): Promise<AgentResponse>;
   runPrompt(args: {
     prompt: string;
     snapshot: SharedTradingSnapshot;
+    chartData?: TerminalChartData;
+    freshness?: TerminalFreshness;
     isStale: boolean;
     accountFreshnessWarning?: string;
+    marketDataWarning?: string;
     mode: "paper" | "live";
+    eligibilityState?: AgentInput["eligibility"]["state"];
+    liveAllowed?: boolean;
+    paperAllowed?: boolean;
+    mainnetExecutionEnabled?: boolean;
+    killSwitchEnabled?: boolean;
+    executionVenue?: string;
   }): Promise<AgentResponse>;
 }
 
@@ -33,7 +66,33 @@ function fmtSnapshotMarketUsd(snapshot: SharedTradingSnapshot, price: number): s
   return fmtMarketUsd({ price, market: snapshot.market });
 }
 
-export class DeterministicAgentService implements AgentService {
+export function createAgentService(): AgentService {
+  return new DeterministicAgentService(createConfiguredAgentProvider());
+}
+
+export function createConfiguredAgentProvider(): AgentProvider {
+  const requested = readProviderName(process.env.AGENT_TRADE_AGENT_PROVIDER);
+  if (requested === "deterministic") {
+    return new DeterministicAgentService();
+  }
+
+  const apiKey = apiKeyForProvider(requested);
+  const liveCallsEnabled = process.env.AGENT_TRADE_ENABLE_LIVE_LLM === "true";
+  if (!apiKey || !liveCallsEnabled) {
+    const reason = !apiKey
+      ? `${requested} provider requested without an API key; using deterministic fallback.`
+      : `${requested} provider requested but live LLM calls are disabled; using deterministic fallback.`;
+    return new FallbackAgentProvider(requested, reason);
+  }
+
+  return new DisabledExternalAgentProvider(requested);
+}
+
+export class DeterministicAgentService implements AgentService, AgentProvider {
+  readonly name = "deterministic" as const;
+
+  constructor(private readonly provider?: AgentProvider) {}
+
   classifyPrompt(prompt: string): AgentScenario {
     const normalized = prompt.toLowerCase();
 
@@ -62,67 +121,159 @@ export class DeterministicAgentService implements AgentService {
   async run(args: {
     scenario: AgentScenario;
     snapshot: SharedTradingSnapshot;
+    chartData?: TerminalChartData;
+    freshness?: TerminalFreshness;
     isStale: boolean;
     accountFreshnessWarning?: string;
+    marketDataWarning?: string;
     mode: "paper" | "live";
+    eligibilityState?: AgentInput["eligibility"]["state"];
+    liveAllowed?: boolean;
+    paperAllowed?: boolean;
+    mainnetExecutionEnabled?: boolean;
+    killSwitchEnabled?: boolean;
+    executionVenue?: string;
   }): Promise<AgentResponse> {
-    await new Promise((resolve) => setTimeout(resolve, 700));
-
-    if ((args.scenario === "long" || args.scenario === "short") && !hasUsablePrice(args.snapshot)) {
-      return this.noUsablePrice(args.snapshot);
-    }
-
-    const marketFreshnessWarning = args.isStale
-      ? "Market data may be delayed; confirm price in the ticket before submitting."
-      : undefined;
-
-    if (args.scenario === "long") {
-      return this.withDraftWarnings(this.long(args.snapshot, args.mode), [
-        marketFreshnessWarning,
-        args.accountFreshnessWarning,
-      ]);
-    }
-    if (args.scenario === "short") {
-      return this.withDraftWarnings(this.short(args.snapshot, args.mode), [
-        marketFreshnessWarning,
-        args.accountFreshnessWarning,
-      ]);
-    }
-    if (args.scenario === "explain") {
-      return this.explain(args.snapshot);
-    }
-    if (args.scenario === "noTrade") {
-      return this.noTrade(args.snapshot);
-    }
-    if (args.scenario === "marketRead") {
-      return this.marketRead(args.snapshot, args.mode);
-    }
-    if (args.scenario === "capability") {
-      return this.capability(args.snapshot);
-    }
-
-    throw new Error(`Unsupported agent scenario: ${args.scenario}`);
+    const input = buildAgentInput({
+      prompt: scenarioPrompt(args.scenario, args.snapshot),
+      scenario: args.scenario,
+      snapshot: args.snapshot,
+      chartData: args.chartData,
+      freshness: args.freshness,
+      accountFreshnessWarning: args.accountFreshnessWarning,
+      marketDataWarning: args.marketDataWarning ?? staleMarketWarning(args.isStale),
+      mode: args.mode,
+      eligibilityState: args.eligibilityState,
+      liveAllowed: args.liveAllowed,
+      paperAllowed: args.paperAllowed,
+      mainnetExecutionEnabled: args.mainnetExecutionEnabled,
+      killSwitchEnabled: args.killSwitchEnabled,
+      executionVenue: args.executionVenue,
+    });
+    return await this.runProvider(input);
   }
 
   async runPrompt(args: {
     prompt: string;
     snapshot: SharedTradingSnapshot;
+    chartData?: TerminalChartData;
+    freshness?: TerminalFreshness;
     isStale: boolean;
     accountFreshnessWarning?: string;
+    marketDataWarning?: string;
     mode: "paper" | "live";
+    eligibilityState?: AgentInput["eligibility"]["state"];
+    liveAllowed?: boolean;
+    paperAllowed?: boolean;
+    mainnetExecutionEnabled?: boolean;
+    killSwitchEnabled?: boolean;
+    executionVenue?: string;
   }): Promise<AgentResponse> {
     const scenario = this.classifyPrompt(args.prompt);
-    const response = await this.run({
+    const input = buildAgentInput({
+      prompt: args.prompt,
       scenario,
       snapshot: args.snapshot,
-      isStale: args.isStale,
+      chartData: args.chartData,
+      freshness: args.freshness,
       accountFreshnessWarning: args.accountFreshnessWarning,
+      marketDataWarning: args.marketDataWarning ?? staleMarketWarning(args.isStale),
       mode: args.mode,
+      eligibilityState: args.eligibilityState,
+      liveAllowed: args.liveAllowed,
+      paperAllowed: args.paperAllowed,
+      mainnetExecutionEnabled: args.mainnetExecutionEnabled,
+      killSwitchEnabled: args.killSwitchEnabled,
+      executionVenue: args.executionVenue,
     });
+    return await this.runProvider(input);
+  }
 
+  async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    const snapshot = snapshotFromAgentInput(input);
+    const scenario = this.toScenario(input);
+    if ((scenario === "long" || scenario === "short") && !hasUsablePrice(snapshot)) {
+      return this.toAnalysis(this.noUsablePrice(snapshot), input, "refusal", "none", 0.05);
+    }
+    if ((scenario === "long" || scenario === "short") && input.eligibility.mode === "live" && !input.eligibility.liveAllowed) {
+      return this.toAnalysis(this.liveNotAllowed(input), input, "refusal", "none", 0.05);
+    }
+
+    const draftWarnings = this.draftWarnings(input);
+    if (scenario === "long") {
+      return this.toAnalysis(this.withDraftWarnings(this.long(snapshot, input.eligibility.mode), draftWarnings), input, "trade_proposal", "long", 0.64, draftWarnings);
+    }
+    if (scenario === "short") {
+      return this.toAnalysis(this.withDraftWarnings(this.short(snapshot, input.eligibility.mode), draftWarnings), input, "trade_proposal", "short", 0.62, draftWarnings);
+    }
+    if (scenario === "explain") {
+      return this.toAnalysis(this.explain(snapshot), input, "market_read", "none", 0.78);
+    }
+    if (scenario === "noTrade") {
+      return this.toAnalysis(this.noTrade(snapshot), input, "no_trade", "none", 0.7);
+    }
+    if (scenario === "marketRead") {
+      return this.toAnalysis(this.marketRead(snapshot, input.eligibility.mode), input, "market_read", "none", 0.72);
+    }
+    if (scenario === "capability") {
+      return this.toAnalysis(this.capability(snapshot), input, "greeting", "none", 0.85);
+    }
+
+    throw new Error(`Unsupported agent scenario: ${scenario}`);
+  }
+
+  private async runProvider(input: AgentInput): Promise<AgentResponse> {
+    const provider = this.provider ?? this;
+    const raw = await provider.analyzeMarket(input);
+    const parsed = parseAgentAnalysis(raw) ?? invalidAgentOutputRefusal(input);
+    return agentAnalysisToResponse(parsed, input);
+  }
+
+  private toScenario(input: AgentInput): AgentScenario {
+    if (isAgentScenario(input.scenario)) {
+      return input.scenario;
+    }
+    return this.classifyPrompt(input.requestedPrompt);
+  }
+
+  private draftWarnings(input: AgentInput): Array<string | undefined> {
+    const marketFreshnessWarning = input.freshness.marketWarning ??
+      (input.freshness.marketAgeSeconds > 60
+        ? "Market data may be delayed; confirm price in the ticket before submitting."
+        : undefined);
+    return [marketFreshnessWarning, input.freshness.accountWarning];
+  }
+
+  private toAnalysis(
+    response: AgentResponse,
+    input: AgentInput,
+    responseType: AgentResponseType,
+    side: AgentAnalysis["side"],
+    confidence: number,
+    warnings: Array<string | undefined> = [],
+  ): AgentAnalysis {
     return {
-      ...response,
-      question: args.prompt,
+      responseType,
+      summary: firstSentence(response.thesis),
+      thesis: response.thesis,
+      side,
+      confidence,
+      receipts: response.receipts,
+      riskNote: response.riskNote,
+      whyWrong: response.whyWrong,
+      orderDraft: responseType === "trade_proposal" ? response.orderDraft : undefined,
+      warnings: warnings.filter((warning): warning is string => Boolean(warning)),
+      provider: {
+        name: this.name,
+        deterministic: true,
+        generatedAt: input.timestamp,
+      },
+      id: response.id,
+      question: input.requestedPrompt,
+      annotations: response.annotations,
+      followUps: response.followUps,
     };
   }
 
@@ -461,8 +612,146 @@ export class DeterministicAgentService implements AgentService {
       annotations: [],
     };
   }
+
+  private liveNotAllowed(input: AgentInput): AgentResponse {
+    return {
+      id: "live-not-allowed-refusal",
+      state: "staleRefusal",
+      question: input.requestedPrompt,
+      thesis:
+        "I will not draft a live order because live trading is not allowed for the current eligibility state. Switch to paper mode for simulated drafts.",
+      receipts: [
+        { label: "Eligibility", value: input.eligibility.state, timestamp: input.timestamp },
+        { label: "Mode", value: input.eligibility.mode, timestamp: input.timestamp },
+      ],
+      riskNote: "Live order tickets require eligible state, live account readiness, acknowledgement, and user confirmation.",
+      whyWrong: "Eligibility could change after a server refresh, but this snapshot cannot safely create a live draft.",
+      annotations: [],
+      followUps: ["Switch to paper", `Ask for a ${input.market.base} market read`],
+    };
+  }
 }
 
 function hasUsablePrice(snapshot: SharedTradingSnapshot): boolean {
   return Number.isFinite(snapshot.market.markPrice) && snapshot.market.markPrice > 0;
+}
+
+function scenarioPrompt(scenario: AgentScenario, snapshot: SharedTradingSnapshot): string {
+  switch (scenario) {
+    case "long":
+      return `Should I long ${snapshot.market.base} here for the next 4-8 hours?`;
+    case "short":
+      return `Should I short ${snapshot.market.base} here for the next 4-8 hours?`;
+    case "explain":
+      return "Explain current funding + OI.";
+    case "noTrade":
+      return `Find a cleaner ${snapshot.market.base} setup.`;
+    case "marketRead":
+      return `Give me a ${snapshot.market.base} market read.`;
+    case "capability":
+      return "What can Agent.trade help with?";
+    default:
+      throw new Error(`Unsupported agent scenario: ${scenario}`);
+  }
+}
+
+function isAgentScenario(input: unknown): input is AgentScenario {
+  return (
+    input === "long" ||
+    input === "short" ||
+    input === "explain" ||
+    input === "noTrade" ||
+    input === "marketRead" ||
+    input === "capability"
+  );
+}
+
+function firstSentence(input: string): string {
+  const sentence = input.match(/^.*?[.!?](?:\s|$)/u)?.[0]?.trim();
+  return sentence ?? input;
+}
+
+function staleMarketWarning(isStale: boolean): string | undefined {
+  return isStale
+    ? "Market data may be delayed; confirm price in the ticket before submitting."
+    : undefined;
+}
+
+function readProviderName(input: string | undefined): AgentProviderName {
+  if (input === "openai" || input === "anthropic" || input === "openrouter") {
+    return input;
+  }
+  return "deterministic";
+}
+
+function apiKeyForProvider(provider: AgentProviderName): string | undefined {
+  switch (provider) {
+    case "openai":
+      return process.env.OPENAI_API_KEY;
+    case "anthropic":
+      return process.env.ANTHROPIC_API_KEY;
+    case "openrouter":
+      return process.env.OPENROUTER_API_KEY;
+    case "deterministic":
+      return undefined;
+    default:
+      throw new Error(`Unsupported agent provider: ${provider}`);
+  }
+}
+
+class FallbackAgentProvider implements AgentProvider {
+  readonly name = "deterministic" as const;
+  private readonly deterministic = new DeterministicAgentService();
+
+  constructor(
+    private readonly requestedProvider: AgentProviderName,
+    private readonly fallbackReason: string,
+  ) {}
+
+  async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
+    const analysis = await this.deterministic.analyzeMarket(input);
+    return {
+      ...analysis,
+      provider: {
+        ...analysis.provider,
+        fallbackReason: this.fallbackReason,
+      },
+      warnings: [...analysis.warnings, this.fallbackReason],
+    };
+  }
+}
+
+class DisabledExternalAgentProvider implements AgentProvider {
+  readonly name: AgentProviderName;
+
+  constructor(provider: AgentProviderName) {
+    this.name = provider;
+  }
+
+  async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
+    return {
+      responseType: "refusal",
+      summary: "External agent provider is not wired yet.",
+      thesis:
+        `${this.name} was explicitly selected, but Phase 4A only defines the provider boundary. No live model call was made.`,
+      side: "none",
+      confidence: 0,
+      receipts: [
+        { label: "Provider", value: this.name, timestamp: input.timestamp },
+        { label: "Market", value: input.market.symbol, timestamp: input.freshness.marketAsOf },
+      ],
+      riskNote: "No order draft was created because external LLM execution is reserved for Phase 4B.",
+      whyWrong: "A deterministic read may still be available by setting AGENT_TRADE_AGENT_PROVIDER=deterministic.",
+      warnings: ["External model integration is disabled in Phase 4A."],
+      provider: {
+        name: this.name,
+        deterministic: false,
+        generatedAt: input.timestamp,
+        fallbackReason: "Phase 4A stub only; no external model call was made.",
+      },
+      id: "external-provider-disabled",
+      question: input.requestedPrompt,
+      annotations: [],
+    };
+  }
 }
