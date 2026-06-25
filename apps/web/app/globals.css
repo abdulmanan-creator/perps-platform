@@ -440,7 +440,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .prediction-side-grid button span { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
 .prediction-side-grid button strong { color: var(--green); font-size: 19px; }
 .prediction-side-grid button em, .prediction-side-grid button small { color: var(--muted); font-style: normal; font-size: 12px; }
-.prediction-book-body, .prediction-ticket-body, .prediction-risk-list, .prediction-panel-copy {
+.prediction-book-body, .prediction-ticket-body, .prediction-ticket-form, .prediction-risk-list, .prediction-panel-copy {
   padding: 14px;
 }
 .prediction-probability-rail {
@@ -523,6 +523,46 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .prediction-settlement-list span.settled { border-color: rgba(39,214,170,0.35); color: var(--green); background: rgba(39,214,170,0.08); }
 .prediction-ticket-body { margin: 0; padding: 0; border-width: 0; border-radius: 0; }
+.prediction-ticket-form {
+  display: grid;
+  gap: 12px;
+}
+.prediction-ticket-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.prediction-ticket-form input, .prediction-ticket-form select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #090e1a;
+  color: var(--text);
+  padding: 10px;
+  outline: none;
+}
+.prediction-ticket-form input:focus, .prediction-ticket-form select:focus { border-color: var(--blue); }
+.prediction-ticket-side-picker {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.prediction-ticket-side-picker > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.prediction-ticket-side-picker button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #090e1a;
+  color: var(--text);
+  padding: 9px;
+}
+.prediction-ticket-side-picker button.active { border-color: rgba(39,214,170,0.55); background: rgba(39,214,170,0.1); color: var(--green); }
 .prediction-ticket-body button {
   grid-column: 1 / -1;
   border: 1px solid var(--line);
@@ -530,6 +570,86 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   background: #151d31;
   color: var(--muted);
   padding: 11px;
+}
+.prediction-ticket-form > button {
+  border: 1px solid rgba(39,214,170,0.35);
+  border-radius: 7px;
+  background: rgba(39,214,170,0.12);
+  color: var(--green);
+  padding: 11px;
+  font-weight: 600;
+}
+.prediction-ack-row {
+  grid-template-columns: 18px 1fr;
+  align-items: start;
+}
+.prediction-ack-row input { margin-top: 2px; padding: 0; }
+.prediction-ticket-status {
+  margin: 0;
+  color: var(--green);
+  font-size: 12px;
+}
+.prediction-ticket-status.error { color: var(--red); }
+.prediction-paper-portfolio { overflow: hidden; }
+.prediction-paper-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--line);
+}
+.prediction-paper-summary div {
+  min-height: 76px;
+  padding: 12px;
+  background: #0e1322;
+}
+.prediction-paper-summary span, .prediction-paper-table span {
+  display: block;
+  color: var(--dim);
+  font-size: 12px;
+}
+.prediction-paper-summary strong {
+  display: block;
+  margin-top: 7px;
+  color: var(--text);
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.prediction-paper-table { overflow: auto; }
+.prediction-paper-row {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 0.65fr 0.75fr 0.85fr 0.75fr 0.75fr 0.8fr 0.7fr;
+  gap: 10px;
+  min-width: 1060px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255,255,255,0.045);
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.prediction-paper-row strong { color: var(--text); }
+.prediction-paper-row strong em {
+  display: inline-block;
+  margin-left: 7px;
+  border: 1px solid rgba(39,214,170,0.3);
+  border-radius: 999px;
+  color: var(--green);
+  padding: 2px 5px;
+  font-style: normal;
+  font-size: 10px;
+}
+.prediction-paper-row-head {
+  border-top: 0;
+  background: #101729;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.prediction-paper-empty {
+  padding: 14px;
+  color: var(--muted);
 }
 .prediction-risk-list {
   display: grid;

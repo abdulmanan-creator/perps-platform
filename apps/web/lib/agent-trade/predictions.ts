@@ -1,4 +1,7 @@
 import type {
+  PredictionPaperAccount,
+  PredictionPaperOrderRequest,
+  PredictionPaperPosition,
   PredictionOutcome,
   PredictionOutcomeOdds,
   PredictionQuestion,
@@ -7,6 +10,7 @@ import type {
 } from "@alchemy-hl/shared";
 
 import { API_BASE_URL } from "../api";
+import { getPaperSessionId, paperSessionHeaders } from "./paper";
 
 export type PredictionFilterKey =
   | "all"
@@ -46,6 +50,25 @@ export interface PredictionDiscoveryQuestion extends PredictionQuestion {
   oddsSummary?: PredictionDiscoveryOddsSummary;
 }
 
+export interface PredictionTicketMath {
+  contracts: number;
+  probability: number;
+  estimatedCost: number;
+  maxPayout: number;
+  maxProfit: number;
+  maxLoss: number;
+  breakEvenProbability: number;
+}
+
+export interface PredictionPortfolioExposure {
+  positionCount: number;
+  totalContracts: number;
+  totalCost: number;
+  currentValue: number;
+  maxPayout: number;
+  unrealizedPnl: number;
+}
+
 export async function loadPredictionQuestions(): Promise<PredictionQuestion[]> {
   const res = await fetch(`${API_BASE_URL}/prediction/questions`, { cache: "no-store" });
   if (!res.ok) {
@@ -70,6 +93,40 @@ export async function loadPredictionQuestionOdds(questionId: number): Promise<Pr
     throw new Error(`prediction question odds request failed: ${res.status}`);
   }
   return (await res.json()) as PredictionQuestionOdds;
+}
+
+export async function loadPredictionPaperAccount(
+  sessionId = getPaperSessionId(),
+): Promise<PredictionPaperAccount | undefined> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/prediction/paper-account`, {
+      cache: "no-store",
+      headers: paperSessionHeaders(sessionId),
+    });
+    if (!res.ok) return undefined;
+    return (await res.json()) as PredictionPaperAccount;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function submitPredictionPaperOrder(
+  order: PredictionPaperOrderRequest,
+  sessionId = getPaperSessionId(),
+): Promise<{ id: string; status: "accepted"; mode: "paper"; account: PredictionPaperAccount }> {
+  const res = await fetch(`${API_BASE_URL}/prediction/paper-orders`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "content-type": "application/json",
+      ...paperSessionHeaders(sessionId),
+    },
+    body: JSON.stringify(order),
+  });
+  if (!res.ok) {
+    throw new Error(`prediction paper order failed: ${res.status}`);
+  }
+  return (await res.json()) as { id: string; status: "accepted"; mode: "paper"; account: PredictionPaperAccount };
 }
 
 export function summarizeQuestionOdds(odds: PredictionQuestionOdds): PredictionDiscoveryOddsSummary {
@@ -131,6 +188,11 @@ export function formatProbabilityPrice(value: string | null | undefined): string
   return parsed.toFixed(3).replace(/0+$/u, "").replace(/\.$/u, "");
 }
 
+export function formatUsdc(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "--";
+  return `${value.toFixed(2)} USDC`;
+}
+
 export function formatSpread(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "--";
   return `${(value * 100).toFixed(1)} pts`;
@@ -179,6 +241,67 @@ export function selectedOutcomeOdds(
   outcomeId: number,
 ): PredictionOutcomeOdds | undefined {
   return odds?.outcomes.find((outcome) => outcome.outcome === outcomeId);
+}
+
+export function probabilityFromSide(side: PredictionSideOdds | undefined): number | null {
+  if (!side) return null;
+  if (side.midpointProbability !== null) return side.midpointProbability;
+  const fallback = Number(side.bestAsk ?? side.bestBid);
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+export function calculatePredictionTicketMath(contracts: number, probability: number): PredictionTicketMath {
+  const normalizedContracts = Number.isFinite(contracts) ? Math.max(0, Math.floor(contracts)) : 0;
+  const normalizedProbability = clampProbability(probability);
+  const estimatedCost = round(normalizedContracts * normalizedProbability);
+  const maxPayout = normalizedContracts;
+  return {
+    contracts: normalizedContracts,
+    probability: normalizedProbability,
+    estimatedCost,
+    maxPayout,
+    maxProfit: round(maxPayout - estimatedCost),
+    maxLoss: estimatedCost,
+    breakEvenProbability: normalizedProbability,
+  };
+}
+
+export function enrichPredictionPaperPositions(
+  account: PredictionPaperAccount | undefined,
+  question: PredictionQuestion,
+  odds: PredictionQuestionOdds | undefined,
+): PredictionPaperPosition[] {
+  if (!account) return [];
+  return account.positions
+    .filter((position) => position.questionId === question.questionId)
+    .map((position) => {
+      const outcomeOdds = selectedOutcomeOdds(odds, position.outcome);
+      const currentProbability = probabilityFromSide(outcomeOdds?.sides[position.side]) ?? position.currentProbability;
+      const currentValue = currentProbability === null ? null : round(position.contracts * currentProbability);
+      return {
+        ...position,
+        currentProbability,
+        currentValue,
+        unrealizedPnl: currentValue === null ? null : round(currentValue - position.totalCost),
+        resolutionStatus: question.settlement.state,
+      };
+    });
+}
+
+export function summarizePredictionPortfolioExposure(
+  positions: PredictionPaperPosition[],
+): PredictionPortfolioExposure {
+  return positions.reduce<PredictionPortfolioExposure>(
+    (summary, position) => ({
+      positionCount: summary.positionCount + 1,
+      totalContracts: round(summary.totalContracts + position.contracts),
+      totalCost: round(summary.totalCost + position.totalCost),
+      currentValue: round(summary.currentValue + (position.currentValue ?? 0)),
+      maxPayout: round(summary.maxPayout + position.maxPayout),
+      unrealizedPnl: round(summary.unrealizedPnl + (position.unrealizedPnl ?? 0)),
+    }),
+    { positionCount: 0, totalContracts: 0, totalCost: 0, currentValue: 0, maxPayout: 0, unrealizedPnl: 0 },
+  );
 }
 
 function mostLiquidSide(outcome: PredictionOutcomeOdds): PredictionSideOdds | undefined {
@@ -258,4 +381,21 @@ export function premiumForContracts(contracts: number, probability: number | nul
   return Math.max(0, Math.floor(contracts)) * probability;
 }
 
-export type { PredictionOutcome, PredictionOutcomeOdds, PredictionQuestion, PredictionQuestionOdds };
+function clampProbability(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function round(value: number, decimals = 6): number {
+  return Number(value.toFixed(decimals));
+}
+
+export type {
+  PredictionOutcome,
+  PredictionOutcomeOdds,
+  PredictionPaperAccount,
+  PredictionPaperOrderRequest,
+  PredictionPaperPosition,
+  PredictionQuestion,
+  PredictionQuestionOdds,
+};

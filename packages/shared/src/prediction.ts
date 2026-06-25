@@ -82,3 +82,72 @@ export interface PredictionSettlementState {
   raw: unknown;
   fetchedAt: number;
 }
+
+export interface PredictionPaperOrderRequest {
+  questionId: number;
+  questionName: string;
+  outcome: number;
+  outcomeName: string;
+  side: PredictionSide;
+  sideName: string;
+  contracts: number;
+  limitProbability: number;
+  currentProbability: number | null;
+  quoteToken: string;
+  criteriaAcknowledged: boolean;
+  fromAgent?: boolean;
+}
+
+export interface PredictionPaperFill {
+  id: string;
+  mode: "paper";
+  questionId: number;
+  questionName: string;
+  outcome: number;
+  outcomeName: string;
+  side: PredictionSide;
+  sideName: string;
+  contracts: number;
+  limitProbability: number;
+  cost: number;
+  maxPayout: number;
+  maxProfit: number;
+  maxLoss: number;
+  breakEvenProbability: number;
+  currentProbability: number | null;
+  quoteToken: string;
+  timestamp: number;
+  fromAgent: boolean;
+}
+
+export interface PredictionPaperPosition {
+  key: string;
+  mode: "paper";
+  questionId: number;
+  questionName: string;
+  outcome: number;
+  outcomeName: string;
+  side: PredictionSide;
+  sideName: string;
+  contracts: number;
+  avgCost: number;
+  totalCost: number;
+  currentProbability: number | null;
+  currentValue: number | null;
+  maxPayout: number;
+  maxProfit: number;
+  maxLoss: number;
+  unrealizedPnl: number | null;
+  quoteToken: string;
+  resolutionStatus: PredictionSettlementSummary["state"];
+  updatedAt: number;
+}
+
+export interface PredictionPaperAccount {
+  sessionId: string;
+  mode: "paper";
+  ledgerRevision: number;
+  updatedAt: number;
+  positions: PredictionPaperPosition[];
+  fills: PredictionPaperFill[];
+}

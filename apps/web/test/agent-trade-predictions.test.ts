@@ -4,18 +4,22 @@ import { join } from "node:path";
 
 import { PREDICTION_RISK_COPY } from "../components/agent-trade/PredictionDetailClient";
 import {
+  calculatePredictionTicketMath,
+  enrichPredictionPaperPositions,
   filterAndSortPredictionQuestions,
   formatEmptyBook,
   formatProbability,
   formatProbabilityPrice,
   formatSpread,
+  formatUsdc,
   isResolvingSoon,
   maxPayoutForContracts,
   premiumForContracts,
+  summarizePredictionPortfolioExposure,
   summarizeQuestionOdds,
   type PredictionDiscoveryQuestion,
 } from "../lib/agent-trade/predictions";
-import type { PredictionQuestionOdds } from "@alchemy-hl/shared";
+import type { PredictionPaperAccount, PredictionQuestionOdds } from "@alchemy-hl/shared";
 
 const baseQuestions: PredictionDiscoveryQuestion[] = [
   {
@@ -140,6 +144,38 @@ const questionOdds: PredictionQuestionOdds = {
   ],
 };
 
+const paperAccount: PredictionPaperAccount = {
+  sessionId: "prediction-paper-test",
+  mode: "paper",
+  ledgerRevision: 1,
+  updatedAt: 1000,
+  fills: [],
+  positions: [
+    {
+      key: "1:11:0",
+      mode: "paper",
+      questionId: 1,
+      questionName: "World Cup Champion",
+      outcome: 11,
+      outcomeName: "France",
+      side: 0,
+      sideName: "Yes",
+      contracts: 10,
+      avgCost: 0.2,
+      totalCost: 2,
+      currentProbability: 0.2,
+      currentValue: 2,
+      maxPayout: 10,
+      maxProfit: 8,
+      maxLoss: 2,
+      unrealizedPnl: 0,
+      quoteToken: "USDC",
+      resolutionStatus: "open",
+      updatedAt: 1000,
+    },
+  ],
+};
+
 describe("Agent.trade prediction helpers", () => {
   it("filters and sorts prediction questions by query, category, status, and liquidity", () => {
     expect(filterAndSortPredictionQuestions({
@@ -199,6 +235,39 @@ describe("Agent.trade prediction helpers", () => {
     expect(premiumForContracts(10, 0.25)).toBe(2.5);
     expect(premiumForContracts(10, null)).toBeNull();
   });
+
+  it("computes paper prediction ticket cost, payout, and break-even probability", () => {
+    expect(calculatePredictionTicketMath(10.9, 0.25)).toEqual({
+      contracts: 10,
+      probability: 0.25,
+      estimatedCost: 2.5,
+      maxPayout: 10,
+      maxProfit: 7.5,
+      maxLoss: 2.5,
+      breakEvenProbability: 0.25,
+    });
+    expect(formatUsdc(2.5)).toBe("2.50 USDC");
+  });
+
+  it("enriches paper portfolio exposure with current probabilities", () => {
+    const positions = enrichPredictionPaperPositions(paperAccount, baseQuestions[1]!, questionOdds);
+    expect(positions).toHaveLength(1);
+    expect(positions[0]).toMatchObject({
+      currentProbability: 0.225,
+      currentValue: 2.25,
+      unrealizedPnl: 0.25,
+      resolutionStatus: "settled",
+    });
+
+    expect(summarizePredictionPortfolioExposure(positions)).toEqual({
+      positionCount: 1,
+      totalContracts: 10,
+      totalCost: 2,
+      currentValue: 2.25,
+      maxPayout: 10,
+      unrealizedPnl: 0.25,
+    });
+  });
 });
 
 describe("prediction route smoke", () => {
@@ -213,11 +282,19 @@ describe("prediction route smoke", () => {
     expect(source).toContain("PredictionDetailClient");
     expect(source).toContain("questionId");
   });
+
+  it("keeps prediction paper helpers away from exchange submission", () => {
+    const source = readFileSync(join(process.cwd(), "lib/agent-trade/predictions.ts"), "utf8");
+    expect(source).toContain("/prediction/paper-orders");
+    expect(source).toContain("/prediction/paper-account");
+    expect(source).not.toContain("/exchange");
+  });
 });
 
 describe("prediction UI copy", () => {
   it("does not include perp-only concepts as standalone ticket/risk terms", () => {
-    const copy = PREDICTION_RISK_COPY.join(" ").toLowerCase();
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    const copy = `${PREDICTION_RISK_COPY.join(" ")} ${source}`.toLowerCase();
     expect(copy).not.toMatch(/\bliquidation\b/u);
     expect(copy).not.toMatch(/\bfunding\b/u);
     expect(copy).not.toMatch(/\bleverage\b/u);

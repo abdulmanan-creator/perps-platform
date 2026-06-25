@@ -3,25 +3,38 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import type { PredictionOutcome, PredictionQuestion, PredictionQuestionOdds, PredictionSideOdds } from "@alchemy-hl/shared";
+import type {
+  PredictionOutcome,
+  PredictionPaperAccount,
+  PredictionPaperPosition,
+  PredictionQuestion,
+  PredictionQuestionOdds,
+  PredictionSideOdds,
+} from "@alchemy-hl/shared";
 
 import {
+  calculatePredictionTicketMath,
+  enrichPredictionPaperPositions,
   formatEmptyBook,
   formatProbability,
   formatProbabilityPrice,
   formatSpread,
+  formatUsdc,
   loadPredictionQuestion,
   loadPredictionQuestionOdds,
-  maxPayoutForContracts,
-  premiumForContracts,
+  loadPredictionPaperAccount,
+  probabilityFromSide,
   predictionCategoryLabel,
   predictionStatusLabel,
   selectedOutcomeOdds,
+  submitPredictionPaperOrder,
+  summarizePredictionPortfolioExposure,
 } from "@/lib/agent-trade/predictions";
 
 export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const [question, setQuestion] = useState<PredictionQuestion | undefined>();
   const [odds, setOdds] = useState<PredictionQuestionOdds | undefined>();
+  const [paperAccount, setPaperAccount] = useState<PredictionPaperAccount | undefined>();
   const [selectedOutcomeId, setSelectedOutcomeId] = useState<number | undefined>();
   const [selectedSideIndex, setSelectedSideIndex] = useState<0 | 1>(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -33,13 +46,15 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
     async function load() {
       setIsLoading(true);
       try {
-        const [nextQuestion, nextOdds] = await Promise.all([
+        const [nextQuestion, nextOdds, nextPaperAccount] = await Promise.all([
           loadPredictionQuestion(questionId),
           loadPredictionQuestionOdds(questionId),
+          loadPredictionPaperAccount(),
         ]);
         if (!cancelled) {
           setQuestion(nextQuestion);
           setOdds(nextOdds);
+          setPaperAccount(nextPaperAccount);
           setSelectedOutcomeId(nextQuestion.namedOutcomes[0]?.outcome ?? nextQuestion.fallbackOutcome?.outcome);
           setError(undefined);
         }
@@ -72,6 +87,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
     },
     [question, selectedOutcomeId],
   );
+  const paperPositions = question ? enrichPredictionPaperPositions(paperAccount, question, odds) : [];
 
   if (error) {
     return (
@@ -125,10 +141,22 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             }}
           />
           <SettlementModule question={question} />
+          <PredictionPaperPortfolio positions={paperPositions} />
         </div>
         <aside className="prediction-detail-side">
           <OrderBookPreview outcome={selectedOutcome} side={selectedSide} />
-          <ReadOnlyTicketPreview outcome={selectedOutcome} side={selectedSide} />
+          <PredictionPaperTicket
+            question={question}
+            selectedOutcomeId={selectedOutcomeId}
+            selectedSideIndex={selectedSideIndex}
+            selectedOutcome={selectedOutcome}
+            selectedSide={selectedSide}
+            onSelect={(outcomeId, side) => {
+              setSelectedOutcomeId(outcomeId);
+              setSelectedSideIndex(side);
+            }}
+            onPaperAccount={setPaperAccount}
+          />
           <PredictionRiskCopy />
           <PredictionAgentPreview />
         </aside>
@@ -284,39 +312,203 @@ function SettlementModule({ question }: { question: PredictionQuestion }) {
   );
 }
 
-function ReadOnlyTicketPreview({ outcome, side }: { outcome: PredictionOutcome | undefined; side: PredictionSideOdds | undefined }) {
-  const contracts = 10;
-  const premium = premiumForContracts(contracts, side?.midpointProbability);
-  const payout = maxPayoutForContracts(contracts);
+function PredictionPaperTicket(props: {
+  question: PredictionQuestion;
+  selectedOutcomeId: number | undefined;
+  selectedSideIndex: 0 | 1;
+  selectedOutcome: PredictionOutcome | undefined;
+  selectedSide: PredictionSideOdds | undefined;
+  onSelect: (outcomeId: number, side: 0 | 1) => void;
+  onPaperAccount: (account: PredictionPaperAccount) => void;
+}) {
+  const initialProbability = probabilityFromSide(props.selectedSide) ?? 0.5;
+  const [contracts, setContracts] = useState(10);
+  const [limitProbability, setLimitProbability] = useState(initialProbability);
+  const [criteriaAcknowledged, setCriteriaAcknowledged] = useState(false);
+  const [submitState, setSubmitState] = useState<"idle" | "submitting" | "accepted" | "failed">("idle");
+
+  useEffect(() => {
+    setLimitProbability(probabilityFromSide(props.selectedSide) ?? 0.5);
+  }, [props.selectedSide?.coin]);
+
+  const math = calculatePredictionTicketMath(contracts, limitProbability);
+  const quoteToken = props.selectedOutcome?.quoteToken ?? props.question.quoteToken ?? props.question.quoteTokens[0] ?? "USDC";
+  const liquidityWarning = paperLiquidityWarning(props.selectedSide);
+  const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
+
+  async function submitPaperOrder() {
+    if (!props.selectedOutcome || !props.selectedSide || !canSubmit) return;
+    setSubmitState("submitting");
+    try {
+      const result = await submitPredictionPaperOrder({
+        questionId: props.question.questionId,
+        questionName: props.question.name,
+        outcome: props.selectedOutcome.outcome,
+        outcomeName: props.selectedOutcome.name,
+        side: props.selectedSide.side,
+        sideName: props.selectedSide.name,
+        contracts: math.contracts,
+        limitProbability: math.probability,
+        currentProbability: probabilityFromSide(props.selectedSide),
+        quoteToken,
+        criteriaAcknowledged,
+        fromAgent: false,
+      });
+      props.onPaperAccount(result.account);
+      setSubmitState("accepted");
+    } catch {
+      setSubmitState("failed");
+    }
+  }
+
   return (
     <section className="panel prediction-ticket-preview" data-testid="prediction-ticket-preview">
       <div className="panel-head">
         <div>
-          <span>Ticket preview</span>
-          <strong>Read-only</strong>
+          <span>Paper ticket</span>
+          <strong>Simulated only</strong>
         </div>
       </div>
-      <div className="prediction-ticket-body">
-        <div>
+      <div className="prediction-ticket-form">
+        <label>
           <span>Outcome</span>
-          <strong>{outcome ? outcome.name : "Select an outcome"}</strong>
-        </div>
-        <div>
+          <select
+            value={props.selectedOutcomeId ?? ""}
+            onChange={(event) => props.onSelect(Number(event.target.value), props.selectedSideIndex)}
+          >
+            {props.question.namedOutcomes.map((outcome) => (
+              <option key={outcome.outcome} value={outcome.outcome}>{outcome.name}</option>
+            ))}
+          </select>
+        </label>
+        <div className="prediction-ticket-side-picker">
           <span>Side</span>
-          <strong>{side ? side.name : "--"}</strong>
+          <div>
+            {props.selectedOutcome?.sides.map((side) => (
+              <button
+                key={side.side}
+                className={props.selectedSideIndex === side.side ? "active" : ""}
+                onClick={() => props.selectedOutcome && props.onSelect(props.selectedOutcome.outcome, side.side)}
+              >
+                {side.name}
+              </button>
+            ))}
+          </div>
         </div>
-        <div>
-          <span>Example premium</span>
-          <strong>{premium === null ? "--" : `${premium.toFixed(2)} USDC`}</strong>
+        <label>
+          <span>Buy paper contracts</span>
+          <input
+            min="1"
+            step="1"
+            type="number"
+            value={contracts}
+            onChange={(event) => setContracts(Number(event.target.value))}
+          />
+        </label>
+        <label>
+          <span>Limit probability</span>
+          <input
+            min="0"
+            max="1"
+            step="0.001"
+            type="number"
+            value={limitProbability}
+            onChange={(event) => setLimitProbability(Number(event.target.value))}
+          />
+        </label>
+        <div className="prediction-ticket-body">
+          <MetricCell label="Estimated cost" value={formatUsdc(math.estimatedCost)} />
+          <MetricCell label="Max payout" value={formatUsdc(math.maxPayout)} />
+          <MetricCell label="Max profit" value={formatUsdc(math.maxProfit)} />
+          <MetricCell label="Max loss" value={formatUsdc(math.maxLoss)} />
+          <MetricCell label="Break-even probability" value={formatProbability(math.breakEvenProbability)} />
+          <MetricCell label="Current probability" value={formatProbability(probabilityFromSide(props.selectedSide))} />
         </div>
-        <div>
-          <span>Example max payout</span>
-          <strong>{payout.toFixed(2)} USDC</strong>
-        </div>
-        <button disabled>Trading coming soon</button>
+        <p className="market-notice">{liquidityWarning}</p>
+        <label className="prediction-ack-row">
+          <input
+            type="checkbox"
+            checked={criteriaAcknowledged}
+            onChange={(event) => setCriteriaAcknowledged(event.target.checked)}
+          />
+          <span>I acknowledge this paper order resolves only under the listed criteria.</span>
+        </label>
+        <button disabled={!canSubmit || submitState === "submitting"} onClick={submitPaperOrder}>
+          {submitState === "submitting" ? "Recording paper order..." : "Submit paper order"}
+        </button>
+        {submitState === "accepted" ? <p className="prediction-ticket-status">Paper order recorded.</p> : null}
+        {submitState === "failed" ? <p className="prediction-ticket-status error">Paper order failed. Retry after the API responds.</p> : null}
       </div>
     </section>
   );
+}
+
+function PredictionPaperPortfolio({ positions }: { positions: PredictionPaperPosition[] }) {
+  const exposure = summarizePredictionPortfolioExposure(positions);
+  return (
+    <section className="panel prediction-paper-portfolio" data-testid="prediction-paper-portfolio">
+      <div className="panel-head">
+        <div>
+          <span>Paper portfolio</span>
+          <strong>{positions.length} exposures</strong>
+        </div>
+      </div>
+      <div className="prediction-paper-summary">
+        <MetricCell label="Contracts" value={exposure.totalContracts.toFixed(0)} />
+        <MetricCell label="Avg cost basis" value={formatUsdc(exposure.totalCost)} />
+        <MetricCell label="Current value" value={formatUsdc(exposure.currentValue)} />
+        <MetricCell label="Unrealized PnL" value={formatUsdc(exposure.unrealizedPnl)} />
+      </div>
+      <div className="prediction-paper-table">
+        <div className="prediction-paper-row prediction-paper-row-head">
+          <span>Event/question</span>
+          <span>Outcome</span>
+          <span>Contracts</span>
+          <span>Avg cost</span>
+          <span>Current probability</span>
+          <span>Current value</span>
+          <span>Max payout</span>
+          <span>Unrealized PnL</span>
+          <span>Resolution</span>
+        </div>
+        {positions.map((position) => (
+          <div key={position.key} className="prediction-paper-row">
+            <strong>{position.questionName}<em>Paper</em></strong>
+            <span>{position.outcomeName} / {position.sideName}</span>
+            <span>{position.contracts.toFixed(0)}</span>
+            <span>{formatUsdc(position.avgCost)}</span>
+            <span>{formatProbability(position.currentProbability)}</span>
+            <span>{formatUsdc(position.currentValue)}</span>
+            <span>{formatUsdc(position.maxPayout)}</span>
+            <span>{formatUsdc(position.unrealizedPnl)}</span>
+            <span>{position.resolutionStatus}</span>
+          </div>
+        ))}
+        {positions.length === 0 ? (
+          <div className="prediction-paper-empty">
+            No paper prediction exposure for this question yet.
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function MetricCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function paperLiquidityWarning(side: PredictionSideOdds | undefined): string {
+  if (!side) return "Select an outcome side before recording a paper order.";
+  if (side.emptyBook) return "Paper pricing is based on your limit probability because this book is empty.";
+  if (!side.bestBid || !side.bestAsk) return "This book is one-sided; paper exits may differ from the displayed probability.";
+  if (side.spread !== null && side.spread >= 0.1) return "Wide spreads can materially affect entry and exit in live markets.";
+  return "Spread check: paper fills use your limit probability while market depth may differ.";
 }
 
 function PredictionRiskCopy() {
@@ -345,8 +537,8 @@ function PredictionAgentPreview() {
         </div>
       </div>
       <p className="prediction-panel-copy">
-        Prediction-market agent support is coming. This preview will use resolution criteria, odds, and cited sources;
-        it will not draft live trades from this read-only page.
+        Prediction-market agent support is paper-only in this lane. It may help draft simulated orders from the listed
+        criteria and odds, but it will not submit live HIP-4 orders.
       </p>
     </section>
   );
