@@ -346,6 +346,9 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     executionVenue: eligibility.executionVenue,
     mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
     killSwitchEnabled: eligibility.killSwitchEnabled,
+    accountValueKind: snapshot.account.valueKind,
+    liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+    liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
   });
   const liveDisabledReason = liveReadiness.allowed && !freshness.isDraftSafe
     ? freshness.detail
@@ -602,6 +605,10 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       const error = (await sendRes.json()) as { message?: string; guidance?: string };
       throw new Error(error.guidance ?? error.message ?? "Exchange send failed");
     }
+    const refreshed = await loadTradingSnapshot(snapshot.market.base, {
+      accountAddress: user,
+    });
+    setSnapshot(refreshed.snapshot);
     setSubmitState("Live order forwarded to Hyperliquid after wallet signature.");
   }
 

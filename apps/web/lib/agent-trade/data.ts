@@ -1,4 +1,4 @@
-import type { PositionsResponse, UserFillsResponse } from "@alchemy-hl/sdk-preview";
+import type { OpenOrdersResponse, PositionsResponse, UserFillsResponse } from "@alchemy-hl/sdk-preview";
 
 import { api, API_BASE_URL } from "../api";
 
@@ -195,6 +195,17 @@ export async function loadTradingSnapshot(
 
     const marketAccountSnapshot = await applyAccountState(snapshot, options.accountAddress);
     const paperAccount = await loadPaperAccount();
+    if (
+      marketAccountSnapshot.account.liveAccountDataLoaded ||
+      marketAccountSnapshot.account.liveAccountDataUnavailable
+    ) {
+      return {
+        snapshot: marketAccountSnapshot,
+        requestedSymbol,
+        resolvedSymbol: selected.symbol,
+        usedFallback: selected.symbol !== normalizeSymbol(requestedSymbol),
+      };
+    }
 
     return {
       snapshot: mergePaperAccount(marketAccountSnapshot, paperAccount),
@@ -243,6 +254,14 @@ async function fallbackResult(
 ): Promise<SelectedMarketResult> {
   const paperAccount = await loadPaperAccount();
   const baseSnapshot = await applyAccountState(MOCK_TRADING_SNAPSHOT, options.accountAddress);
+  if (baseSnapshot.account.liveAccountDataLoaded || baseSnapshot.account.liveAccountDataUnavailable) {
+    return {
+      snapshot: baseSnapshot,
+      requestedSymbol,
+      resolvedSymbol: "BTC",
+      usedFallback: true,
+    };
+  }
   const snapshot = mergePaperAccount(baseSnapshot, paperAccount);
   return {
     snapshot,
@@ -272,12 +291,7 @@ async function applyAccountState(
   } catch {
     return {
       ...snapshot,
-      account: {
-        ...applyMarketToAccount(snapshot),
-        address: accountAddress,
-        liveAccountDataUnavailable: true,
-        sourceLabel: "Read-only account unavailable; showing simulated account",
-      },
+      account: unavailableAccountSnapshot(accountAddress, snapshot),
     };
   }
 }
@@ -286,10 +300,11 @@ export async function loadReadOnlyHyperliquidAccount(
   accountAddress: `0x${string}`,
   snapshot: SharedTradingSnapshot,
 ): Promise<SharedTradingSnapshot["account"]> {
-  const [balance, positions, fills] = await Promise.all([
+  const [balance, positions, fills, openOrders] = await Promise.all([
     api.balance(accountAddress),
     readOptionalPositions(accountAddress),
     readOptionalFills(accountAddress),
+    readOptionalOpenOrders(accountAddress),
   ]);
 
   return {
@@ -329,7 +344,16 @@ export async function loadReadOnlyHyperliquidAccount(
         fundingUsd: 0,
       };
     }),
-    openOrders: [],
+    openOrders: openOrders.orders.map((order) => ({
+      symbol: `#${order.assetIndex}`,
+      mode: "live",
+      side: order.side,
+      type: "limit",
+      price: toNumber(order.limitPx),
+      size: toNumber(order.sz),
+      reduceOnly: false,
+      timestamp: order.timestamp,
+    })),
     fills: fills.fills.map((fill) => ({
       symbol: `${fill.coin}-USD`,
       mode: "live",
@@ -340,6 +364,29 @@ export async function loadReadOnlyHyperliquidAccount(
       feeUsd: Math.abs(toNumber(fill.fee ?? "0")) + Math.abs(toNumber(fill.builderFee ?? "0")),
       timestamp: fill.time,
     })),
+  };
+}
+
+function unavailableAccountSnapshot(
+  accountAddress: `0x${string}`,
+  snapshot: SharedTradingSnapshot,
+): SharedTradingSnapshot["account"] {
+  return {
+    address: accountAddress,
+    valueKind: "unavailable",
+    sourceLabel: "Read-only Hyperliquid account unavailable",
+    liveAccountDataLoaded: false,
+    liveAccountDataUnavailable: true,
+    updatedAt: Date.now(),
+    equityUsd: 0,
+    availableUsd: 0,
+    marginUsedUsd: 0,
+    unrealizedPnlUsd: 0,
+    dailyLiveNotionalUsedUsd: 0,
+    simulatedBalanceUsd: snapshot.account.simulatedBalanceUsd,
+    positions: [],
+    openOrders: [],
+    fills: [],
   };
 }
 
@@ -356,6 +403,14 @@ async function readOptionalFills(accountAddress: `0x${string}`): Promise<UserFil
     return await api.userFills(accountAddress, 20);
   } catch {
     return { user: accountAddress, fills: [] };
+  }
+}
+
+async function readOptionalOpenOrders(accountAddress: `0x${string}`): Promise<OpenOrdersResponse> {
+  try {
+    return await api.openOrders(accountAddress);
+  } catch {
+    return { user: accountAddress, orders: [] };
   }
 }
 

@@ -10,9 +10,10 @@ import {
   getLiveTradingReadiness,
   type WalletReadinessSummary,
 } from "@/lib/agent-trade/account-readiness";
+import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { getFundingDisplay } from "@/lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
-import type { EligibilityMode } from "@/lib/agent-trade/types";
+import type { AccountValueKind, EligibilityMode } from "@/lib/agent-trade/types";
 
 interface EligibilityResponse {
   state: EligibilityMode;
@@ -318,12 +319,49 @@ function AccountReadinessCard({
   eligibility: EligibilityResponse;
   wallet: WalletSummary;
 }) {
+  const [accountState, setAccountState] = useState<{
+    valueKind: AccountValueKind;
+    loaded: boolean;
+    unavailable: boolean;
+  }>({ valueKind: "paper", loaded: false, unavailable: false });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAccount() {
+      if (wallet.status !== "connected" || !wallet.address) {
+        setAccountState({ valueKind: "paper", loaded: false, unavailable: false });
+        return;
+      }
+
+      try {
+        const result = await loadTradingSnapshot("BTC", { accountAddress: wallet.address });
+        if (!cancelled) {
+          setAccountState({
+            valueKind: result.snapshot.account.valueKind ?? "paper",
+            loaded: result.snapshot.account.liveAccountDataLoaded === true,
+            unavailable: result.snapshot.account.liveAccountDataUnavailable === true,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setAccountState({ valueKind: "unavailable", loaded: false, unavailable: true });
+        }
+      }
+    }
+
+    void loadAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [wallet.address, wallet.status]);
+
   const readiness = getAccountReadinessDisplay({
     wallet: toReadinessWallet(wallet),
     eligibilityState: eligibility.state,
-    accountValueKind: "paper",
-    liveAccountDataLoaded: false,
-    liveAccountDataUnavailable: false,
+    accountValueKind: accountState.valueKind,
+    liveAccountDataLoaded: accountState.loaded,
+    liveAccountDataUnavailable: accountState.unavailable,
   });
   const liveReadiness = getLiveTradingReadiness({
     wallet: toReadinessWallet(wallet),
@@ -331,6 +369,9 @@ function AccountReadinessCard({
     executionVenue: eligibility.executionVenue,
     mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
     killSwitchEnabled: eligibility.killSwitchEnabled,
+    accountValueKind: readiness.accountValueKind,
+    liveAccountDataLoaded: readiness.accountValueKind === "real" || readiness.accountValueKind === "hybrid",
+    liveAccountDataUnavailable: readiness.accountValueKind === "unavailable",
   });
 
   return (
@@ -350,7 +391,7 @@ function AccountReadinessCard({
         <ReadinessRow label="Eligibility" value={getEligibilityDisplay(eligibility.state).label} ok={eligibility.state === "liveEligible"} />
         <ReadinessRow label="Execution unlock" value={liveReadiness.label} ok={liveReadiness.allowed} />
         <ReadinessRow label="Paper trading" value={readiness.paperTradingEnabled ? "Available" : "Unavailable"} ok={readiness.paperTradingEnabled} />
-        <ReadinessRow label="Testnet trading" value={liveReadiness.allowed ? "Ready after confirmation" : liveReadiness.disabledReason} ok={liveReadiness.allowed} />
+        <ReadinessRow label="Live trading" value={liveReadiness.allowed ? "Ready after confirmation" : liveReadiness.disabledReason} ok={liveReadiness.allowed} />
       </div>
       <p className="onboarding-note">{liveReadiness.allowed ? liveReadiness.summary : `${readiness.summary} ${liveReadiness.summary}`}</p>
     </div>

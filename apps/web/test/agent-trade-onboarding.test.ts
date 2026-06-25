@@ -176,11 +176,36 @@ describe("Agent.trade onboarding helpers", () => {
       executionVenue: "hyperliquid-testnet",
       mainnetExecutionEnabled: false,
       killSwitchEnabled: false,
+      accountValueKind: "real",
+      liveAccountDataLoaded: true,
+      liveAccountDataUnavailable: false,
     });
 
     expect(readiness.allowed).toBe(true);
     expect(readiness.reason).toBe("ready");
     expect(readiness.summary).toContain("testnet execution policy");
+  });
+
+  it("blocks live trading when read-only Hyperliquid account state is unavailable", () => {
+    const readiness = getLiveTradingReadiness({
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "embedded",
+      },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-mainnet",
+      mainnetExecutionEnabled: true,
+      killSwitchEnabled: false,
+      accountValueKind: "unavailable",
+      liveAccountDataLoaded: false,
+      liveAccountDataUnavailable: true,
+    });
+
+    expect(readiness.allowed).toBe(false);
+    expect(readiness.reason).toBe("account_unavailable");
+    expect(readiness.disabledReason).toBe("Hyperliquid account state unavailable. Refresh before live trading.");
   });
 
   it("blocks restricted and kill-switch states even with an authenticated wallet", () => {

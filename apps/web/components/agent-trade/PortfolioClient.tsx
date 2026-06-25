@@ -146,6 +146,11 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   );
   const marginUsePct =
     snapshot.account.equityUsd > 0 ? snapshot.account.marginUsedUsd / snapshot.account.equityUsd * 100 : 0;
+  const portfolioSummary = accountReadiness.accountValueKind === "real"
+    ? "Read-only Hyperliquid account data is loaded. Live orders still require Agent.trade confirmation."
+    : accountReadiness.accountValueKind === "unavailable"
+      ? "Hyperliquid account state is unavailable. Live trading is disabled until account data refreshes; paper mode remains available."
+      : `${accountReadiness.summary} Paper positions are simulated and do not imply live Hyperliquid exposure.`;
 
   return (
     <main className="portfolio-page">
@@ -153,7 +158,7 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
         <div>
           <p className="at-kicker">Portfolio risk</p>
           <h1>Portfolio</h1>
-          <p>{accountReadiness.summary} Paper positions are simulated and do not imply live Hyperliquid exposure.</p>
+          <p>{portfolioSummary}</p>
         </div>
         <div className="portfolio-health">
           <span className={`readiness-pill ${accountReadiness.tone}`}>{accountReadiness.label}</span>

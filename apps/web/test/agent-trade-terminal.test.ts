@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
-import { loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
+import { loadReadOnlyHyperliquidAccount, loadTerminalCandles, loadTradingSnapshot } from "../lib/agent-trade/data";
+import { api } from "../lib/api";
 import { filterMarketsForSelector, sortMarketsForSelector, type JoinedMarket } from "../lib/agent-trade/markets";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 import { getPaperSessionId, mergePaperAccount, paperSessionHeaders } from "../lib/agent-trade/paper";
@@ -73,6 +74,7 @@ const paperAccount: PaperAccountSnapshot = {
 
 describe("Agent.trade terminal product-loop helpers", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
@@ -146,6 +148,80 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(merged.account.valueKind).toBe("hybrid");
     expect(merged.account.sourceLabel).toBe("Read-only account plus paper ledger");
     expect(merged.account.positions[0]).toMatchObject({ symbol: "BTC-USD", mode: "paper" });
+  });
+
+  it("loads real empty Hyperliquid account state for a connected wallet", async () => {
+    const user = "0x1234567890abcdef1234567890abcdef12345678";
+    vi.spyOn(api, "balance").mockResolvedValue({
+      user,
+      accountValue: "0",
+      withdrawable: "0",
+      marginUsed: "0",
+      openPositions: 0,
+    });
+    vi.spyOn(api, "positions").mockResolvedValue({ user, positions: [] });
+    vi.spyOn(api, "userFills").mockResolvedValue({ user, fills: [] });
+    vi.spyOn(api, "openOrders").mockResolvedValue({ user, orders: [] });
+
+    const account = await loadReadOnlyHyperliquidAccount(user, MOCK_TRADING_SNAPSHOT);
+
+    expect(account.valueKind).toBe("real");
+    expect(account.sourceLabel).toBe("Read-only Hyperliquid account");
+    expect(account.liveAccountDataLoaded).toBe(true);
+    expect(account.equityUsd).toBe(0);
+    expect(account.availableUsd).toBe(0);
+    expect(account.positions).toEqual([]);
+    expect(account.fills).toEqual([]);
+  });
+
+  it("maps real Hyperliquid positions and fills without simulated account rows", async () => {
+    const user = "0x1234567890abcdef1234567890abcdef12345678";
+    vi.spyOn(api, "balance").mockResolvedValue({
+      user,
+      accountValue: "1250.50",
+      withdrawable: "1000.25",
+      marginUsed: "250.25",
+      openPositions: 1,
+    });
+    vi.spyOn(api, "positions").mockResolvedValue({
+      user,
+      positions: [{
+        coin: "ETH",
+        size: "0.5",
+        side: "long",
+        entryPx: "3000",
+        positionValue: "1600",
+        unrealizedPnl: "100",
+        returnOnEquity: "0.4",
+        liquidationPx: "2400",
+        leverage: 4,
+        leverageMode: "isolated",
+        marginUsed: "400",
+      }],
+    });
+    vi.spyOn(api, "userFills").mockResolvedValue({
+      user,
+      fills: [{
+        coin: "ETH",
+        side: "B",
+        oid: 123,
+        px: "3000",
+        sz: "0.5",
+        fee: "0.75",
+        builderFee: "0.05",
+        time: 1710000000000,
+      }],
+    });
+    vi.spyOn(api, "openOrders").mockResolvedValue({ user, orders: [] });
+
+    const account = await loadReadOnlyHyperliquidAccount(user, MOCK_TRADING_SNAPSHOT);
+
+    expect(account.valueKind).toBe("real");
+    expect(account.equityUsd).toBe(1250.5);
+    expect(account.positions).toHaveLength(1);
+    expect(account.positions[0]).toMatchObject({ symbol: "ETH-USD", mode: "live", size: 0.5 });
+    expect(account.positions.some((position) => position.mode === "paper")).toBe(false);
+    expect(account.fills[0]).toMatchObject({ symbol: "ETH-USD", mode: "live", feeUsd: 0.8 });
   });
 
   it("provides portfolio-visible paper positions and exposure inputs", () => {

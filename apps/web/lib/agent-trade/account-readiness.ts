@@ -24,6 +24,7 @@ export type LiveTradingBlockReason =
   | "eligibility_unknown"
   | "restricted"
   | "paper_only"
+  | "account_unavailable"
   | "kill_switch"
   | "execution_disabled"
   | "ready";
@@ -62,6 +63,9 @@ export interface LiveTradingReadinessInput {
   executionVenue: string;
   mainnetExecutionEnabled: boolean;
   killSwitchEnabled: boolean;
+  accountValueKind?: AccountValueKind;
+  liveAccountDataLoaded?: boolean;
+  liveAccountDataUnavailable?: boolean;
 }
 
 export interface LiveTradingReadiness {
@@ -164,6 +168,16 @@ export function getLiveTradingReadiness(input: LiveTradingReadinessInput): LiveT
     );
   }
 
+  if (input.liveAccountDataUnavailable || !input.liveAccountDataLoaded || input.accountValueKind === "unavailable") {
+    return blockLiveTrading(
+      "account_unavailable",
+      "Account unavailable",
+      "Hyperliquid account state unavailable. Refresh before live trading.",
+      "Read-only Hyperliquid account state must load before live orders are enabled.",
+      "amber",
+    );
+  }
+
   const isTestnet = input.executionVenue === "hyperliquid-testnet";
   if (!isTestnet && !input.mainnetExecutionEnabled) {
     return blockLiveTrading(
@@ -223,8 +237,8 @@ export function getAccountReadinessDisplay(input: AccountReadinessInput): Accoun
   if (input.liveAccountDataUnavailable) {
     return {
       mode: "api_unavailable_paper",
-      label: "Paper account",
-      summary: "Connected wallet detected, but read-only Hyperliquid account data is unavailable. Showing simulated account values.",
+      label: "Account unavailable",
+      summary: "Connected wallet detected, but read-only Hyperliquid account data is unavailable. Live trading is disabled until account state refreshes.",
       liveTradingEnabled: false,
       paperTradingEnabled: true,
       accountValueKind: "unavailable",
@@ -255,8 +269,8 @@ export function getAccountReadinessDisplay(input: AccountReadinessInput): Accoun
       label: hasRealValues ? "Connected account" : "Connected wallet",
       summary: hasRealValues
         ? "Read-only Hyperliquid account data is loaded. Live orders still require Agent.trade confirmation."
-        : "Wallet connected and eligibility passed. Account values remain simulated until read-only account data loads.",
-      liveTradingEnabled: true,
+        : "Wallet connected and eligibility passed. Hyperliquid account state is still loading; live trading remains disabled.",
+      liveTradingEnabled: hasRealValues,
       paperTradingEnabled: true,
       accountValueKind,
       accountValueLabel: accountValueKindLabel(accountValueKind),
