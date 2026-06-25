@@ -1,8 +1,57 @@
 import type { AgentAnalysis, AgentInput, AgentProviderName, AgentResponseType } from "./agent-provider";
+import type { BookLevel, RecentTrade } from "./types";
 import type { AgentResponse, ChartAnnotation, OrderDraft, TradeSide } from "./types";
 
 const RESPONSE_TYPES: AgentResponseType[] = ["greeting", "market_read", "trade_proposal", "no_trade", "refusal"];
 const SIDES: Array<TradeSide | "none"> = ["long", "short", "none"];
+
+export function parseAgentInput(input: unknown): AgentInput | undefined {
+  if (!isRecord(input)) {
+    return undefined;
+  }
+  const market = isRecord(input.market) ? input.market : undefined;
+  const orderBook = isRecord(input.orderBook) ? input.orderBook : undefined;
+  const account = isRecord(input.account) ? input.account : undefined;
+  const eligibility = isRecord(input.eligibility) ? input.eligibility : undefined;
+  const freshness = isRecord(input.freshness) ? input.freshness : undefined;
+  const candleSummary = isRecord(input.candleSummary) ? input.candleSummary : undefined;
+  if (!market || !orderBook || !account || !eligibility || !freshness || !candleSummary) {
+    return undefined;
+  }
+  if (
+    typeof input.requestedPrompt !== "string" ||
+    typeof market.symbol !== "string" ||
+    typeof market.base !== "string" ||
+    !isFiniteNumber(market.markPrice) ||
+    !isFiniteNumber(market.oraclePrice) ||
+    !isFiniteNumber(market.fundingRatePct) ||
+    !isFiniteNumber(market.openInterestUsd) ||
+    !Array.isArray(orderBook.bids) ||
+    !Array.isArray(orderBook.asks) ||
+    !Array.isArray(input.recentTrades) ||
+    !isAccountSummary(account) ||
+    !isEligibilityInput(eligibility) ||
+    !isFiniteNumber(freshness.now) ||
+    !isFiniteNumber(freshness.marketAsOf) ||
+    !isFiniteNumber(freshness.marketAgeSeconds) ||
+    !isFiniteNumber(input.timestamp)
+  ) {
+    return undefined;
+  }
+
+  const bids = orderBook.bids.filter(isBookLevel);
+  const asks = orderBook.asks.filter(isBookLevel);
+  const recentTrades = input.recentTrades.filter(isRecentTrade);
+  if (
+    bids.length !== orderBook.bids.length ||
+    asks.length !== orderBook.asks.length ||
+    recentTrades.length !== input.recentTrades.length
+  ) {
+    return undefined;
+  }
+
+  return input as unknown as AgentInput;
+}
 
 export function parseAgentAnalysis(output: unknown): AgentAnalysis | undefined {
   if (!isRecord(output)) {
@@ -228,6 +277,42 @@ function isAgentReceipt(input: unknown) {
     typeof input.label === "string" &&
     typeof input.value === "string" &&
     Number.isFinite(input.timestamp)
+  );
+}
+
+function isBookLevel(input: unknown): input is BookLevel {
+  return isRecord(input) && isFiniteNumber(input.price) && isFiniteNumber(input.size);
+}
+
+function isRecentTrade(input: unknown): input is RecentTrade {
+  return (
+    isRecord(input) &&
+    (input.side === "buy" || input.side === "sell") &&
+    isFiniteNumber(input.price) &&
+    isFiniteNumber(input.size) &&
+    isFiniteNumber(input.timestamp)
+  );
+}
+
+function isAccountSummary(input: Record<string, unknown>) {
+  return (
+    typeof input.address === "string" &&
+    isFiniteNumber(input.equityUsd) &&
+    isFiniteNumber(input.availableUsd) &&
+    isFiniteNumber(input.marginUsedUsd) &&
+    isFiniteNumber(input.unrealizedPnlUsd) &&
+    isFiniteNumber(input.dailyLiveNotionalUsedUsd) &&
+    isFiniteNumber(input.simulatedBalanceUsd) &&
+    Array.isArray(input.positions)
+  );
+}
+
+function isEligibilityInput(input: Record<string, unknown>) {
+  return (
+    typeof input.state === "string" &&
+    (input.mode === "paper" || input.mode === "live") &&
+    typeof input.liveAllowed === "boolean" &&
+    typeof input.paperAllowed === "boolean"
   );
 }
 

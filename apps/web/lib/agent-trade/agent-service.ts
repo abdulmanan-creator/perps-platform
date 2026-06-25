@@ -10,7 +10,6 @@ import {
   type AgentAnalysis,
   type AgentInput,
   type AgentProvider,
-  type AgentProviderName,
   type AgentResponseType,
 } from "./agent-provider";
 import {
@@ -67,25 +66,10 @@ function fmtSnapshotMarketUsd(snapshot: SharedTradingSnapshot, price: number): s
 }
 
 export function createAgentService(): AgentService {
-  return new DeterministicAgentService(createConfiguredAgentProvider());
-}
-
-export function createConfiguredAgentProvider(): AgentProvider {
-  const requested = readProviderName(process.env.AGENT_TRADE_AGENT_PROVIDER);
-  if (requested === "deterministic") {
-    return new DeterministicAgentService();
-  }
-
-  const apiKey = apiKeyForProvider(requested);
-  const liveCallsEnabled = process.env.AGENT_TRADE_ENABLE_LIVE_LLM === "true";
-  if (!apiKey || !liveCallsEnabled) {
-    const reason = !apiKey
-      ? `${requested} provider requested without an API key; using deterministic fallback.`
-      : `${requested} provider requested but live LLM calls are disabled; using deterministic fallback.`;
-    return new FallbackAgentProvider(requested, reason);
-  }
-
-  return new DisabledExternalAgentProvider(requested);
+  const provider = typeof window === "undefined"
+    ? new DeterministicAgentService()
+    : new AgentAnalysisRouteProvider();
+  return new DeterministicAgentService(provider);
 }
 
 export class DeterministicAgentService implements AgentService, AgentProvider {
@@ -677,81 +661,39 @@ function staleMarketWarning(isStale: boolean): string | undefined {
     : undefined;
 }
 
-function readProviderName(input: string | undefined): AgentProviderName {
-  if (input === "openai" || input === "anthropic" || input === "openrouter") {
-    return input;
-  }
-  return "deterministic";
-}
-
-function apiKeyForProvider(provider: AgentProviderName): string | undefined {
-  switch (provider) {
-    case "openai":
-      return process.env.OPENAI_API_KEY;
-    case "anthropic":
-      return process.env.ANTHROPIC_API_KEY;
-    case "openrouter":
-      return process.env.OPENROUTER_API_KEY;
-    case "deterministic":
-      return undefined;
-    default:
-      throw new Error(`Unsupported agent provider: ${provider}`);
-  }
-}
-
-class FallbackAgentProvider implements AgentProvider {
+class AgentAnalysisRouteProvider implements AgentProvider {
   readonly name = "deterministic" as const;
   private readonly deterministic = new DeterministicAgentService();
 
-  constructor(
-    private readonly requestedProvider: AgentProviderName,
-    private readonly fallbackReason: string,
-  ) {}
-
   async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
+    try {
+      const response = await fetch("/api/agent-trade/agent-analysis", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!response.ok) {
+        return await this.fallback(input, `Agent analysis route returned HTTP ${response.status}.`);
+      }
+      const parsed = parseAgentAnalysis(await response.json());
+      if (!parsed) {
+        return await this.fallback(input, "Agent analysis route returned invalid AgentAnalysis.");
+      }
+      return parsed;
+    } catch {
+      return await this.fallback(input, "Agent analysis route unavailable; using deterministic fallback.");
+    }
+  }
+
+  private async fallback(input: AgentInput, reason: string): Promise<AgentAnalysis> {
     const analysis = await this.deterministic.analyzeMarket(input);
     return {
       ...analysis,
+      warnings: [...analysis.warnings, reason],
       provider: {
         ...analysis.provider,
-        fallbackReason: this.fallbackReason,
+        fallbackReason: reason,
       },
-      warnings: [...analysis.warnings, this.fallbackReason],
-    };
-  }
-}
-
-class DisabledExternalAgentProvider implements AgentProvider {
-  readonly name: AgentProviderName;
-
-  constructor(provider: AgentProviderName) {
-    this.name = provider;
-  }
-
-  async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
-    return {
-      responseType: "refusal",
-      summary: "External agent provider is not wired yet.",
-      thesis:
-        `${this.name} was explicitly selected, but Phase 4A only defines the provider boundary. No live model call was made.`,
-      side: "none",
-      confidence: 0,
-      receipts: [
-        { label: "Provider", value: this.name, timestamp: input.timestamp },
-        { label: "Market", value: input.market.symbol, timestamp: input.freshness.marketAsOf },
-      ],
-      riskNote: "No order draft was created because external LLM execution is reserved for Phase 4B.",
-      whyWrong: "A deterministic read may still be available by setting AGENT_TRADE_AGENT_PROVIDER=deterministic.",
-      warnings: ["External model integration is disabled in Phase 4A."],
-      provider: {
-        name: this.name,
-        deterministic: false,
-        generatedAt: input.timestamp,
-        fallbackReason: "Phase 4A stub only; no external model call was made.",
-      },
-      id: "external-provider-disabled",
-      question: input.requestedPrompt,
-      annotations: [],
     };
   }
 }
