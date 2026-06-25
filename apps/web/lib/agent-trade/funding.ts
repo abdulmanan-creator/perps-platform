@@ -8,6 +8,7 @@ export type FundingStatus =
   | "paper_only"
   | "testnet_guidance"
   | "wallet_not_connected"
+  | "provider_configured_not_exposed"
   | "provider_ready"
   | "provider_opening"
   | "provider_error";
@@ -20,6 +21,8 @@ export interface FundingStateInput {
   walletConnected: boolean;
   providerEnabled: boolean;
   providerAvailable: boolean;
+  providerConfigured?: boolean;
+  depositAddressConfigured?: boolean;
   providerOpening?: boolean;
   providerError?: string | null;
 }
@@ -34,6 +37,14 @@ export interface FundingDisplay {
   primaryCtaEnabled: boolean;
   paperAvailable: boolean;
   liveFundingEnabled: boolean;
+}
+
+export interface FundingMethodDisplay {
+  title: string;
+  body: string;
+  status: string;
+  enabled: boolean;
+  detail: string;
 }
 
 export function getFundingDisplay(input: FundingStateInput): FundingDisplay {
@@ -110,6 +121,20 @@ export function getFundingDisplay(input: FundingStateInput): FundingDisplay {
   }
 
   if (!input.providerEnabled) {
+    if (input.providerConfigured) {
+      return {
+        status: "provider_configured_not_exposed",
+        tone: "amber",
+        title: "Provider configured, app hidden",
+        summary: "Funding providers may be configured outside the app, but Agent.trade keeps provider funding hidden until the product flag, eligibility, wallet readiness, compliance, and QA all pass.",
+        primaryCtaLabel: "Continue in paper mode",
+        primaryCtaKind: "paper",
+        primaryCtaEnabled: true,
+        paperAvailable: eligibility.paperAvailable,
+        liveFundingEnabled: false,
+      };
+    }
+
     return {
       status: "testnet_guidance",
       tone: "amber",
@@ -157,7 +182,7 @@ export function getFundingDisplay(input: FundingStateInput): FundingDisplay {
       tone: "green",
       title: "Provider ready",
       summary: "Fund your wallet through a supported Privy provider. Funding a wallet is separate from depositing into Hyperliquid.",
-      primaryCtaLabel: "Open on-ramp",
+      primaryCtaLabel: "Open provider",
       primaryCtaKind: "open_provider",
       primaryCtaEnabled: true,
       paperAvailable: eligibility.paperAvailable,
@@ -176,4 +201,51 @@ export function getFundingDisplay(input: FundingStateInput): FundingDisplay {
     paperAvailable: eligibility.paperAvailable,
     liveFundingEnabled: false,
   };
+}
+
+export function getFundingMethodDisplays(input: FundingStateInput): FundingMethodDisplay[] {
+  const display = getFundingDisplay(input);
+  const providerStatus = (() => {
+    if (display.liveFundingEnabled) {
+      return "Provider available";
+    }
+    if (display.status === "provider_configured_not_exposed") {
+      return "Dashboard configured; app hidden";
+    }
+    if (input.providerEnabled) {
+      return "Flag enabled; provider unavailable";
+    }
+    return "Not enabled in this environment";
+  })();
+
+  return [
+    {
+      title: "Supported today",
+      body: "Email, Google, existing-wallet sign-in, and embedded wallet creation are the supported onboarding methods when Privy is configured.",
+      status: input.hasPrivyEnv ? "Privy sign-in configured" : "Privy env missing",
+      enabled: input.hasPrivyEnv,
+      detail: "Current support is limited to configured sign-in and wallet readiness.",
+    },
+    {
+      title: "Provider wallet funding",
+      body: "Dashboard provider setup does not expose a user funding CTA by itself. Agent.trade requires the product flag, wallet readiness, live eligibility, legal approval, and QA.",
+      status: providerStatus,
+      enabled: display.liveFundingEnabled,
+      detail: "Provider funding adds funds to the wallet; it does not prove Hyperliquid account deposit.",
+    },
+    {
+      title: "Hyperliquid account deposit",
+      body: "Wallet funding and Hyperliquid account funding are separate states. Live orders remain disabled until account state, eligibility, and confirmation gates pass.",
+      status: "Separate account-readiness gate",
+      enabled: input.walletConnected && input.eligibilityState === "liveEligible",
+      detail: "Do not treat wallet balance as exchange margin until Hyperliquid account state confirms readiness.",
+    },
+    {
+      title: "Future deposit address",
+      body: "Deposit-address funding stays future-gated until an installed SDK or backend API is verified and an app-specific flag, status model, and compliance review exist.",
+      status: input.depositAddressConfigured ? "Dashboard configured; not exposed" : "Future gated",
+      enabled: false,
+      detail: "No deposit-address CTA is exposed from the current app state.",
+    },
+  ];
 }

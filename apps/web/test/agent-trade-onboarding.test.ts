@@ -4,6 +4,7 @@ import { getAccountReadinessDisplay, getLiveTradingReadiness } from "../lib/agen
 import { normalizeEligibilityResponse } from "../lib/agent-trade/eligibility";
 import { getFundingDisplay } from "../lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "../lib/agent-trade/onboarding";
+import { getOnboardingReadiness, supportedSignInMethods } from "../lib/agent-trade/onboarding-readiness";
 import type { EligibilityMode } from "../lib/agent-trade/types";
 
 describe("Agent.trade onboarding helpers", () => {
@@ -75,6 +76,93 @@ describe("Agent.trade onboarding helpers", () => {
   it("formats wallet addresses for display", () => {
     expect(formatWalletAddress()).toBe("Not connected");
     expect(formatWalletAddress("0x1234567890abcdef1234567890abcdef12345678")).toBe("0x1234...5678");
+  });
+
+  it("summarizes missing Privy env as local-dev paper readiness", () => {
+    const funding = getFundingDisplay({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: false,
+      walletConnected: false,
+      providerEnabled: false,
+      providerAvailable: false,
+      providerConfigured: true,
+    });
+    const readiness = getOnboardingReadiness({
+      hasPrivyEnv: false,
+      wallet: { status: "local-dev", authStatus: "not-configured" },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+      funding,
+    });
+
+    expect(readiness.signInMethods.value).toBe("Local-dev paper only");
+    expect(readiness.embeddedWallet.value).toBe("Privy env missing");
+    expect(readiness.tradingMode.value).toBe("Testnet eligible");
+    expect(readiness.funding.value).toBe("Provider not configured");
+  });
+
+  it("summarizes signed-in embedded wallet readiness without funding claims", () => {
+    const funding = getFundingDisplay({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: false,
+      providerAvailable: true,
+      providerConfigured: true,
+    });
+    const readiness = getOnboardingReadiness({
+      hasPrivyEnv: true,
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "embedded",
+        walletType: "privy",
+      },
+      eligibilityState: "liveEligible",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+      funding,
+    });
+
+    expect(readiness.signInMethods.value).toBe(supportedSignInMethods.join(", "));
+    expect(readiness.embeddedWallet.value).toBe("Connected");
+    expect(readiness.tradingMode.value).toBe("Testnet eligible");
+    expect(readiness.funding.value).toBe("Provider configured, app hidden");
+    expect(readiness.funding.ok).toBe(false);
+  });
+
+  it("summarizes restricted users as paper-only with funding disabled", () => {
+    const funding = getFundingDisplay({
+      eligibilityState: "restricted",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: true,
+      providerAvailable: true,
+      providerConfigured: true,
+    });
+    const readiness = getOnboardingReadiness({
+      hasPrivyEnv: true,
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "external",
+      },
+      eligibilityState: "restricted",
+      executionVenue: "hyperliquid-testnet",
+      mainnetExecutionEnabled: false,
+      killSwitchEnabled: false,
+      funding,
+    });
+
+    expect(readiness.eligibility.value).toBe("Restricted");
+    expect(readiness.tradingMode.value).toBe("Paper available");
+    expect(readiness.funding.ok).toBe(false);
+    expect(readiness.funding.detail).toContain("restricted");
   });
 
   it("labels disconnected users as paper/simulated account users", () => {

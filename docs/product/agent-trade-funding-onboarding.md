@@ -145,6 +145,14 @@ Current user-facing copy is mostly conservative:
   `useFundWallet`, and `@privy-io/wagmi`.
 - Tighten readiness copy and public docs around wallet-funded versus
   Hyperliquid-funded state.
+- Show a single readiness overview across onboarding and settings that names:
+  sign-in methods available, embedded wallet state, eligibility, paper/live
+  mode, and funding gate state.
+- Use provider-neutral funding copy in the app until a provider-specific SDK
+  path, product flag, dashboard setting, compliance approval, and end-to-end QA
+  are all verified.
+- Treat dashboard-configured provider rails and deposit-address setup as
+  "configured, not exposed" rather than supported user actions.
 
 ### 6B Crypto Deposit Address
 

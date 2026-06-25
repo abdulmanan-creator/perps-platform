@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getFundingDisplay } from "../lib/agent-trade/funding";
+import { getFundingDisplay, getFundingMethodDisplays } from "../lib/agent-trade/funding";
 
 describe("Agent.trade funding helpers", () => {
   it("keeps missing Privy env in local-dev paper mode", () => {
@@ -63,6 +63,22 @@ describe("Agent.trade funding helpers", () => {
     expect(display.summary).toContain("not enabled");
   });
 
+  it("distinguishes dashboard-configured providers from exposed app funding", () => {
+    const display = getFundingDisplay({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: false,
+      providerAvailable: true,
+      providerConfigured: true,
+    });
+
+    expect(display.status).toBe("provider_configured_not_exposed");
+    expect(display.liveFundingEnabled).toBe(false);
+    expect(display.primaryCtaKind).toBe("paper");
+    expect(display.summary).toContain("hidden until the product flag");
+  });
+
   it("enables provider CTA only when eligible, connected, product-enabled, and provider API is available", () => {
     const display = getFundingDisplay({
       eligibilityState: "liveEligible",
@@ -90,6 +106,25 @@ describe("Agent.trade funding helpers", () => {
     expect(display.status).toBe("testnet_guidance");
     expect(display.liveFundingEnabled).toBe(false);
     expect(display.primaryCtaKind).toBe("paper");
+  });
+
+  it("builds funding method cards without unsupported provider claims", () => {
+    const methods = getFundingMethodDisplays({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: false,
+      providerAvailable: true,
+      providerConfigured: true,
+      depositAddressConfigured: true,
+    });
+    const copy = methods
+      .flatMap((method) => [method.title, method.body, method.status, method.detail])
+      .join(" ");
+
+    expect(copy).toContain("Dashboard configured; app hidden");
+    expect(copy).toContain("Dashboard configured; not exposed");
+    expect(copy).not.toMatch(/\b(MoonPay|Stripe|ACH|Apple Pay|Google Pay|bank deposit)\b/u);
   });
 
   it("does not enable live funding while the provider is opening or errored", () => {

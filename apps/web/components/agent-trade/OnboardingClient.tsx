@@ -12,8 +12,12 @@ import {
 } from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
-import { getFundingDisplay } from "@/lib/agent-trade/funding";
+import { getFundingDisplay, getFundingMethodDisplays } from "@/lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
+import {
+  getOnboardingReadiness,
+  type ReadinessItem,
+} from "@/lib/agent-trade/onboarding-readiness";
 import type { AccountValueKind, EligibilityMode, EligibilityResponse } from "@/lib/agent-trade/types";
 
 interface WalletSummary {
@@ -29,6 +33,8 @@ interface WalletSummary {
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const PRIVY_FUNDING_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING === "true";
 const HL_BRIDGE_DEPOSIT_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT === "true";
+const DASHBOARD_PROVIDER_CONFIGURED = true;
+const DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED = true;
 
 export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboarding" | "settings" }) {
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
@@ -92,6 +98,7 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
       </section>
 
       <section className="onboarding-grid">
+        <ReadinessOverviewCardShell eligibility={eligibility} />
         <StatusCard eligibility={eligibility} />
         {HAS_PRIVY ? <PrivyWalletCard /> : <LocalDevWalletCard />}
         <AccountReadinessCardShell eligibility={eligibility} />
@@ -171,6 +178,80 @@ function StatusCard({ eligibility }: { eligibility: EligibilityResponse }) {
         />
       </div>
       <p className="onboarding-note">{display.summary}</p>
+    </div>
+  );
+}
+
+function ReadinessOverviewCardShell({ eligibility }: { eligibility: EligibilityResponse }) {
+  if (!HAS_PRIVY) {
+    return (
+      <ReadinessOverviewCard
+        eligibility={eligibility}
+        wallet={{ status: "local-dev", authStatus: "not-configured" }}
+        providerAvailable={false}
+      />
+    );
+  }
+  return <PrivyReadinessOverviewCard eligibility={eligibility} />;
+}
+
+function PrivyReadinessOverviewCard({ eligibility }: { eligibility: EligibilityResponse }) {
+  const wallet = useWalletSummary();
+  const { fundWallet } = useFundWallet();
+  return (
+    <ReadinessOverviewCard
+      eligibility={eligibility}
+      wallet={wallet}
+      providerAvailable={PRIVY_FUNDING_ENABLED && typeof fundWallet === "function"}
+    />
+  );
+}
+
+function ReadinessOverviewCard({
+  eligibility,
+  wallet,
+  providerAvailable,
+}: {
+  eligibility: EligibilityResponse;
+  wallet: WalletSummary;
+  providerAvailable: boolean;
+}) {
+  const funding = getFundingDisplay({
+    eligibilityState: eligibility.state,
+    hasPrivyEnv: HAS_PRIVY,
+    walletConnected: wallet.status === "connected",
+    providerEnabled: PRIVY_FUNDING_ENABLED,
+    providerAvailable,
+    providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
+    depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+  });
+  const overview = getOnboardingReadiness({
+    hasPrivyEnv: HAS_PRIVY,
+    wallet: toReadinessWallet(wallet),
+    eligibilityState: eligibility.state,
+    executionVenue: eligibility.executionVenue,
+    mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
+    killSwitchEnabled: eligibility.killSwitchEnabled,
+    funding,
+  });
+
+  return (
+    <div className="panel onboarding-card">
+      <div className="panel-head">
+        <div>
+          <span>Readiness overview</span>
+          <strong>{overview.label}</strong>
+        </div>
+        <span className={`readiness-pill ${overview.tone}`}>{funding.liveFundingEnabled ? "Funding ready" : "Funding gated"}</span>
+      </div>
+      <div className="readiness-list">
+        <ReadinessItemRow item={overview.signInMethods} />
+        <ReadinessItemRow item={overview.embeddedWallet} />
+        <ReadinessItemRow item={overview.eligibility} />
+        <ReadinessItemRow item={overview.tradingMode} />
+        <ReadinessItemRow item={overview.funding} />
+      </div>
+      <p className="onboarding-note">{overview.summary}</p>
     </div>
   );
 }
@@ -459,6 +540,19 @@ function FundingCard(props: {
     walletConnected: props.wallet.status === "connected",
     providerEnabled: props.providerEnabled,
     providerAvailable: props.providerAvailable,
+    providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
+    depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+    providerOpening: props.providerOpening,
+    providerError: props.providerError,
+  });
+  const methods = getFundingMethodDisplays({
+    eligibilityState: props.eligibility.state,
+    hasPrivyEnv: HAS_PRIVY,
+    walletConnected: props.wallet.status === "connected",
+    providerEnabled: props.providerEnabled,
+    providerAvailable: props.providerAvailable,
+    providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
+    depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
     providerOpening: props.providerOpening,
     providerError: props.providerError,
   });
@@ -503,18 +597,16 @@ function FundingCard(props: {
         </div>
       </div>
       <div className="funding-methods">
-        <FundingMethod
-          title="Provider wallet funding"
-          body="Privy dashboard providers may be configured, but Agent.trade only exposes a funding CTA when the product flag, wallet, eligibility, and provider hook are all ready."
-          status={
-            display.liveFundingEnabled
-              ? "Provider available"
-              : props.providerEnabled
-                ? "Disabled until ready"
-                : "Not enabled in this environment"
-          }
-          enabled={display.liveFundingEnabled}
-        />
+        {methods.map((method) => (
+          <FundingMethod
+            key={method.title}
+            title={method.title}
+            body={method.body}
+            status={method.status}
+            enabled={method.enabled}
+            detail={method.detail}
+          />
+        ))}
         <FundingMethod
           title="Hyperliquid deposit"
           body="Wallet funding is separate from depositing into Hyperliquid. The legacy bridge/deposit surface is hidden unless explicitly enabled for an approved internal environment."
@@ -526,18 +618,7 @@ function FundingCard(props: {
                 : "Default-off"
           }
           enabled={bridgeDepositEnabled}
-        />
-        <FundingMethod
-          title="Hyperliquid account funds"
-          body="Funding is handled outside this surface. Agent.trade reads Hyperliquid account state and only enables live orders after eligibility, wallet, account, and confirmation checks."
-          status={props.eligibility.mainnetExecutionEnabled ? "Mainnet account required" : "Testnet account required"}
-          enabled
-        />
-        <FundingMethod
-          title="MoonPay, Stripe, and deposit address"
-          body="MoonPay fiat onramp and deposit address funding are future/product-gated. Stripe requires SDK compatibility validation before Agent.trade exposes it in-app."
-          status={display.status === "provider_ready" ? "Provider-dependent" : "Not available in this state"}
-          enabled={display.status === "provider_ready"}
+          detail="This default-off legacy compatibility path is not normal onboarding."
         />
       </div>
       <p className="onboarding-note">
@@ -577,9 +658,18 @@ function ReadinessRow(props: { label: string; value: string; ok: boolean }) {
   );
 }
 
-function FundingMethod(props: { title: string; body: string; status: string; enabled: boolean }) {
+function ReadinessItemRow({ item }: { item: ReadinessItem }) {
   return (
-    <div className={`funding-method ${props.enabled ? "enabled" : "disabled"}`}>
+    <div className="readiness-row" title={item.detail}>
+      <span>{item.label}</span>
+      <strong className={item.ok ? "pos" : "neg"}>{item.value}</strong>
+    </div>
+  );
+}
+
+function FundingMethod(props: { title: string; body: string; status: string; enabled: boolean; detail: string }) {
+  return (
+    <div className={`funding-method ${props.enabled ? "enabled" : "disabled"}`} title={props.detail}>
       <strong>{props.title}</strong>
       <p>{props.body}</p>
       <span>{props.status}</span>
