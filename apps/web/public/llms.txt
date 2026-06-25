@@ -1,11 +1,12 @@
 # Alchemy Hyperliquid
 
-> Zero-custody REST API, TypeScript SDK, and AI connectors (MCP) for trading on Hyperliquid. Users sign locally or delegate to a trade-only agent key; every routed order carries Alchemy's builder code (0.04% perps / 0.05% spot, charged on top of Hyperliquid's own exchange fees).
+> Zero-custody REST API, TypeScript SDK, and AI connectors (MCP) for trading on Hyperliquid. Connectors let assistants research, explain, and draft; orders return to Agent.trade for confirmation. Every routed order carries Alchemy's builder code (0.04% perps / 0.05% spot, charged on top of Hyperliquid's own exchange fees).
 
 Key facts:
 - Private keys never transit Alchemy's servers. Orders are built server-side, signed client-side, and forwarded to Hyperliquid's /exchange endpoint with signature recovery as the only identity check.
-- AI assistants (Claude, ChatGPT) connect via a hosted MCP server using OAuth; a one-time approveAgent signature delegates trade-only authority (agents cannot withdraw funds — enforced by the Hyperliquid protocol).
+- AI assistants (Claude, ChatGPT) can research, explain, and draft trade proposals. Current connector flows do not place trades directly; orders return to Agent.trade for eligibility checks, caps, risk acknowledgement, wallet signature, and explicit confirmation.
 - Builder-fee approval is required once per wallet before trading, revocable any time by re-approving at 0%.
+- Permissioned connector execution is future roadmap only and is not live today.
 
 ## API
 
@@ -26,7 +27,7 @@ Key facts:
 
 ## AI Connectors (MCP)
 
-- [MCP server](https://alchemy-hl-mcp.onrender.com): streamable-HTTP MCP server with OAuth; 17 tools — get_markets, get_market_price, get_balance, get_positions, get_open_orders, get_fills, get_approval, get_prediction_markets, get_prediction_odds, place_market_order, place_limit_order, place_trigger_order (TP/SL), trade_prediction_market, close_position, cancel_order, set_leverage, approve_builder
+- [MCP server](https://alchemy-hl-mcp.onrender.com): streamable-HTTP MCP server for assistant research, explanation, and draft handoff. Connector orders return to Agent.trade for review and confirmation; autonomous or direct connector trade execution is not live.
 - [Claude setup](https://alchemy-hl-web.onrender.com/connect/claude): add the MCP URL as a custom connector
 - [ChatGPT setup](https://alchemy-hl-web.onrender.com/connect/chatgpt): register the same server via ChatGPT Apps
 
