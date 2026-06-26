@@ -10,6 +10,7 @@ import { eligibilityForRequest } from "./agentTradeSafety.js";
 export const GASLESS_HL_DEPOSIT_MIN_USDC_UNITS = 5_000_000n;
 export const GASLESS_HL_DEPOSIT_MAX_DEADLINE_SECONDS = 30 * 60;
 export const GASLESS_HL_DEPOSIT_CHAIN_ID = 42161;
+export const GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI = 100_000_000_000_000n;
 
 export interface GaslessDepositSignature {
   r: Hex;
@@ -27,6 +28,9 @@ export interface GaslessDepositPermitPayload {
 }
 
 export interface GaslessDepositRuntime {
+  readRelayerEthBalance?: (args: {
+    cfg: Config;
+  }) => Promise<bigint>;
   readUsdcBalance(args: {
     cfg: Config;
     owner: `0x${string}`;
@@ -81,6 +85,45 @@ export function gaslessDepositStatus(cfg: Config): {
     token: cfg.AGENT_TRADE_USDC_ARBITRUM,
     minDepositUsdc: 5,
     chainId: GASLESS_HL_DEPOSIT_CHAIN_ID,
+  };
+}
+
+export async function gaslessDepositRelayerStatus(args: {
+  cfg: Config;
+  runtime?: GaslessDepositRuntime;
+}): Promise<{ ready: boolean; reason: string; minBalanceWei: string }> {
+  const runtime = args.runtime ?? runtimeOverride ?? defaultRuntime;
+  const base = gaslessDepositStatus(args.cfg);
+  if (!base.enabled) {
+    return {
+      ready: false,
+      reason: base.reason,
+      minBalanceWei: GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI.toString(),
+    };
+  }
+
+  let balance: bigint;
+  try {
+    balance = await readRelayerEthBalance({ cfg: args.cfg, runtime });
+  } catch {
+    return {
+      ready: false,
+      reason: "Gasless deposit relayer status is unavailable.",
+      minBalanceWei: GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI.toString(),
+    };
+  }
+  if (balance < GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI) {
+    return {
+      ready: false,
+      reason: "Gasless deposit relayer needs Arbitrum ETH before it can pay gas.",
+      minBalanceWei: GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI.toString(),
+    };
+  }
+
+  return {
+    ready: true,
+    reason: "Gasless deposit relayer is funded.",
+    minBalanceWei: GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI.toString(),
   };
 }
 
@@ -153,7 +196,10 @@ export async function validateAndRelayGaslessDeposit(args: {
     );
   }
 
-  const txHash = await runtime.submitBridgeDeposit({
+  await assertRelayerFunded({ cfg: args.cfg, runtime });
+
+  const txHash = await submitBridgeDepositSafely({
+    runtime,
     cfg: args.cfg,
     owner: normalizedOwner,
     amount,
@@ -166,6 +212,70 @@ export async function validateAndRelayGaslessDeposit(args: {
     amount: amount.toString(),
     owner: normalizedOwner,
   };
+}
+
+async function assertRelayerFunded(args: {
+  cfg: Config;
+  runtime: GaslessDepositRuntime;
+}): Promise<void> {
+  const relayer = await gaslessDepositRelayerStatus(args);
+  if (!relayer.ready) {
+    throw new ApiException(
+      "INVALID_PARAMS",
+      relayer.reason,
+      "Ask the Agent.trade operator to fund the gasless deposit relayer with Arbitrum ETH, then retry.",
+    );
+  }
+}
+
+async function submitBridgeDepositSafely(args: {
+  runtime: GaslessDepositRuntime;
+  cfg: Config;
+  owner: `0x${string}`;
+  amount: bigint;
+  deadline: bigint;
+  signature: GaslessDepositSignature;
+}): Promise<Hex> {
+  try {
+    return await args.runtime.submitBridgeDeposit({
+      cfg: args.cfg,
+      owner: args.owner,
+      amount: args.amount,
+      deadline: args.deadline,
+      signature: args.signature,
+    });
+  } catch (err) {
+    if (err instanceof ApiException) {
+      throw err;
+    }
+    if (isRelayerInsufficientFundsError(err)) {
+      throw new ApiException(
+        "INVALID_PARAMS",
+        "Gasless deposit relayer needs Arbitrum ETH before it can pay gas.",
+        "Ask the Agent.trade operator to fund the gasless deposit relayer with Arbitrum ETH, then retry.",
+      );
+    }
+    throw new ApiException(
+      "INTERNAL_ERROR",
+      "Gasless deposit relay failed before submission.",
+      "Retry later or contact Agent.trade support. Do not sign repeated permits until the operator confirms the relayer is healthy.",
+    );
+  }
+}
+
+function isRelayerInsufficientFundsError(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+  return /insufficient funds|exceeds the balance of the account|gas \* gas fee \+ value/iu.test(text);
+}
+
+async function readRelayerEthBalance(args: {
+  cfg: Config;
+  runtime: GaslessDepositRuntime;
+}): Promise<bigint> {
+  if (args.runtime.readRelayerEthBalance) {
+    return await args.runtime.readRelayerEthBalance({ cfg: args.cfg });
+  }
+  return GASLESS_HL_DEPOSIT_MIN_RELAYER_ETH_WEI;
 }
 
 function assertGaslessDepositPolicy(args: {
@@ -257,7 +367,7 @@ function parseUsdcUnits(value: string): bigint {
   return BigInt(value);
 }
 
-const bridge2Abi = [
+export const bridge2Abi = [
   {
     type: "function",
     name: "batchedDepositWithPermit",
@@ -274,8 +384,8 @@ const bridge2Abi = [
             name: "signature",
             type: "tuple",
             components: [
-              { name: "r", type: "bytes32" },
-              { name: "s", type: "bytes32" },
+              { name: "r", type: "uint256" },
+              { name: "s", type: "uint256" },
               { name: "v", type: "uint8" },
             ],
           },
@@ -324,8 +434,23 @@ const defaultRuntime: GaslessDepositRuntime = {
         user: args.owner,
         usd: args.amount,
         deadline: args.deadline,
-        signature: args.signature,
+        signature: {
+          r: BigInt(args.signature.r),
+          s: BigInt(args.signature.s),
+          v: args.signature.v,
+        },
       }]],
     });
+  },
+  async readRelayerEthBalance(args) {
+    if (!args.cfg.AGENT_TRADE_DEPOSIT_RELAYER_PRIVATE_KEY) {
+      return 0n;
+    }
+    const relayer = privateKeyToAccount(args.cfg.AGENT_TRADE_DEPOSIT_RELAYER_PRIVATE_KEY as Hex);
+    const publicClient = createPublicClient({
+      chain: arbitrum,
+      transport: http(args.cfg.AGENT_TRADE_ARBITRUM_RPC_URL),
+    });
+    return await publicClient.getBalance({ address: relayer.address });
   },
 };

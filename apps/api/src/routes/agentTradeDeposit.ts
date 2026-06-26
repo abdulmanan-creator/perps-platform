@@ -5,6 +5,7 @@ import { ApiException } from "../errors.js";
 import { eligibilityForRequest } from "../helpers/agentTradeSafety.js";
 import { recordAuditEvent } from "../helpers/agentTradeAudit.js";
 import {
+  gaslessDepositRelayerStatus,
   gaslessDepositWalletAllowed,
   gaslessDepositStatus,
   validateAndRelayGaslessDeposit,
@@ -46,16 +47,31 @@ export async function agentTradeDepositRoute(app: FastifyInstance): Promise<void
 
     const state = eligibilityForRequest(req, app.config);
     const status = gaslessDepositStatus(app.config);
+    const relayer = await gaslessDepositRelayerStatus({ cfg: app.config });
     const allowlist = gaslessDepositWalletAllowed({
       cfg: app.config,
       wallet: query.user as `0x${string}` | undefined,
     });
-    const enabled = status.enabled && allowlist.allowed;
+    const enabled = status.enabled && relayer.ready && allowlist.allowed;
+    const reason = (() => {
+      if (!status.enabled) {
+        return status.reason;
+      }
+      if (!relayer.ready) {
+        return relayer.reason;
+      }
+      if (!allowlist.allowed) {
+        return allowlist.reason;
+      }
+      return status.reason;
+    })();
     return reply.send({
       ...status,
       enabled,
-      reason: status.enabled && !allowlist.allowed ? allowlist.reason : status.reason,
+      reason,
       allowed: allowlist.allowed,
+      relayerReady: relayer.ready,
+      relayerMinBalanceWei: relayer.minBalanceWei,
       eligibilityState: state,
       liveEligible: state === "liveEligible",
       mainnetExecutionEnabled: app.config.AGENT_TRADE_MAINNET_EXECUTION_ENABLED,
@@ -136,12 +152,19 @@ export async function agentTradeDepositRoute(app: FastifyInstance): Promise<void
         payload: {
           owner: body.owner.toLowerCase(),
           amount: body.amount,
-          error: err instanceof Error ? err.message : String(err),
+          error: safeDepositFailureMessage(err),
         },
       });
       throw err;
     }
   });
+}
+
+function safeDepositFailureMessage(err: unknown): string {
+  if (err instanceof ApiException) {
+    return err.message;
+  }
+  return "Gasless deposit relay failed before submission.";
 }
 
 function validationError(prefix: string, err: unknown): ApiException {

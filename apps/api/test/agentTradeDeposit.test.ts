@@ -1,10 +1,11 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { encodeFunctionData } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadConfig, type Config } from "../src/config.js";
 import { ApiException, sendError } from "../src/errors.js";
 import { resetAuditDbForTests, setAuditDbForTests } from "../src/helpers/agentTradeAudit.js";
-import { setGaslessDepositRuntimeForTests } from "../src/helpers/gaslessHlDeposit.js";
+import { bridge2Abi, setGaslessDepositRuntimeForTests } from "../src/helpers/gaslessHlDeposit.js";
 import {
   agentTradeDepositRoute,
   resetAgentTradeDepositRateLimitForTests,
@@ -198,6 +199,53 @@ describe("Agent.trade gasless Hyperliquid deposit route", () => {
     expect(submitted).toBe(false);
   });
 
+  it("reports disabled status when the relayer lacks Arbitrum ETH", async () => {
+    setGaslessDepositRuntimeForTests({
+      nowSeconds: () => 1_700_000_000,
+      readRelayerEthBalance: async () => 0n,
+      readUsdcBalance: async () => 20_000_000n,
+      submitBridgeDeposit: async () => TX_HASH,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/agent-trade/deposit/status?user=${USER}`,
+      headers: liveHeaders(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      enabled: false,
+      allowed: true,
+      relayerReady: false,
+    });
+    expect(res.json().reason).toMatch(/relayer needs Arbitrum ETH/i);
+  });
+
+  it("blocks relays before submission when the relayer lacks Arbitrum ETH", async () => {
+    let submitted = false;
+    setGaslessDepositRuntimeForTests({
+      nowSeconds: () => 1_700_000_000,
+      readRelayerEthBalance: async () => 0n,
+      readUsdcBalance: async () => 20_000_000n,
+      submitBridgeDeposit: async () => {
+        submitted = true;
+        return TX_HASH;
+      },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/deposit/permit",
+      headers: liveHeaders(),
+      payload: payload(),
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().message).toMatch(/relayer needs Arbitrum ETH/i);
+    expect(submitted).toBe(false);
+  });
+
   it("lets allowlisted wallets proceed to existing validation", async () => {
     const res = await app.inject({
       method: "POST",
@@ -284,6 +332,25 @@ describe("Agent.trade gasless Hyperliquid deposit route", () => {
     expect(res.json().owner.toLowerCase()).toBe(USER.toLowerCase());
   });
 
+  it("encodes Bridge2 batchedDepositWithPermit with the deployed uint256 signature selector", () => {
+    const data = encodeFunctionData({
+      abi: bridge2Abi,
+      functionName: "batchedDepositWithPermit",
+      args: [[{
+        user: USER,
+        usd: 5_000_000n,
+        deadline: 1_700_000_600n,
+        signature: {
+          r: BigInt(payload().signature.r),
+          s: BigInt(payload().signature.s),
+          v: payload().signature.v,
+        },
+      }]],
+    });
+
+    expect(data.slice(0, 10)).toBe("0xb30b5bce");
+  });
+
   it("does not write raw permit signatures to audit payloads", async () => {
     const params: unknown[][] = [];
     setAuditDbForTests({
@@ -304,5 +371,36 @@ describe("Agent.trade gasless Hyperliquid deposit route", () => {
     const serialized = JSON.stringify(params);
     expect(serialized).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     expect(serialized).not.toContain("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  });
+
+  it("does not write raw permit signatures to audit payloads on relay failure", async () => {
+    const params: unknown[][] = [];
+    setAuditDbForTests({
+      async query(_text, queryParams) {
+        params.push(queryParams ?? []);
+        return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+      },
+    });
+    setGaslessDepositRuntimeForTests({
+      nowSeconds: () => 1_700_000_000,
+      readRelayerEthBalance: async () => 1_000_000_000_000_000n,
+      readUsdcBalance: async () => 20_000_000n,
+      submitBridgeDeposit: async () => {
+        throw new Error("raw signature 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+      },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/deposit/permit",
+      headers: liveHeaders(),
+      payload: payload(),
+    });
+
+    expect(res.statusCode).toBe(500);
+    const serialized = JSON.stringify(params);
+    expect(serialized).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(serialized).not.toContain("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    expect(serialized).toContain("Gasless deposit relay failed before submission.");
   });
 });
