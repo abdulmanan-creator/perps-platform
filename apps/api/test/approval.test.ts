@@ -25,6 +25,7 @@ const baseEnv = {
   MAX_BUILDER_FEE_BPS_PERPS: "10",
   MAX_BUILDER_FEE_BPS_SPOT: "100",
 } as unknown as NodeJS.ProcessEnv;
+const TEST_BUILDER = "0xaaaa000000000000000000000000000000000001";
 
 async function buildApp(): Promise<FastifyInstance> {
   const cfg = loadConfig(baseEnv);
@@ -65,6 +66,7 @@ describe("GET /approval", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as ApprovalState;
+    expect(body.builder.toLowerCase()).toBe(TEST_BUILDER);
     expect(body.approved).toBe(false);
     expect(body.maxFeeRaw).toBe(0);
     expect(body.maxFeeRate).toBe("0%");

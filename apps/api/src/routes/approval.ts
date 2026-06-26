@@ -65,6 +65,7 @@ export async function approvalRoute(app: FastifyInstance): Promise<void> {
     const canTradeSpot = safeRaw >= app.config.SPOT_BUILDER_FEE_BPS * 10;
 
     const out: ApprovalState = {
+      builder: app.config.ALCHEMY_BUILDER_ADDRESS,
       approved: safeRaw > 0,
       maxFeeRate,
       maxFeeRaw: safeRaw,

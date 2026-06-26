@@ -86,6 +86,8 @@ export interface AgentState {
  * Maps Hyperliquid's `maxBuilderFee` raw int into something the UI can render.
  */
 export interface ApprovalState {
+  /** Builder address the approval state was checked against. */
+  builder: `0x${string}`;
   /** True iff the user has approved any positive fee for our builder. */
   approved: boolean;
   /** Human-friendly percentage, e.g. "0.04%" or "1%". */
