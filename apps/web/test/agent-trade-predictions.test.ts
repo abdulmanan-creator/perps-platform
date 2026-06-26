@@ -16,6 +16,7 @@ import {
   formatProbabilityPrice,
   formatSpread,
   formatUsdc,
+  formatPredictionLivePriceWire,
   getPredictionHip4MinOrderCostUsd,
   isResolvingSoon,
   isPredictionLiveTradingEnabled,
@@ -309,7 +310,7 @@ describe("Agent.trade prediction helpers", () => {
         outcome: 189,
         side: 0,
         action: "buy",
-        contracts: 6,
+        contracts: 53,
         limitProbability: 0.1888,
         tif: "Ioc",
         criteriaAcknowledged: true,
@@ -319,17 +320,38 @@ describe("Agent.trade prediction helpers", () => {
     expect(action).toEqual({
       type: "order",
       grouping: "na",
-      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "6", r: false, t: { limit: { tif: "Ioc" } } }],
+      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "53", r: false, t: { limit: { tif: "Ioc" } } }],
     });
   });
 
-  it("keeps HIP-4 live trading default-off, uses a $1 HIP-4 min, and summarizes nested exchange statuses", () => {
+  it("normalizes HIP-4 live order prices with Hyperliquid spot rules", () => {
+    expect(formatPredictionLivePriceWire(0.18879)).toBe("0.18879");
+    expect(formatPredictionLivePriceWire(0.188789123)).toBe("0.18879");
+
+    const action = buildPredictionLiveOrderAction({
+      assetId: 100_002_170,
+      order: {
+        questionId: 32,
+        outcome: 217,
+        side: 0,
+        action: "buy",
+        contracts: 53,
+        limitProbability: 0.188789123,
+        tif: "Ioc",
+        criteriaAcknowledged: true,
+        liveAcknowledged: true,
+      },
+    });
+    expect(action.orders[0]).toMatchObject({ a: 100_002_170, p: "0.18879", s: "53" });
+  });
+
+  it("keeps HIP-4 live trading default-off, uses a $10 HIP-4 min, and summarizes nested exchange statuses", () => {
     expect(isPredictionLiveTradingEnabled(undefined)).toBe(false);
     expect(isPredictionLiveTradingEnabled("false")).toBe(false);
     expect(isPredictionLiveTradingEnabled("true")).toBe(true);
-    expect(getPredictionHip4MinOrderCostUsd(undefined)).toBe(1);
+    expect(getPredictionHip4MinOrderCostUsd(undefined)).toBe(10);
     expect(getPredictionHip4MinOrderCostUsd("2.5")).toBe(2.5);
-    expect(getPredictionHip4MinOrderCostUsd("bad")).toBe(1);
+    expect(getPredictionHip4MinOrderCostUsd("bad")).toBe(10);
     expect(summarizePredictionLiveExchangeResult({
       exchangeResponse: { status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 99 } }] } } },
     })).toEqual({ status: "resting", label: "Resting open order", oid: 99 });

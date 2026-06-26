@@ -75,6 +75,30 @@ describe("buildLimitOrder", () => {
     // Cap to 4 decimals → 76.1602, sig-fig cap to 5 → "76.16".
     expect(a.orders[0]?.p).toBe("76.16");
   });
+
+  it("keeps perp price formatting unchanged after HIP-4 tick-size patch", () => {
+    const a = buildLimitOrder({
+      assetIndex: 159,
+      szDecimals: 2,
+      side: "buy",
+      size: 1,
+      price: 76.160175,
+    });
+    expect(a.orders[0]?.p).toBe("76.16");
+  });
+
+  it("formats spot outcome prices with HIP-4-compatible precision", () => {
+    const a = buildLimitOrder({
+      assetIndex: 100_002_170,
+      szDecimals: 0,
+      isSpot: true,
+      side: "buy",
+      size: 53,
+      price: 0.188789123,
+      tif: "Ioc",
+    });
+    expect(a.orders[0]).toMatchObject({ a: 100_002_170, p: "0.18879", s: "53" });
+  });
 });
 
 describe("buildMarketOrder", () => {

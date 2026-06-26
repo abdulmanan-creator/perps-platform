@@ -168,7 +168,7 @@ const ConfigSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
   AGENT_TRADE_MIN_ORDER_NOTIONAL_USD: z.coerce.number().positive().default(10),
-  AGENT_TRADE_HIP4_MIN_ORDER_COST_USD: z.coerce.number().positive().default(1),
+  AGENT_TRADE_HIP4_MIN_ORDER_COST_USD: z.coerce.number().positive().default(10),
   AGENT_TRADE_ORDER_NOTIONAL_CAP_USD: z.coerce.number().nonnegative().default(250),
   AGENT_TRADE_DAILY_NOTIONAL_CAP_USD: z.coerce.number().nonnegative().default(1000),
   AGENT_TRADE_INTERNAL_ALLOWLIST: z.string().default(""),

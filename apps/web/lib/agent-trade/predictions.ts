@@ -90,8 +90,8 @@ export function isPredictionLiveTradingEnabled(
 export function getPredictionHip4MinOrderCostUsd(
   value = process.env.NEXT_PUBLIC_AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
 ): number {
-  const parsed = Number(value ?? "1");
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  const parsed = Number(value ?? "10");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
 }
 
 export async function loadPredictionQuestions(): Promise<PredictionQuestion[]> {
@@ -169,7 +169,7 @@ export function buildPredictionLiveOrderAction(args: {
       {
         a: args.assetId,
         b: args.order.action === "buy",
-        p: formatProbabilityWire(args.order.limitProbability),
+        p: formatPredictionLivePriceWire(args.order.limitProbability),
         s: String(Math.floor(args.order.contracts)),
         r: false,
         t: { limit: { tif: args.order.tif } },
@@ -482,9 +482,24 @@ function clampProbability(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function formatProbabilityWire(value: number): string {
-  if (!Number.isFinite(value)) return "0";
-  return value.toFixed(8).replace(/0+$/u, "").replace(/\.$/u, "");
+export function formatPredictionLivePriceWire(value: number): string {
+  return formatHyperliquidPrice(value, 0, true);
+}
+
+function formatHyperliquidPrice(price: string | number, szDecimals: number, isSpot: boolean): string {
+  const parsed = typeof price === "number" ? price : Number(price);
+  if (!Number.isFinite(parsed)) return "0";
+  if (parsed === 0) return "0";
+
+  const maxDecimals = isSpot ? 8 : 6;
+  const decimalsAllowed = Math.max(0, maxDecimals - szDecimals);
+  const decimalRounded = Number(parsed.toFixed(decimalsAllowed));
+  const exp = Math.floor(Math.log10(Math.abs(decimalRounded)));
+  const decimalsForSigFigs = Math.max(0, 5 - 1 - exp);
+  const finalDecimals = Math.min(decimalsAllowed, decimalsForSigFigs);
+  const rounded = Number(decimalRounded.toFixed(finalDecimals));
+
+  return rounded.toFixed(10).replace(/\.?0+$/u, "");
 }
 
 function round(value: number, decimals = 6): number {

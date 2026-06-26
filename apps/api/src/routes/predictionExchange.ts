@@ -307,7 +307,8 @@ export function validatePredictionLiveExchange(args: {
     );
   }
 
-  const costUsd = prediction.limitProbability * prediction.contracts;
+  const expectedPrice = predictionLimitPriceWire(prediction.limitProbability);
+  const costUsd = Number(expectedPrice) * prediction.contracts;
   if (costUsd < args.cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD) {
     throw new ApiException(
       "INVALID_PARAMS",
@@ -316,7 +317,7 @@ export function validatePredictionLiveExchange(args: {
     );
   }
 
-  assertActionMatchesPrediction(args.body, prediction, side);
+  assertActionMatchesPrediction(args.body, prediction, side, expectedPrice);
 
   return { prediction, outcome, side };
 }
@@ -325,6 +326,7 @@ function assertActionMatchesPrediction(
   body: ExchangeBody,
   prediction: PredictionLiveOrderRequest,
   side: PredictionOutcomeSide,
+  expectedPrice: string,
 ): void {
   if (body.action.type !== "order" || body.action.grouping !== "na" || body.action.orders.length !== 1) {
     throw new ApiException(
@@ -364,13 +366,12 @@ function assertActionMatchesPrediction(
     );
   }
 
-  const price = Number(order.p);
   const size = Number(order.s);
-  if (!Number.isFinite(price) || Math.abs(price - prediction.limitProbability) > 1e-9) {
+  if (order.p !== expectedPrice) {
     throw new ApiException(
       "INVALID_PARAMS",
-      "Prediction order price does not match the requested probability.",
-      "Use the same probability in prediction.limitProbability and order.p.",
+      "Prediction order price does not match the normalized HIP-4 wire probability.",
+      `Use ${expectedPrice} for order.p after Hyperliquid spot price rounding.`,
     );
   }
   if (!Number.isInteger(size) || size !== prediction.contracts) {
@@ -380,6 +381,32 @@ function assertActionMatchesPrediction(
       "Use the same whole contract count in prediction.contracts and order.s.",
     );
   }
+}
+
+function predictionLimitPriceWire(limitProbability: number): string {
+  return formatHyperliquidPrice(limitProbability, 0, true);
+}
+
+function formatHyperliquidPrice(price: string | number, szDecimals: number, isSpot: boolean): string {
+  const parsed = typeof price === "number" ? price : Number(price);
+  if (!Number.isFinite(parsed)) {
+    throw new ApiException(
+      "INVALID_PARAMS",
+      "Prediction limit probability must be finite.",
+      "Use a numeric probability price before building the HIP-4 order.",
+    );
+  }
+  if (parsed === 0) return "0";
+
+  const maxDecimals = isSpot ? 8 : 6;
+  const decimalsAllowed = Math.max(0, maxDecimals - szDecimals);
+  const decimalRounded = Number(parsed.toFixed(decimalsAllowed));
+  const exp = Math.floor(Math.log10(Math.abs(decimalRounded)));
+  const decimalsForSigFigs = Math.max(0, 5 - 1 - exp);
+  const finalDecimals = Math.min(decimalsAllowed, decimalsForSigFigs);
+  const rounded = Number(decimalRounded.toFixed(finalDecimals));
+
+  return rounded.toFixed(10).replace(/\.?0+$/u, "");
 }
 
 function predictionMinCostMessage(cfg: Config): string {
