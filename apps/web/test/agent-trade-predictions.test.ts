@@ -18,12 +18,15 @@ import {
   formatUsdc,
   formatPredictionLivePriceWire,
   getPredictionHip4MinOrderCostUsd,
+  hasValidPredictionTopOfBook,
   isResolvingSoon,
   isPredictionLiveTradingEnabled,
+  loadPredictionDiscoveryOddsSummaries,
   maxPayoutForContracts,
   premiumForContracts,
   predictionPaperFillsForQuestion,
   predictionPaperPositionsForQuestion,
+  prioritizePredictionOutcomeIds,
   summarizePredictionLiveExchangeResult,
   summarizePredictionPortfolioExposure,
   summarizeQuestionOdds,
@@ -272,6 +275,9 @@ describe("Agent.trade prediction helpers", () => {
     expect(formatSpread(0.05)).toBe("5.0 pts");
     expect(formatEmptyBook({ emptyBook: true, bestBid: null, bestAsk: null })).toBe("Empty book");
     expect(formatEmptyBook({ emptyBook: false, bestBid: "0.2", bestAsk: null })).toBe("One-sided book");
+    expect(hasValidPredictionTopOfBook(undefined)).toBe(false);
+    expect(hasValidPredictionTopOfBook(questionOdds.outcomes[0]?.sides[0])).toBe(true);
+    expect(hasValidPredictionTopOfBook(questionOdds.outcomes[0]?.sides[1])).toBe(false);
   });
 
   it("summarizes odds for discovery cards", () => {
@@ -281,6 +287,36 @@ describe("Agent.trade prediction helpers", () => {
     expect(summary.totalDepth).toBe(50);
     expect(summary.widestSpread).toBe(0.05);
     expect(summary.visibleOutcomes[0]?.midpointProbability).toBe(0.225);
+  });
+
+  it("keeps discovery odds failures non-blocking", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limited", { status: 429 })));
+    await expect(loadPredictionDiscoveryOddsSummaries({
+      questionIds: [1, 2],
+      timeoutMs: 10,
+      concurrency: 1,
+    })).resolves.toEqual([]);
+  });
+
+  it("prioritizes selected and known liquid World Cup outcomes", () => {
+    const worldCup = {
+      ...baseQuestions[1]!,
+      questionId: 32,
+      namedOutcomes: [
+        ...baseQuestions[1]!.namedOutcomes,
+        {
+          outcome: 189,
+          name: "France",
+          description: "",
+          quoteToken: "USDC",
+          sides: [
+            { side: 0 as const, name: "Yes", encoding: 1890, coin: "#1890", assetId: 100_001_890 },
+            { side: 1 as const, name: "No", encoding: 1891, coin: "#1891", assetId: 100_001_891 },
+          ],
+        },
+      ],
+    };
+    expect(prioritizePredictionOutcomeIds(worldCup, 12).slice(0, 2)).toEqual([12, 189]);
   });
 
   it("computes read-only ticket preview math", () => {
@@ -471,14 +507,22 @@ describe("prediction route smoke", () => {
 
   it("wires the /predictions route to the prediction client", () => {
     const source = readFileSync(join(process.cwd(), "app/predictions/page.tsx"), "utf8");
+    const clientSource = readFileSync(join(process.cwd(), "components/agent-trade/PredictionsClient.tsx"), "utf8");
     expect(source).toContain("PredictionsClient");
     expect(source).toContain("AppShell");
+    expect(clientSource).toContain("loadPredictionQuestions");
+    expect(clientSource).toContain("loadPredictionDiscoveryOddsSummaries");
+    expect(clientSource).toContain("Question cards remain available");
   });
 
   it("wires the detail route to the prediction detail client", () => {
     const source = readFileSync(join(process.cwd(), "app/predictions/[questionId]/page.tsx"), "utf8");
+    const detailSource = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
     expect(source).toContain("PredictionDetailClient");
     expect(source).toContain("questionId");
+    expect(detailSource).toContain("Odds load progressively after the shell appears");
+    expect(detailSource).toContain("loadPredictionQuestionOddsProgressive");
+    expect(detailSource).toContain("Refresh odds");
   });
 
   it("keeps the World Cup detail route graceful when live data is unavailable", () => {
@@ -517,6 +561,9 @@ describe("prediction route smoke", () => {
     expect(source).toContain("predictionLiveExchangeEndpoint");
     expect(source).toContain("Review live order");
     expect(source).toContain("Prediction market order, not a leveraged perp.");
+    expect(source).toContain("Selected outcome odds are loading");
+    expect(source).toContain("Live review requires a valid two-sided top of book");
+    expect(source).toContain("hasValidPredictionTopOfBook");
   });
 
   it("renders technical details in the live prediction confirmation", () => {

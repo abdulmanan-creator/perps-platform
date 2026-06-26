@@ -25,10 +25,13 @@ import {
   formatUsdc,
   buildPredictionLiveOrderAction,
   getPredictionHip4MinOrderCostUsd,
+  hasValidPredictionTopOfBook,
   isPredictionLiveTradingEnabled,
   loadPredictionQuestion,
-  loadPredictionQuestionOdds,
+  loadPredictionOutcomeOdds,
+  loadPredictionQuestionOddsProgressive,
   loadPredictionPaperAccount,
+  mergePredictionOutcomeOdds,
   predictionPaperFillsForQuestion,
   probabilityFromSide,
   predictionLiveExchangeEndpoint,
@@ -60,6 +63,9 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const [selectedOutcomeId, setSelectedOutcomeId] = useState<number | undefined>();
   const [selectedSideIndex, setSelectedSideIndex] = useState<0 | 1>(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [oddsStatus, setOddsStatus] = useState<"idle" | "loading" | "partial" | "ready" | "failed">("idle");
+  const [oddsError, setOddsError] = useState<string | undefined>();
+  const [oddsRefreshNonce, setOddsRefreshNonce] = useState(0);
   const [error, setError] = useState<string | undefined>();
   const [eligibility, setEligibility] = useState<EligibilityResponse>(DEFAULT_ELIGIBILITY_RESPONSE);
   const { ready: privyReady, authenticated, login } = usePrivy();
@@ -72,16 +78,13 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
     async function load() {
       setIsLoading(true);
       try {
-        const [nextQuestion, nextOdds, nextPaperAccount] = await Promise.all([
-          loadPredictionQuestion(questionId),
-          loadPredictionQuestionOdds(questionId),
-          loadPredictionPaperAccount(),
-        ]);
+        const nextQuestion = await loadPredictionQuestion(questionId);
         if (!cancelled) {
           setQuestion(nextQuestion);
-          setOdds(nextOdds);
-          setPaperAccount(nextPaperAccount);
-          setSelectedOutcomeId(nextQuestion.namedOutcomes[0]?.outcome ?? nextQuestion.fallbackOutcome?.outcome);
+          setOdds(undefined);
+          setOddsStatus("idle");
+          setOddsError(undefined);
+          setSelectedOutcomeId(defaultPredictionOutcomeId(nextQuestion));
           setError(undefined);
         }
       } catch {
@@ -102,6 +105,58 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
       cancelled = true;
     };
   }, [questionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPaperAccount() {
+      const nextPaperAccount = await loadPredictionPaperAccount();
+      if (!cancelled) setPaperAccount(nextPaperAccount);
+    }
+    void loadPaperAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [questionId]);
+
+  useEffect(() => {
+    if (!question) return;
+    let cancelled = false;
+    const activeQuestion = question;
+
+    async function loadOdds() {
+      setOddsStatus((current) => current === "partial" ? "partial" : "loading");
+      setOddsError(undefined);
+      try {
+        const nextOdds = await loadPredictionQuestionOddsProgressive({
+          question: activeQuestion,
+          selectedOutcomeId,
+          limit: activeQuestion.questionId === 32 ? 10 : 8,
+          concurrency: 2,
+          timeoutMs: 4_500,
+          onOutcome: (outcomeOdds) => {
+            if (cancelled) return;
+            setOdds((current) => mergePredictionOutcomeOdds(current, activeQuestion, outcomeOdds));
+            setOddsStatus("partial");
+          },
+        });
+        if (!cancelled) {
+          setOdds(nextOdds);
+          setOddsStatus("ready");
+          setOddsError(undefined);
+        }
+      } catch {
+        if (!cancelled) {
+          setOddsStatus((current) => current === "partial" ? "partial" : "failed");
+          setOddsError("Odds timed out or were rate-limited. The market shell remains usable; refresh odds to retry.");
+        }
+      }
+    }
+
+    void loadOdds();
+    return () => {
+      cancelled = true;
+    };
+  }, [question, selectedOutcomeId, oddsRefreshNonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,14 +187,17 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   );
   const paperPositions = question ? enrichPredictionPaperPositions(paperAccount, question, odds) : [];
   const paperFills = question ? predictionPaperFillsForQuestion(paperAccount, question.questionId) : [];
+  const selectedSideLoading = Boolean(question && selectedOutcomeId !== undefined && !selectedSide && oddsStatus !== "failed");
 
   function refreshPaperAccount(nextAccount: PredictionPaperAccount) {
     setPaperAccount(nextAccount);
     void Promise.all([
-      loadPredictionQuestionOdds(questionId),
+      selectedOutcomeId !== undefined ? loadPredictionOutcomeOdds(selectedOutcomeId) : Promise.resolve(undefined),
       loadPredictionPaperAccount(),
-    ]).then(([nextOdds, refreshedAccount]) => {
-      setOdds(nextOdds);
+    ]).then(([nextOutcomeOdds, refreshedAccount]) => {
+      if (nextOutcomeOdds && question) {
+        setOdds((current) => mergePredictionOutcomeOdds(current, question, nextOutcomeOdds));
+      }
       if (refreshedAccount) {
         setPaperAccount(refreshedAccount);
       }
@@ -167,7 +225,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
       <main className="predictions-page">
         <section className="panel predictions-empty">
           <strong>Loading prediction question</strong>
-          <span>Fetching read-only HIP-4 metadata and odds.</span>
+          <span>Fetching read-only HIP-4 metadata. Odds load progressively after the shell appears.</span>
         </section>
       </main>
     );
@@ -194,19 +252,33 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
           <OutcomeGrid
             question={question}
             odds={odds}
+            oddsStatus={oddsStatus}
+            oddsError={oddsError}
             selectedOutcomeId={selectedOutcomeId}
             selectedSideIndex={selectedSideIndex}
+            onRefresh={() => {
+              setOdds(undefined);
+              setOddsStatus("idle");
+              setOddsError(undefined);
+              setOddsRefreshNonce((value) => value + 1);
+            }}
             onSelect={(outcomeId, side) => {
               setSelectedOutcomeId(outcomeId);
               setSelectedSideIndex(side);
             }}
           />
-          <OrderBookPreview outcome={selectedOutcome} side={selectedSide} />
+          <OrderBookPreview
+            outcome={selectedOutcome}
+            side={selectedSide}
+            isLoading={selectedSideLoading}
+            error={oddsError}
+          />
         </aside>
         <div className="prediction-terminal-center">
           <ProbabilitySnapshot
             question={question}
             odds={odds}
+            oddsStatus={oddsStatus}
             selectedOutcomeId={selectedOutcomeId}
             onSelect={(outcomeId) => {
               setSelectedOutcomeId(outcomeId);
@@ -231,6 +303,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             walletReady={privyReady}
             authenticated={authenticated}
             activeWallet={activeWallet}
+            selectedSideLoading={selectedSideLoading}
             onLogin={login}
             onSelect={(outcomeId, side) => {
               setSelectedOutcomeId(outcomeId);
@@ -256,10 +329,14 @@ export const PREDICTION_RISK_COPY = [
 function OutcomeGrid(props: {
   question: PredictionQuestion;
   odds: PredictionQuestionOdds | undefined;
+  oddsStatus: "idle" | "loading" | "partial" | "ready" | "failed";
+  oddsError?: string;
   selectedOutcomeId: number | undefined;
   selectedSideIndex: 0 | 1;
+  onRefresh: () => void;
   onSelect: (outcome: number, side: 0 | 1) => void;
 }) {
+  const isLoadingOdds = props.oddsStatus === "loading" || props.oddsStatus === "partial";
   return (
     <section className="panel prediction-outcome-panel">
       <div className="panel-head">
@@ -267,7 +344,12 @@ function OutcomeGrid(props: {
           <span>Outcome markets</span>
           <strong>{props.question.namedOutcomes.length} named outcomes</strong>
         </div>
+        <button type="button" onClick={props.onRefresh}>
+          {isLoadingOdds ? "Refreshing..." : "Refresh odds"}
+        </button>
       </div>
+      {props.oddsError ? <p className="market-notice">{props.oddsError}</p> : null}
+      {isLoadingOdds ? <p className="market-notice">Loading priority outcome books first. Other markets remain selectable.</p> : null}
       <div className="prediction-outcome-grid">
         {props.question.namedOutcomes.map((outcome) => {
           const outcomeOdds = selectedOutcomeOdds(props.odds, outcome.outcome);
@@ -289,7 +371,7 @@ function OutcomeGrid(props: {
                     >
                       <span>{side.name}</span>
                       <strong>{formatProbability(odds?.midpointProbability)}</strong>
-                      <em>{formatEmptyBook(odds ?? { emptyBook: true, bestBid: null, bestAsk: null })}</em>
+                      <em>{odds ? formatEmptyBook(odds) : "Loading odds"}</em>
                       <small>
                         Bid {formatProbabilityPrice(odds?.bestBid)} / Ask {formatProbabilityPrice(odds?.bestAsk)}
                       </small>
@@ -309,6 +391,7 @@ function OutcomeGrid(props: {
 function ProbabilitySnapshot(props: {
   question: PredictionQuestion;
   odds: PredictionQuestionOdds | undefined;
+  oddsStatus: "idle" | "loading" | "partial" | "ready" | "failed";
   selectedOutcomeId: number | undefined;
   onSelect: (outcomeId: number) => void;
 }) {
@@ -335,7 +418,9 @@ function ProbabilitySnapshot(props: {
           <span>Implied probability snapshot</span>
           <strong>{selected ? selected.outcome.name : "Select outcome"}</strong>
         </div>
-        <span className="state-pill account-warning">Read-only live books</span>
+        <span className="state-pill account-warning">
+          {props.oddsStatus === "loading" ? "Loading books" : props.oddsStatus === "partial" ? "Partial books" : "Read-only live books"}
+        </span>
       </div>
       <div className="prediction-probability-stage">
         <div className="prediction-chart-head">
@@ -371,7 +456,17 @@ function ProbabilitySnapshot(props: {
   );
 }
 
-function OrderBookPreview({ outcome, side }: { outcome: PredictionOutcome | undefined; side: PredictionSideOdds | undefined }) {
+function OrderBookPreview({
+  outcome,
+  side,
+  isLoading,
+  error,
+}: {
+  outcome: PredictionOutcome | undefined;
+  side: PredictionSideOdds | undefined;
+  isLoading: boolean;
+  error?: string;
+}) {
   return (
     <section className="panel prediction-book-panel">
       <div className="panel-head">
@@ -380,6 +475,8 @@ function OrderBookPreview({ outcome, side }: { outcome: PredictionOutcome | unde
           <strong>{outcome && side ? `${outcome.name} / ${side.name}` : "Select outcome"}</strong>
         </div>
       </div>
+      {error ? <p className="market-notice">{error}</p> : null}
+      {isLoading ? <p className="market-notice">Selected outcome book is loading. Live submit stays disabled until bid and ask are available.</p> : null}
       {side ? (
         <div className="prediction-book-body">
           <div className="prediction-probability-rail" aria-label="Probability rail">
@@ -468,6 +565,7 @@ function PredictionPaperTicket(props: {
   walletReady: boolean;
   authenticated: boolean;
   activeWallet?: ConnectedWallet;
+  selectedSideLoading: boolean;
   onLogin: () => void;
   onSelect: (outcomeId: number, side: 0 | 1) => void;
   onPaperAccount: (account: PredictionPaperAccount) => void;
@@ -506,7 +604,13 @@ function PredictionPaperTicket(props: {
   const liquidityWarning = paperLiquidityWarning(props.selectedSide);
   const selectedTechnical = props.selectedOutcome?.sides[props.selectedSideIndex];
   const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
-  const canSubmitLive = canSubmit && liveAvailable.allowed && Boolean(selectedTechnical) && math.estimatedCost >= hip4MinOrderCostUsd;
+  const selectedTopOfBookReady = hasValidPredictionTopOfBook(props.selectedSide);
+  const canSubmitLive =
+    canSubmit &&
+    liveAvailable.allowed &&
+    Boolean(selectedTechnical) &&
+    selectedTopOfBookReady &&
+    math.estimatedCost >= hip4MinOrderCostUsd;
 
   async function submitPaperOrder() {
     if (!props.selectedOutcome || !props.selectedSide || !canSubmit) return;
@@ -683,6 +787,12 @@ function PredictionPaperTicket(props: {
           </div>
         ) : null}
         <p className="market-notice">{liquidityWarning}</p>
+        {mode === "live" && props.selectedSideLoading ? (
+          <p className="market-notice">Selected outcome odds are loading. Live review unlocks after bid and ask are available.</p>
+        ) : null}
+        {mode === "live" && props.selectedSide && !selectedTopOfBookReady ? (
+          <p className="market-notice">Live review requires a valid two-sided top of book for the selected outcome side.</p>
+        ) : null}
         {mode === "live" && math.estimatedCost < hip4MinOrderCostUsd ? (
           <p className="market-notice">Live HIP-4 cost must be at least {formatUsdc(hip4MinOrderCostUsd)}.</p>
         ) : null}
@@ -930,6 +1040,14 @@ async function readJsonOrEmpty(response: Response): Promise<unknown> {
 function probabilityBarWidth(probability: number | null | undefined): number {
   if (probability === null || probability === undefined || !Number.isFinite(probability)) return 4;
   return Math.min(100, Math.max(4, probability * 100));
+}
+
+function defaultPredictionOutcomeId(question: PredictionQuestion): number | undefined {
+  if (question.questionId === 32) {
+    const france = question.namedOutcomes.find((outcome) => outcome.outcome === 189);
+    if (france) return france.outcome;
+  }
+  return question.namedOutcomes[0]?.outcome ?? question.fallbackOutcome?.outcome;
 }
 
 function PredictionRiskCopy() {

@@ -80,6 +80,14 @@ export interface PredictionLiveExchangeResult {
 }
 
 export const PREDICTION_LIVE_EXCHANGE_PATH = "/prediction/exchange";
+export const PREDICTION_ODDS_TIMEOUT_MS = 4_500;
+export const PREDICTION_ODDS_CONCURRENCY = 2;
+const WORLD_CUP_QUESTION_ID = 32;
+const WORLD_CUP_PRIORITY_OUTCOMES = [189, 173, 178, 188, 205, 212, 200, 217, 190, 202];
+
+interface PredictionFetchOptions {
+  timeoutMs?: number;
+}
 
 export function isPredictionLiveTradingEnabled(
   value = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HIP4_LIVE_TRADING,
@@ -112,12 +120,76 @@ export async function loadPredictionQuestion(questionId: number): Promise<Predic
   return body.question;
 }
 
-export async function loadPredictionQuestionOdds(questionId: number): Promise<PredictionQuestionOdds> {
-  const res = await fetch(`${API_BASE_URL}/prediction/questions/${questionId}/odds`, { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(`prediction question odds request failed: ${res.status}`);
-  }
-  return (await res.json()) as PredictionQuestionOdds;
+export async function loadPredictionQuestionOdds(
+  questionId: number,
+  options: PredictionFetchOptions = {},
+): Promise<PredictionQuestionOdds> {
+  return fetchJsonWithTimeout<PredictionQuestionOdds>(
+    `${API_BASE_URL}/prediction/questions/${questionId}/odds`,
+    options.timeoutMs ?? PREDICTION_ODDS_TIMEOUT_MS,
+    `prediction question odds request failed for ${questionId}`,
+  );
+}
+
+export async function loadPredictionDiscoveryOddsSummaries(args: {
+  questionIds: number[];
+  timeoutMs?: number;
+  concurrency?: number;
+}): Promise<PredictionDiscoveryOddsSummary[]> {
+  const summaries: PredictionDiscoveryOddsSummary[] = [];
+  await mapWithConcurrency(
+    args.questionIds,
+    args.concurrency ?? PREDICTION_ODDS_CONCURRENCY,
+    async (questionId) => {
+      try {
+        const summary = summarizeQuestionOdds(
+          await loadPredictionQuestionOdds(questionId, { timeoutMs: args.timeoutMs }),
+        );
+        summaries.push(summary);
+      } catch {
+        // Discovery cards must stay usable when odds are slow or rate-limited.
+      }
+    },
+  );
+  return summaries;
+}
+
+export async function loadPredictionOutcomeOdds(
+  outcomeId: number,
+  options: PredictionFetchOptions = {},
+): Promise<PredictionOutcomeOdds> {
+  return fetchJsonWithTimeout<PredictionOutcomeOdds>(
+    `${API_BASE_URL}/prediction/outcomes/${outcomeId}/odds`,
+    options.timeoutMs ?? PREDICTION_ODDS_TIMEOUT_MS,
+    `prediction outcome odds request failed for ${outcomeId}`,
+  );
+}
+
+export async function loadPredictionQuestionOddsProgressive(args: {
+  question: PredictionQuestion;
+  selectedOutcomeId?: number;
+  limit?: number;
+  timeoutMs?: number;
+  concurrency?: number;
+  onOutcome?: (outcome: PredictionOutcomeOdds) => void;
+}): Promise<PredictionQuestionOdds> {
+  const orderedOutcomeIds = prioritizePredictionOutcomeIds(args.question, args.selectedOutcomeId)
+    .slice(0, args.limit ?? 10);
+  const outcomes = await mapWithConcurrency(
+    orderedOutcomeIds,
+    args.concurrency ?? PREDICTION_ODDS_CONCURRENCY,
+    async (outcomeId) => {
+      const outcomeOdds = await loadPredictionOutcomeOdds(outcomeId, { timeoutMs: args.timeoutMs });
+      args.onOutcome?.(outcomeOdds);
+      return outcomeOdds;
+    },
+  );
+  return {
+    questionId: args.question.questionId,
+    name: args.question.name,
+    fetchedAt: Date.now(),
+    outcomes,
+  };
 }
 
 export async function loadPredictionPaperAccount(
@@ -241,6 +313,45 @@ export function summarizeQuestionOdds(odds: PredictionQuestionOdds): PredictionD
     widestSpread,
     hasThinLiquidity: nonEmptySideCount === 0 || totalDepth < 100 || (widestSpread !== null && widestSpread >= 0.2),
   };
+}
+
+export function mergePredictionOutcomeOdds(
+  current: PredictionQuestionOdds | undefined,
+  question: PredictionQuestion,
+  nextOutcome: PredictionOutcomeOdds,
+): PredictionQuestionOdds {
+  const currentOutcomes = current?.outcomes ?? [];
+  const merged = [
+    ...currentOutcomes.filter((outcome) => outcome.outcome !== nextOutcome.outcome),
+    nextOutcome,
+  ];
+  const order = new Map(question.namedOutcomes.map((outcome, index) => [outcome.outcome, index]));
+  if (question.fallbackOutcome) order.set(question.fallbackOutcome.outcome, -1);
+  return {
+    questionId: question.questionId,
+    name: question.name,
+    fetchedAt: Date.now(),
+    outcomes: merged.sort((a, b) => (order.get(a.outcome) ?? 9999) - (order.get(b.outcome) ?? 9999)),
+  };
+}
+
+export function prioritizePredictionOutcomeIds(
+  question: PredictionQuestion,
+  selectedOutcomeId?: number,
+): number[] {
+  const allIds = question.namedOutcomes.map((outcome) => outcome.outcome);
+  const priority = question.questionId === WORLD_CUP_QUESTION_ID
+    ? WORLD_CUP_PRIORITY_OUTCOMES.filter((outcomeId) => allIds.includes(outcomeId))
+    : allIds.slice(0, 8);
+  return uniqueNumbers([
+    selectedOutcomeId,
+    ...priority,
+    ...allIds,
+  ]);
+}
+
+export function hasValidPredictionTopOfBook(side: PredictionSideOdds | undefined): boolean {
+  return Boolean(side?.bestBid && side.bestAsk && !side.emptyBook);
 }
 
 export function filterAndSortPredictionQuestions(args: {
@@ -406,6 +517,41 @@ function mostLiquidSide(outcome: PredictionOutcomeOdds): PredictionSideOdds | un
     const depthB = b.depth.bidSize + b.depth.askSize;
     return depthB - depthA;
   })[0];
+}
+
+async function fetchJsonWithTimeout<T>(url: string, timeoutMs: number, message: string): Promise<T> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+    if (!res.ok) throw new Error(`${message}: ${res.status}`);
+    return (await res.json()) as T;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = [];
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      if (item === undefined) continue;
+      out.push(await worker(item));
+    }
+  }));
+  return out;
+}
+
+function uniqueNumbers(values: Array<number | undefined>): number[] {
+  return Array.from(new Set(values.filter((value): value is number => typeof value === "number")));
 }
 
 function matchesPredictionQuery(question: PredictionDiscoveryQuestion, query: string): boolean {

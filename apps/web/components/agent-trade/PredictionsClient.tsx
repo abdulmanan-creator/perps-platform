@@ -7,11 +7,10 @@ import {
   filterAndSortPredictionQuestions,
   formatProbability,
   formatSpread,
-  loadPredictionQuestionOdds,
+  loadPredictionDiscoveryOddsSummaries,
   loadPredictionQuestions,
   predictionCategoryLabel,
   predictionStatusLabel,
-  summarizeQuestionOdds,
   type PredictionDiscoveryQuestion,
   type PredictionFilterKey,
   type PredictionSortKey,
@@ -43,6 +42,7 @@ export function PredictionsClient() {
   const [isLoading, setIsLoading] = useState(true);
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsAttemptedIds, setOddsAttemptedIds] = useState<number[]>([]);
+  const [oddsError, setOddsError] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
@@ -94,15 +94,11 @@ export function PredictionsClient() {
     async function loadOdds() {
       setOddsLoading(true);
       setOddsAttemptedIds((current) => Array.from(new Set([...current, ...missingIds])));
-      const summaries = await Promise.all(
-        missingIds.map(async (questionId) => {
-          try {
-            return summarizeQuestionOdds(await loadPredictionQuestionOdds(questionId));
-          } catch {
-            return undefined;
-          }
-        }),
-      );
+      const summaries = await loadPredictionDiscoveryOddsSummaries({
+        questionIds: missingIds,
+        concurrency: 2,
+        timeoutMs: 4_500,
+      });
       if (!cancelled) {
         setQuestions((current) =>
           current.map((question) => {
@@ -110,6 +106,11 @@ export function PredictionsClient() {
             return summary ? { ...question, oddsSummary: summary } : question;
           }),
         );
+        if (summaries.length < missingIds.length) {
+          setOddsError("Some odds panels timed out or were rate-limited. Question cards remain available.");
+        } else {
+          setOddsError(undefined);
+        }
         setOddsLoading(false);
       }
     }
@@ -139,7 +140,7 @@ export function PredictionsClient() {
             {error ? "Read unavailable" : "HIP-4 read-only"}
           </span>
           <span>{isLoading ? "Refreshing..." : `${questions.length} questions`}</span>
-          <span>{oddsLoading ? "Loading odds..." : "Odds lazy-loaded"}</span>
+          <span>{oddsLoading ? "Loading odds..." : oddsError ? "Odds partially loaded" : "Odds lazy-loaded"}</span>
         </div>
       </section>
 
@@ -166,6 +167,7 @@ export function PredictionsClient() {
       </section>
 
       {error ? <p className="market-notice">{error}</p> : null}
+      {oddsError ? <p className="market-notice">{oddsError}</p> : null}
 
       <section className="predictions-grid" aria-label="Prediction market questions">
         {visibleQuestions.map((question) => (
