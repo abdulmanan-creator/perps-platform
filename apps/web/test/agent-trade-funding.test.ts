@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { getFundingDisplay, getFundingMethodDisplays } from "../lib/agent-trade/funding";
+import {
+  HL_BRIDGE_ARBITRUM,
+  USDC_ARBITRUM,
+  buildUsdcPermitTypedData,
+  getGaslessDepositUi,
+  validateGaslessDepositAmount,
+} from "../lib/agent-trade/gasless-deposit";
 
 describe("Agent.trade funding helpers", () => {
   it("keeps missing Privy env in local-dev paper mode", () => {
@@ -150,5 +157,127 @@ describe("Agent.trade funding helpers", () => {
     expect(errored.status).toBe("provider_error");
     expect(errored.liveFundingEnabled).toBe(false);
     expect(errored.summary).toContain("Provider rejected");
+  });
+
+  it("builds the native Arbitrum USDC EIP-2612 permit payload", () => {
+    const typedData = buildUsdcPermitTypedData({
+      owner: "0x1234567890abcdef1234567890abcdef12345678",
+      spender: HL_BRIDGE_ARBITRUM,
+      token: USDC_ARBITRUM,
+      value: 5_000_000n,
+      nonce: 7n,
+      deadline: 1_700_000_000n,
+    });
+
+    expect(typedData.domain).toEqual({
+      name: "USD Coin",
+      version: "2",
+      chainId: 42161,
+      verifyingContract: USDC_ARBITRUM,
+    });
+    expect(typedData.message).toMatchObject({
+      spender: HL_BRIDGE_ARBITRUM,
+      value: 5_000_000n,
+      nonce: 7n,
+      deadline: 1_700_000_000n,
+    });
+  });
+
+  it("blocks a 1 USDC Hyperliquid deposit with clear minimum copy", () => {
+    const validation = validateGaslessDepositAmount({
+      amount: "1",
+      walletUsdcUnits: 1_000_000n,
+    });
+
+    expect(validation.ok).toBe(false);
+    if (!validation.ok) {
+      expect(validation.message).toContain("Hyperliquid minimum deposit is 5 USDC");
+      expect(validation.message).toContain("4 more USDC");
+    }
+  });
+
+  it("labels wallet-funded-not-Hyperliquid-funded state without claiming provider support", () => {
+    const ui = getGaslessDepositUi({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "liveEligible",
+        liveEligible: true,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "liveEligible",
+      walletUsdcUnits: 6_000_000n,
+      hlAccountValueUsd: 0,
+      amount: "5",
+    });
+
+    expect(ui.title).toBe("Wallet funded, Hyperliquid not funded");
+    expect(ui.summary.toLowerCase()).toContain("native arbitrum usdc");
+    expect(ui.ctaEnabled).toBe(true);
+    expect(`${ui.title} ${ui.summary}`).not.toMatch(/\b(Base deposit|ACH|Apple Pay|Google Pay)\b/u);
+  });
+
+  it("marks the account ready only after Hyperliquid balance reaches order minimum", () => {
+    const ui = getGaslessDepositUi({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "liveEligible",
+        liveEligible: true,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "liveEligible",
+      walletUsdcUnits: 20_000_000n,
+      hlAccountValueUsd: 10,
+      amount: "5",
+    });
+
+    expect(ui.title).toBe("Ready to trade");
+    expect(ui.readyToTrade).toBe(true);
+  });
+
+  it("labels Base-USDC-only wallets without claiming bridge support", () => {
+    const ui = getGaslessDepositUi({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "liveEligible",
+        liveEligible: true,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "liveEligible",
+      walletUsdcUnits: 0n,
+      baseUsdcUnits: 8_000_000n,
+      hlAccountValueUsd: 0,
+      amount: "5",
+    });
+
+    expect(ui.summary).toContain("Base USDC detected");
+    expect(ui.summary).toContain("does not yet bridge Base deposits");
+    expect(ui.ctaEnabled).toBe(false);
   });
 });

@@ -1,10 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { useFundWallet, usePrivy, useWallets } from "@privy-io/react-auth";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useFundWallet, usePrivy, useWallets, type ConnectedWallet } from "@privy-io/react-auth";
+import { useSetActiveWallet } from "@privy-io/wagmi";
+import { useBalance, useReadContract, useSignTypedData } from "wagmi";
+import { createPublicClient, erc20Abi, formatEther, http, type Hex } from "viem";
+import { base } from "viem/chains";
 
-import { API_BASE_URL } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 import {
   getAccountReadinessDisplay,
   getLiveTradingReadiness,
@@ -13,6 +17,20 @@ import {
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { getFundingDisplay, getFundingMethodDisplays } from "@/lib/agent-trade/funding";
+import {
+  ARBITRUM_CHAIN_ID,
+  HL_BRIDGE_ARBITRUM,
+  MIN_AGENT_TRADE_ORDER_NOTIONAL_USD,
+  USDC_BASE,
+  USDC_ARBITRUM,
+  buildUsdcPermitTypedData,
+  formatUsdc,
+  getGaslessDepositUi,
+  splitPermitSignature,
+  validateGaslessDepositAmount,
+  type GaslessDepositPhase,
+  type GaslessDepositStatus,
+} from "@/lib/agent-trade/gasless-deposit";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
 import {
   getOnboardingReadiness,
@@ -68,6 +86,8 @@ export function getWalletAddressCopyUi(input: {
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const PRIVY_FUNDING_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING === "true";
 const HL_BRIDGE_DEPOSIT_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT === "true";
+const GASLESS_HL_DEPOSIT_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_GASLESS_HL_DEPOSIT === "true";
 const DASHBOARD_PROVIDER_CONFIGURED = true;
 const DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED = true;
 
@@ -143,6 +163,7 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
 
       <section className="onboarding-grid wide">
         <FundingCardShell eligibility={eligibility} />
+        <GaslessDepositCardShell eligibility={eligibility} />
         <RiskCard state={eligibility.state} />
       </section>
 
@@ -889,6 +910,394 @@ function FundingCard(props: {
     </div>
   );
 }
+
+function GaslessDepositCardShell({ eligibility }: { eligibility: EligibilityResponse }) {
+  if (!HAS_PRIVY) {
+    return (
+      <GaslessDepositCard
+        eligibility={eligibility}
+        wallet={{ status: "local-dev", authStatus: "not-configured" }}
+        walletUsdcUnits={0n}
+        baseUsdcUnits={0n}
+        walletEthLabel="Unavailable"
+        hlAccountValueUsd={0}
+        amount="5"
+        setAmount={() => undefined}
+        phase="idle"
+        txHash={null}
+        error="Privy is not configured in this environment."
+        status={undefined}
+        onSubmit={() => undefined}
+      />
+    );
+  }
+  return <PrivyGaslessDepositCard eligibility={eligibility} />;
+}
+
+function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResponse }) {
+  const { getAccessToken } = usePrivy();
+  const { wallets } = useWallets();
+  const { setActiveWallet } = useSetActiveWallet();
+  const { signTypedDataAsync } = useSignTypedData();
+  const activeWallet = useMemo<ConnectedWallet | undefined>(() => {
+    const embedded = wallets.find((wallet) => wallet.walletClientType === "privy");
+    return embedded ?? wallets[0];
+  }, [wallets]);
+  const wallet = useWalletSummary();
+  const address = wallet.status === "connected" && wallet.address
+    ? wallet.address as `0x${string}`
+    : undefined;
+  const [amount, setAmount] = useState("5");
+  const [phase, setPhase] = useState<GaslessDepositPhase>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<Hex | null>(null);
+  const [backendStatus, setBackendStatus] = useState<GaslessDepositStatus | undefined>();
+  const [hlAccountValueUsd, setHlAccountValueUsd] = useState(0);
+  const [baseUsdcUnits, setBaseUsdcUnits] = useState(0n);
+
+  useEffect(() => {
+    if (activeWallet) {
+      void setActiveWallet(activeWallet);
+    }
+  }, [activeWallet, setActiveWallet]);
+
+  const { data: walletUsdcRaw, refetch: refetchWalletUsdc } = useReadContract({
+    abi: erc20Abi,
+    address: USDC_ARBITRUM,
+    functionName: "balanceOf",
+    args: address ? [address] : undefined,
+    query: {
+      enabled: GASLESS_HL_DEPOSIT_ENABLED && Boolean(address),
+      refetchInterval: 10_000,
+    },
+  });
+  const { data: permitNonceRaw, refetch: refetchPermitNonce } = useReadContract({
+    abi: usdcPermitAbi,
+    address: USDC_ARBITRUM,
+    functionName: "nonces",
+    args: address ? [address] : undefined,
+    query: {
+      enabled: GASLESS_HL_DEPOSIT_ENABLED && Boolean(address),
+      refetchInterval: 10_000,
+    },
+  });
+  const { data: ethBalance } = useBalance({
+    address,
+    chainId: ARBITRUM_CHAIN_ID,
+    query: {
+      enabled: GASLESS_HL_DEPOSIT_ENABLED && Boolean(address),
+      refetchInterval: 15_000,
+    },
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadBaseUsdc() {
+      if (!GASLESS_HL_DEPOSIT_ENABLED || !address) {
+        setBaseUsdcUnits(0n);
+        return;
+      }
+      try {
+        const publicClient = createPublicClient({
+          chain: base,
+          transport: http(),
+        });
+        const balance = await publicClient.readContract({
+          abi: erc20Abi,
+          address: USDC_BASE,
+          functionName: "balanceOf",
+          args: [address],
+        });
+        if (!cancelled) {
+          setBaseUsdcUnits(balance);
+        }
+      } catch {
+        if (!cancelled) {
+          setBaseUsdcUnits(0n);
+        }
+      }
+    }
+    void loadBaseUsdc();
+    return () => {
+      cancelled = true;
+    };
+  }, [address]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStatus() {
+      if (!GASLESS_HL_DEPOSIT_ENABLED || !address) {
+        setBackendStatus(undefined);
+        return;
+      }
+      try {
+        const res = await fetch(`${API_BASE_URL}/agent-trade/deposit/status?user=${encodeURIComponent(address)}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          throw new Error(`status ${res.status}`);
+        }
+        const body = await res.json() as GaslessDepositStatus;
+        if (!cancelled) {
+          setBackendStatus(body);
+        }
+      } catch {
+        if (!cancelled) {
+          setBackendStatus({
+            enabled: false,
+            reason: "Backend relayer status is unavailable.",
+            bridge: HL_BRIDGE_ARBITRUM,
+            token: USDC_ARBITRUM,
+            minDepositUsdc: 5,
+            chainId: ARBITRUM_CHAIN_ID,
+            eligibilityState: "unknown",
+            liveEligible: false,
+            mainnetExecutionEnabled: false,
+            killSwitchEnabled: false,
+            minOrderNotionalUsd: MIN_AGENT_TRADE_ORDER_NOTIONAL_USD,
+          });
+        }
+      }
+    }
+    void loadStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [address]);
+
+  const refreshHlBalance = useCallback(async () => {
+    if (!address) {
+      setHlAccountValueUsd(0);
+      return;
+    }
+    try {
+      const balance = await api.balance(address);
+      setHlAccountValueUsd(Number(balance.accountValue ?? 0));
+    } catch {
+      setHlAccountValueUsd(0);
+    }
+  }, [address]);
+
+  useEffect(() => {
+    void refreshHlBalance();
+  }, [refreshHlBalance]);
+
+  useEffect(() => {
+    if (phase !== "polling" || !address) {
+      return undefined;
+    }
+    const interval = window.setInterval(() => {
+      void refreshHlBalance();
+    }, 5_000);
+    return () => window.clearInterval(interval);
+  }, [address, phase, refreshHlBalance]);
+
+  useEffect(() => {
+    if (phase === "polling" && hlAccountValueUsd >= 5) {
+      setPhase("confirmed");
+    }
+  }, [hlAccountValueUsd, phase]);
+
+  async function submitGaslessDeposit() {
+    if (!address) {
+      return;
+    }
+    const amountResult = validateGaslessDepositAmount({
+      amount,
+      walletUsdcUnits: walletUsdcRaw ?? 0n,
+    });
+    if (!amountResult.ok) {
+      setError(amountResult.message);
+      return;
+    }
+    if (permitNonceRaw == null) {
+      setError("Could not read the USDC permit nonce. Retry in a moment.");
+      return;
+    }
+    if (!backendStatus?.enabled) {
+      setError(backendStatus?.reason ?? "Gasless deposit not enabled.");
+      return;
+    }
+
+    setError(null);
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 10 * 60);
+    const typedData = buildUsdcPermitTypedData({
+      owner: address,
+      spender: backendStatus.bridge,
+      token: backendStatus.token,
+      value: amountResult.amountUnits,
+      nonce: permitNonceRaw,
+      deadline,
+    });
+
+    try {
+      setPhase("signing");
+      const signed = await signTypedDataAsync(typedData);
+      const signature = splitPermitSignature(signed as Hex);
+      setPhase("signed");
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error("Privy session token unavailable. Sign in again before depositing.");
+      }
+      setPhase("submitting");
+      const res = await fetch(`${API_BASE_URL}/agent-trade/deposit/permit`, {
+        method: "POST",
+        headers: {
+          "authorization": `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          owner: address,
+          token: backendStatus.token,
+          spender: backendStatus.bridge,
+          amount: amountResult.amountUnits.toString(),
+          deadline: Number(deadline),
+          signature,
+        }),
+      });
+      const body = await res.json() as { txHash?: Hex; message?: string; guidance?: string };
+      if (!res.ok || !body.txHash) {
+        throw new Error(body.guidance ? `${body.message ?? "Deposit failed"} ${body.guidance}` : body.message ?? "Deposit failed.");
+      }
+      setTxHash(body.txHash);
+      setPhase("polling");
+      await refetchWalletUsdc();
+      await refetchPermitNonce();
+      await refreshHlBalance();
+    } catch (err) {
+      setPhase("error");
+      setError(err instanceof Error ? err.message : "Gasless deposit failed.");
+    }
+  }
+
+  return (
+    <GaslessDepositCard
+      eligibility={eligibility}
+      wallet={wallet}
+      walletUsdcUnits={walletUsdcRaw ?? 0n}
+      baseUsdcUnits={baseUsdcUnits}
+      walletEthLabel={ethBalance?.value == null ? "Not checked" : `${Number(formatEther(ethBalance.value)).toFixed(5)} ETH`}
+      hlAccountValueUsd={hlAccountValueUsd}
+      amount={amount}
+      setAmount={setAmount}
+      phase={phase}
+      txHash={txHash}
+      error={error}
+      status={backendStatus}
+      onSubmit={submitGaslessDeposit}
+    />
+  );
+}
+
+function GaslessDepositCard(props: {
+  eligibility: EligibilityResponse;
+  wallet: WalletSummary;
+  walletUsdcUnits: bigint;
+  baseUsdcUnits: bigint;
+  walletEthLabel: string;
+  hlAccountValueUsd: number;
+  amount: string;
+  setAmount: (amount: string) => void;
+  phase: GaslessDepositPhase;
+  txHash: Hex | null;
+  error: string | null;
+  status: GaslessDepositStatus | undefined;
+  onSubmit: () => void;
+}) {
+  const walletConnected = props.wallet.status === "connected";
+  const ui = getGaslessDepositUi({
+    frontendEnabled: GASLESS_HL_DEPOSIT_ENABLED,
+    backendStatus: props.status,
+    walletConnected,
+    eligibilityState: props.eligibility.state,
+    walletUsdcUnits: props.walletUsdcUnits,
+    baseUsdcUnits: props.baseUsdcUnits,
+    hlAccountValueUsd: props.hlAccountValueUsd,
+    amount: props.amount,
+  });
+  const isBusy = props.phase === "signing" || props.phase === "signed" || props.phase === "submitting" || props.phase === "polling";
+  const phaseLabel = (() => {
+    if (props.phase === "signing") {
+      return "Signing permit";
+    }
+    if (props.phase === "signed") {
+      return "Permit signed";
+    }
+    if (props.phase === "submitting") {
+      return "Relayer submitting deposit";
+    }
+    if (props.phase === "polling") {
+      return "Waiting for Hyperliquid balance";
+    }
+    if (props.phase === "confirmed") {
+      return props.hlAccountValueUsd >= MIN_AGENT_TRADE_ORDER_NOTIONAL_USD
+        ? "Ready to trade"
+        : "Deposited below order minimum";
+    }
+    if (props.phase === "error") {
+      return "Deposit failed";
+    }
+    return ui.title;
+  })();
+
+  return (
+    <div className="panel onboarding-card gasless-deposit-card">
+      <div className="panel-head">
+        <div>
+          <span>Hyperliquid deposit</span>
+          <strong>{phaseLabel}</strong>
+        </div>
+        <span className={`readiness-pill ${ui.readyToTrade ? "green" : ui.ctaEnabled ? "blue" : "amber"}`}>
+          {ui.readyToTrade ? "Ready" : ui.ctaEnabled ? "Permit available" : "Gated"}
+        </span>
+      </div>
+      <div className="readiness-list">
+        <ReadinessRow label="Arbitrum wallet USDC" value={`${formatUsdc(props.walletUsdcUnits)} USDC`} ok={props.walletUsdcUnits >= 5_000_000n} />
+        <ReadinessRow label="Arbitrum ETH gas" value={props.walletEthLabel} ok />
+        <ReadinessRow label="Hyperliquid trading balance" value={`$${props.hlAccountValueUsd.toFixed(2)}`} ok={props.hlAccountValueUsd >= MIN_AGENT_TRADE_ORDER_NOTIONAL_USD} />
+      </div>
+      <div className="gasless-deposit-body">
+        <p>{ui.summary}</p>
+        <label>
+          <span>Amount</span>
+          <input
+            value={props.amount}
+            onChange={(event) => props.setAmount(event.target.value)}
+            inputMode="decimal"
+            disabled={!GASLESS_HL_DEPOSIT_ENABLED || isBusy}
+          />
+        </label>
+        {ui.amountError ? <p className="form-error">{ui.amountError}</p> : null}
+        {props.error ? <p className="form-error">{props.error}</p> : null}
+        {props.txHash ? (
+          <a className="secondary-action compact-button" href={`https://arbiscan.io/tx/${props.txHash}`} target="_blank" rel="noreferrer">
+            View Arbiscan transaction
+          </a>
+        ) : null}
+        {props.hlAccountValueUsd >= 5 && props.hlAccountValueUsd < MIN_AGENT_TRADE_ORDER_NOTIONAL_USD ? (
+          <p className="onboarding-note">Deposited, but below Agent.trade&apos;s $10 minimum order notional.</p>
+        ) : null}
+        <button
+          className="primary-action compact-button"
+          disabled={!ui.ctaEnabled || isBusy}
+          onClick={props.onSubmit}
+        >
+          {isBusy ? phaseLabel : ui.ctaLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const usdcPermitAbi = [
+  {
+    type: "function",
+    name: "nonces",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
 
 function RiskCard({ state }: { state: EligibilityMode }) {
   const display = getEligibilityDisplay(state);

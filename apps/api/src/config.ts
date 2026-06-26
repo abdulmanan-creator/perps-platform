@@ -10,6 +10,7 @@ import { getAddress } from "viem";
 import { z } from "zod";
 
 const HEX_ADDR = /^0x[0-9a-fA-F]{40}$/;
+const HEX_PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
 
 const emptyToUndefined = (value: unknown) => value === "" ? undefined : value;
 
@@ -168,6 +169,23 @@ const ConfigSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  AGENT_TRADE_ENABLE_GASLESS_HL_DEPOSIT: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  AGENT_TRADE_DEPOSIT_RELAYER_PRIVATE_KEY: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(HEX_PRIVATE_KEY, "must be a 0x-prefixed 32-byte private key").optional(),
+  ),
+  AGENT_TRADE_ARBITRUM_RPC_URL: z.string().url().default("https://arb1.arbitrum.io/rpc"),
+  AGENT_TRADE_HL_BRIDGE_ARBITRUM: z
+    .string()
+    .regex(HEX_ADDR, "must be a 0x-prefixed 20-byte address")
+    .default("0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7"),
+  AGENT_TRADE_USDC_ARBITRUM: z
+    .string()
+    .regex(HEX_ADDR, "must be a 0x-prefixed 20-byte address")
+    .default("0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),
 });
 
 export type Config = Omit<
@@ -183,6 +201,10 @@ export type Config = Omit<
   restrictedCountries: ReadonlySet<string>;
   /** Lowercased addresses allowed to exercise mainnet execution. */
   agentTradeAllowlist: ReadonlySet<string>;
+  /** Checksummed Hyperliquid Bridge2 contract on Arbitrum. */
+  AGENT_TRADE_HL_BRIDGE_ARBITRUM: `0x${string}`;
+  /** Checksummed native Circle USDC contract on Arbitrum. */
+  AGENT_TRADE_USDC_ARBITRUM: `0x${string}`;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -204,6 +226,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // addresses, so we normalize at load time. getAddress also validates the
   // address shape (length + hex).
   const checksummed = getAddress(parsed.ALCHEMY_BUILDER_ADDRESS);
+  const hlBridgeArbitrum = getAddress(parsed.AGENT_TRADE_HL_BRIDGE_ARBITRUM);
+  const usdcArbitrum = getAddress(parsed.AGENT_TRADE_USDC_ARBITRUM);
 
   const restrictedCountries = new Set(
     parsed.RESTRICTED_COUNTRIES.split(",")
@@ -219,6 +243,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     ...parsed,
     ALCHEMY_BUILDER_ADDRESS: checksummed,
+    AGENT_TRADE_HL_BRIDGE_ARBITRUM: hlBridgeArbitrum,
+    AGENT_TRADE_USDC_ARBITRUM: usdcArbitrum,
     builderAddressLower: checksummed.toLowerCase(),
     isTestnet: parsed.HYPERLIQUID_API_URL.includes("testnet"),
     restrictedCountries,
