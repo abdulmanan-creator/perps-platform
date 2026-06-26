@@ -595,6 +595,33 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .prediction-ticket-technical {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.prediction-transfer-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(39,214,170,0.28);
+  border-radius: 7px;
+  background: rgba(39,214,170,0.055);
+}
+.prediction-transfer-card .panel-head {
+  padding: 0;
+  border: 0;
+}
+.prediction-transfer-card label {
+  margin: 0;
+}
+.prediction-transfer-card button {
+  border: 1px solid rgba(39,214,170,0.38);
+  border-radius: 7px;
+  background: rgba(39,214,170,0.14);
+  color: var(--green);
+  padding: 10px;
+  font-weight: 600;
+}
+.prediction-transfer-card button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .prediction-confirm-backdrop {
   position: fixed;
   inset: 0;

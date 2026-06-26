@@ -12,6 +12,9 @@ import type {
   PredictionQuestion,
   PredictionQuestionOdds,
   PredictionSideOdds,
+  PredictionUsdcTransferBuildResponse,
+  PredictionUsdcTransferSendResponse,
+  Signature,
 } from "@alchemy-hl/shared";
 
 import { API_BASE_URL } from "../api";
@@ -92,6 +95,7 @@ export interface PredictionL2BookUpdate {
 
 export const PREDICTION_LIVE_EXCHANGE_PATH = "/prediction/exchange";
 export const PREDICTION_BALANCE_PATH = "/prediction/balance";
+export const PREDICTION_USDC_TRANSFER_PATH = "/prediction/usdc-transfer";
 export const PREDICTION_ODDS_TIMEOUT_MS = 4_500;
 export const PREDICTION_ODDS_CONCURRENCY = 2;
 const WORLD_CUP_QUESTION_ID = 32;
@@ -302,6 +306,46 @@ export async function submitPredictionPaperOrder(
 
 export function predictionLiveExchangeEndpoint(apiBaseUrl = API_BASE_URL): string {
   return `${apiBaseUrl}${PREDICTION_LIVE_EXCHANGE_PATH}`;
+}
+
+export function predictionUsdcTransferEndpoint(apiBaseUrl = API_BASE_URL): string {
+  return `${apiBaseUrl}${PREDICTION_USDC_TRANSFER_PATH}`;
+}
+
+export async function buildPredictionUsdcTransfer(args: {
+  user: string;
+  amount: string;
+  apiBaseUrl?: string;
+}): Promise<PredictionUsdcTransferBuildResponse> {
+  const res = await fetch(predictionUsdcTransferEndpoint(args.apiBaseUrl), {
+    method: "POST",
+    cache: "no-store",
+    headers: predictionLiveRiskHeaders(),
+    body: JSON.stringify({ user: args.user, amount: args.amount }),
+  });
+  if (!res.ok) {
+    throw new Error(await predictionApiErrorMessage(res, "Prediction USDC transfer build failed"));
+  }
+  return (await res.json()) as PredictionUsdcTransferBuildResponse;
+}
+
+export async function sendPredictionUsdcTransfer(args: {
+  user?: string;
+  action: PredictionUsdcTransferBuildResponse["action"];
+  nonce: number;
+  signature: Signature;
+  apiBaseUrl?: string;
+}): Promise<PredictionUsdcTransferSendResponse> {
+  const res = await fetch(predictionUsdcTransferEndpoint(args.apiBaseUrl), {
+    method: "POST",
+    cache: "no-store",
+    headers: predictionLiveRiskHeaders(),
+    body: JSON.stringify({ user: args.user, action: args.action, nonce: args.nonce, signature: args.signature }),
+  });
+  if (!res.ok) {
+    throw new Error(await predictionApiErrorMessage(res, "Prediction USDC transfer send failed"));
+  }
+  return (await res.json()) as PredictionUsdcTransferSendResponse;
 }
 
 export function buildPredictionLiveOrderAction(args: {
@@ -518,6 +562,33 @@ export function hasSufficientPredictionSpotBalance(
   return Number.isFinite(available) && available + 1e-9 >= requiredCostUsd;
 }
 
+export function shouldShowPredictionUsdcTransferCard(input: {
+  mode: "paper" | "live";
+  liveAllowed: boolean;
+  balance: PredictionBalanceState | undefined;
+  requiredCostUsd: number;
+}): boolean {
+  if (input.mode !== "live" || !input.liveAllowed || !input.balance) return false;
+  if (hasSufficientPredictionSpotBalance(input.balance, input.requiredCostUsd)) return false;
+  const perpWithdrawable = Number(input.balance.perpWithdrawable ?? 0);
+  return Number.isFinite(perpWithdrawable) && perpWithdrawable > 0;
+}
+
+export function suggestPredictionUsdcTransferAmount(input: {
+  requiredCostUsd: number;
+  spotUsdcAvailable: number;
+  perpWithdrawable: number;
+}): string {
+  const required = Number.isFinite(input.requiredCostUsd) ? input.requiredCostUsd : 0;
+  const spot = Number.isFinite(input.spotUsdcAvailable) ? input.spotUsdcAvailable : 0;
+  const perp = Number.isFinite(input.perpWithdrawable) ? input.perpWithdrawable : 0;
+  const shortfall = Math.max(0, required - spot);
+  if (shortfall <= 0 || perp <= 0) return "";
+  const buffer = Math.min(1, Math.max(0.25, required * 0.02));
+  const suggested = Math.min(perp, shortfall + buffer);
+  return formatTransferAmount(Math.ceil(suggested * 100) / 100);
+}
+
 export function filterAndSortPredictionQuestions(args: {
   questions: PredictionDiscoveryQuestion[];
   query: string;
@@ -693,6 +764,28 @@ async function fetchJsonWithTimeout<T>(url: string, timeoutMs: number, message: 
   } finally {
     globalThis.clearTimeout(timer);
   }
+}
+
+function predictionLiveRiskHeaders(): HeadersInit {
+  return {
+    "content-type": "application/json",
+    "x-agent-trade-risk-accepted": "true",
+    "x-agent-trade-terms-accepted": "true",
+  };
+}
+
+async function predictionApiErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json() as { error?: string; message?: string; guidance?: string; state?: string };
+    return [body.state, body.error, body.guidance, body.message].filter(Boolean).join(" ") || `${fallback}: ${response.status}`;
+  } catch {
+    return `${fallback}: ${response.status}`;
+  }
+}
+
+function formatTransferAmount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return value.toFixed(6).replace(/0+$/u, "").replace(/\.$/u, "");
 }
 
 async function mapWithConcurrency<T, R>(

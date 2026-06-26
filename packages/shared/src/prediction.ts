@@ -191,3 +191,45 @@ export interface PredictionBalanceState {
   fetchedAt: number;
   guidance: string;
 }
+
+export interface PredictionUsdcTransferAction {
+  type: "usdClassTransfer";
+  hyperliquidChain: "Mainnet" | "Testnet";
+  signatureChainId: `0x${string}`;
+  amount: string;
+  toPerp: false;
+  nonce: number;
+}
+
+export type PredictionUsdcTransferState =
+  | "built"
+  | "submitted"
+  | "rejected"
+  | "balance_unavailable"
+  | "insufficient_perp_balance";
+
+export interface PredictionUsdcTransferBuildResponse {
+  status: "built";
+  state: PredictionUsdcTransferState;
+  hash: `0x${string}`;
+  nonce: number;
+  action: PredictionUsdcTransferAction;
+  typedData: import("./action.js").EIP712TypedData;
+  amount: string;
+  direction: "perp_to_spot";
+  balance: PredictionBalanceState;
+}
+
+export interface PredictionUsdcTransferSendResponse {
+  status: "submitted";
+  state: PredictionUsdcTransferState;
+  success: true;
+  user: `0x${string}`;
+  action: PredictionUsdcTransferAction;
+  exchangeResponse: unknown;
+  exchangeResult: {
+    status: "filled" | "resting" | "accepted" | "rejected";
+    label: string;
+    reason?: string;
+  };
+}

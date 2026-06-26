@@ -18,6 +18,7 @@ import type {
 
 import {
   calculatePredictionTicketMath,
+  buildPredictionUsdcTransfer,
   clearPredictionStreamOutcomeOdds,
   enrichPredictionPaperPositions,
   formatEmptyBook,
@@ -50,6 +51,9 @@ import {
   predictionCategoryLabel,
   predictionStatusLabel,
   selectedOutcomeOdds,
+  sendPredictionUsdcTransfer,
+  shouldShowPredictionUsdcTransferCard,
+  suggestPredictionUsdcTransferAmount,
   submitPredictionPaperOrder,
   summarizePredictionPortfolioExposure,
   summarizePredictionLiveExchangeResult,
@@ -714,6 +718,11 @@ function PredictionPaperTicket(props: {
   const [predictionBalance, setPredictionBalance] = useState<PredictionBalanceState | undefined>();
   const [predictionBalanceStatus, setPredictionBalanceStatus] = useState<"idle" | "loading" | "ready" | "failed">("idle");
   const [predictionBalanceError, setPredictionBalanceError] = useState<string | undefined>();
+  const [transferAmount, setTransferAmount] = useState("");
+  const [transferState, setTransferState] = useState<
+    "idle" | "building" | "signing" | "submitting" | "accepted" | "rejected" | "failed"
+  >("idle");
+  const [transferMessage, setTransferMessage] = useState<string | undefined>();
 
   useEffect(() => {
     if (!liveAvailable.pathVisible && mode === "live") setMode("paper");
@@ -722,6 +731,22 @@ function PredictionPaperTicket(props: {
   useEffect(() => {
     setLimitProbability(probabilityFromSide(props.selectedSide) ?? 0.5);
   }, [props.selectedSide?.coin]);
+
+  async function refreshPredictionBalanceForWallet(wallet: string, cancelled?: () => boolean) {
+    setPredictionBalanceStatus("loading");
+    setPredictionBalanceError(undefined);
+    try {
+      const balance = await loadPredictionBalance(wallet);
+      if (cancelled?.()) return;
+      setPredictionBalance(balance);
+      setPredictionBalanceStatus("ready");
+    } catch {
+      if (cancelled?.()) return;
+      setPredictionBalance(undefined);
+      setPredictionBalanceStatus("failed");
+      setPredictionBalanceError("Could not verify Hyperliquid spot-style prediction balance. Retry before signing live HIP-4 orders.");
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -732,22 +757,7 @@ function PredictionPaperTicket(props: {
       setPredictionBalanceError(undefined);
       return;
     }
-    setPredictionBalanceStatus("loading");
-    setPredictionBalanceError(undefined);
-    void loadPredictionBalance(wallet)
-      .then((balance) => {
-        if (!cancelled) {
-          setPredictionBalance(balance);
-          setPredictionBalanceStatus("ready");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setPredictionBalance(undefined);
-          setPredictionBalanceStatus("failed");
-          setPredictionBalanceError("Could not verify Hyperliquid spot-style prediction balance. Retry before signing live HIP-4 orders.");
-        }
-      });
+    void refreshPredictionBalanceForWallet(wallet, () => cancelled);
     return () => {
       cancelled = true;
     };
@@ -761,6 +771,22 @@ function PredictionPaperTicket(props: {
   const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
   const selectedTopOfBookReady = hasValidPredictionTopOfBook(props.selectedSide);
   const predictionBalanceSufficient = hasSufficientPredictionSpotBalance(predictionBalance, math.estimatedCost);
+  const transferSuggestion = suggestPredictionUsdcTransferAmount({
+    requiredCostUsd: math.estimatedCost,
+    spotUsdcAvailable: Number(predictionBalance?.spotUsdcAvailable ?? 0),
+    perpWithdrawable: Number(predictionBalance?.perpWithdrawable ?? 0),
+  });
+  const showTransferCard = shouldShowPredictionUsdcTransferCard({
+    mode,
+    liveAllowed: liveAvailable.allowed,
+    balance: predictionBalance,
+    requiredCostUsd: math.estimatedCost,
+  });
+  const transferAmountNumber = Number(transferAmount || transferSuggestion || 0);
+  const transferAmountValid =
+    Number.isFinite(transferAmountNumber) &&
+    transferAmountNumber > 0 &&
+    transferAmountNumber <= Number(predictionBalance?.perpWithdrawable ?? 0);
   const canSubmitLive =
     canSubmit &&
     liveAvailable.allowed &&
@@ -769,6 +795,12 @@ function PredictionPaperTicket(props: {
     math.estimatedCost >= hip4MinOrderCostUsd &&
     predictionBalanceStatus === "ready" &&
     predictionBalanceSufficient;
+
+  useEffect(() => {
+    if (showTransferCard && !transferAmount && transferSuggestion) {
+      setTransferAmount(transferSuggestion);
+    }
+  }, [showTransferCard, transferAmount, transferSuggestion]);
 
   async function submitPaperOrder() {
     if (!props.selectedOutcome || !props.selectedSide || !canSubmit) return;
@@ -856,6 +888,48 @@ function PredictionPaperTicket(props: {
     } catch (err) {
       setLiveState("failed");
       setLiveMessage(err instanceof Error ? err.message : "Live prediction order failed.");
+    }
+  }
+
+  async function submitPredictionBalanceTransfer() {
+    if (!props.activeWallet?.address || !showTransferCard || !transferAmountValid) return;
+    const amount = transferAmount || transferSuggestion;
+    setTransferState("building");
+    setTransferMessage(undefined);
+    try {
+      const provider = await props.activeWallet.getEthereumProvider() as Eip1193Provider;
+      const built = await buildPredictionUsdcTransfer({
+        user: props.activeWallet.address,
+        amount,
+      });
+      if (!built.typedData) throw new Error("Prediction balance transfer did not return typed data for wallet signing.");
+
+      setTransferState("signing");
+      const rawSignature = await provider.request({
+        method: "eth_signTypedData_v4",
+        params: [props.activeWallet.address, JSON.stringify(withExplicitEip712Domain(built.typedData))],
+      });
+      if (typeof rawSignature !== "string") throw new Error("Wallet returned an invalid signature.");
+
+      setTransferState("submitting");
+      const signature = normalizeHexSignature(rawSignature as `0x${string}`);
+      const sent = await sendPredictionUsdcTransfer({
+        user: props.activeWallet.address,
+        action: built.action,
+        nonce: built.nonce,
+        signature,
+      });
+      const rejected = sent.exchangeResult.status === "rejected";
+      setTransferState(rejected ? "rejected" : "accepted");
+      setTransferMessage(
+        rejected
+          ? `Transfer rejected: ${sent.exchangeResult.reason ?? "Hyperliquid rejected the transfer."}`
+          : "USDC transfer submitted. Refreshing prediction balance.",
+      );
+      await refreshPredictionBalanceForWallet(props.activeWallet.address);
+    } catch (err) {
+      setTransferState("failed");
+      setTransferMessage(err instanceof Error ? err.message : "Prediction balance transfer failed.");
     }
   }
 
@@ -965,9 +1039,55 @@ function PredictionPaperTicket(props: {
             {predictionBalanceStatus === "failed" ? (
               <p className="market-notice">{predictionBalanceError}</p>
             ) : null}
+            {showTransferCard ? (
+              <div className="prediction-transfer-card">
+                <div className="panel-head">
+                  <div>
+                    <span>Prediction balance</span>
+                    <strong>Move USDC to predictions balance</strong>
+                  </div>
+                </div>
+                <p className="market-notice">
+                  Prediction markets use Hyperliquid spot-style USDC. This moves USDC from perp margin to prediction balance.
+                </p>
+                <div className="prediction-ticket-body prediction-ticket-technical">
+                  <MetricCell label="HIP-4 spendable" value={formatUsdc(Number(predictionBalance?.spotUsdcAvailable ?? 0))} />
+                  <MetricCell label="Perp withdrawable" value={formatUsdc(Number(predictionBalance?.perpWithdrawable ?? 0))} />
+                  <MetricCell label="Suggested transfer" value={formatUsdc(Number(transferSuggestion || 0))} />
+                </div>
+                <label>
+                  <span>Transfer amount</span>
+                  <input
+                    min="0"
+                    max={predictionBalance?.perpWithdrawable ?? undefined}
+                    step="0.01"
+                    type="number"
+                    value={transferAmount}
+                    onChange={(event) => setTransferAmount(event.target.value)}
+                  />
+                </label>
+                {!transferAmountValid ? (
+                  <p className="market-notice">Enter an amount above 0 and at or below perp withdrawable.</p>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={transferState === "building" || transferState === "signing" || transferState === "submitting" || !transferAmountValid}
+                  onClick={submitPredictionBalanceTransfer}
+                >
+                  {transferState === "building" || transferState === "signing" || transferState === "submitting"
+                    ? "Moving USDC..."
+                    : "Move USDC to predictions balance"}
+                </button>
+                {transferMessage ? (
+                  <p className={transferState === "failed" || transferState === "rejected" ? "prediction-ticket-status error" : "prediction-ticket-status"}>
+                    {transferMessage}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {predictionBalanceStatus === "ready" && !predictionBalanceSufficient ? (
               <p className="market-notice">
-                Move USDC into Hyperliquid spot balance before signing. Use Hyperliquid Portfolio transfer from Perps to Spot, then retry.
+                Move USDC into Hyperliquid spot balance before signing. Use the prediction balance move flow here or Hyperliquid Portfolio transfer from Perps to Spot, then retry.
               </p>
             ) : null}
           </div>

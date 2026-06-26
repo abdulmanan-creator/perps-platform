@@ -20,6 +20,7 @@ import { predictionRoute } from "./prediction.js";
 import { predictionBalanceRoute } from "./predictionBalance.js";
 import { predictionExchangeRoute } from "./predictionExchange.js";
 import { predictionPaperRoute } from "./predictionPaper.js";
+import { predictionUsdcTransferRoute } from "./predictionUsdcTransfer.js";
 import { positionsRoute } from "./positions.js";
 import { agentTradeRoute } from "./agentTrade.js";
 import { agentTradeCandlesRoute } from "./agentTradeCandles.js";
@@ -47,6 +48,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(predictionBalanceRoute);
   await app.register(predictionExchangeRoute);
   await app.register(predictionPaperRoute);
+  await app.register(predictionUsdcTransferRoute);
   await app.register(agentTradeRoute);
   await app.register(agentTradeCandlesRoute);
   await app.register(agentTradeDepositRoute);

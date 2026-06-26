@@ -8,6 +8,7 @@ import {
 } from "../components/agent-trade/PredictionDetailClient";
 import {
   calculatePredictionTicketMath,
+  buildPredictionUsdcTransfer,
   buildPredictionLiveOrderAction,
   clearPredictionStreamOutcomeOdds,
   enrichPredictionPaperPositions,
@@ -35,14 +36,18 @@ import {
   predictionL2BookSubscription,
   predictionPaperPositionsForQuestion,
   predictionStreamStatusLabel,
+  predictionUsdcTransferEndpoint,
   prioritizePredictionOutcomeIds,
+  sendPredictionUsdcTransfer,
+  shouldShowPredictionUsdcTransferCard,
+  suggestPredictionUsdcTransferAmount,
   summarizePredictionLiveExchangeResult,
   summarizePredictionPortfolioExposure,
   summarizeQuestionOdds,
   submitPredictionPaperOrder,
   type PredictionDiscoveryQuestion,
 } from "../lib/agent-trade/predictions";
-import type { PredictionPaperAccount, PredictionQuestionOdds } from "@alchemy-hl/shared";
+import type { PredictionBalanceState, PredictionPaperAccount, PredictionQuestionOdds } from "@alchemy-hl/shared";
 
 const baseQuestions: PredictionDiscoveryQuestion[] = [
   {
@@ -531,6 +536,123 @@ describe("Agent.trade prediction helpers", () => {
     });
   });
 
+  it("shows prediction USDC transfer card only when live spot balance is short and perp withdrawable is available", () => {
+    const shortBalance: PredictionBalanceState = {
+      user: "0x0000000000000000000000000000000000000001",
+      source: "spotClearinghouseState",
+      spotUsdc: { coin: "USDC", token: 0, total: "0", hold: "0", available: "0", entryNtl: "0" },
+      spotUsdcAvailable: "0",
+      perpWithdrawable: "11.588513",
+      balances: [],
+      outcomeBalances: [],
+      fetchedAt: 123,
+      guidance: "Prediction markets use Hyperliquid spot-style balance; perp margin balance may not be spendable here.",
+    };
+    const fundedBalance = { ...shortBalance, spotUsdcAvailable: "12" };
+
+    expect(shouldShowPredictionUsdcTransferCard({
+      mode: "live",
+      liveAllowed: true,
+      balance: shortBalance,
+      requiredCostUsd: 10.0064,
+    })).toBe(true);
+    expect(shouldShowPredictionUsdcTransferCard({
+      mode: "live",
+      liveAllowed: true,
+      balance: fundedBalance,
+      requiredCostUsd: 10.0064,
+    })).toBe(false);
+    expect(shouldShowPredictionUsdcTransferCard({
+      mode: "paper",
+      liveAllowed: true,
+      balance: shortBalance,
+      requiredCostUsd: 10.0064,
+    })).toBe(false);
+    expect(shouldShowPredictionUsdcTransferCard({
+      mode: "live",
+      liveAllowed: false,
+      balance: shortBalance,
+      requiredCostUsd: 10.0064,
+    })).toBe(false);
+    expect(suggestPredictionUsdcTransferAmount({
+      requiredCostUsd: 10.0064,
+      spotUsdcAvailable: 0,
+      perpWithdrawable: 11.588513,
+    })).toBe("10.26");
+  });
+
+  it("builds and sends prediction USDC transfers through the prediction endpoint", async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      expect(url).toBe(predictionUsdcTransferEndpoint());
+      expect(url).not.toContain("/agent-trade/exchange");
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      if ("signature" in body) {
+        expect(body.user).toBe("0x0000000000000000000000000000000000000001");
+        return new Response(JSON.stringify({
+          status: "submitted",
+          state: "submitted",
+          success: true,
+          user: "0x0000000000000000000000000000000000000001",
+          action: body.action,
+          exchangeResponse: { status: "ok", response: { type: "usdClassTransfer" } },
+          exchangeResult: { status: "accepted", label: "Accepted" },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        status: "built",
+        state: "built",
+        hash: `0x${"11".repeat(32)}`,
+        nonce: 123,
+        amount: "10.26",
+        direction: "perp_to_spot",
+        action: {
+          type: "usdClassTransfer",
+          hyperliquidChain: "Mainnet",
+          signatureChainId: "0xa4b1",
+          amount: "10.26",
+          toPerp: false,
+          nonce: 123,
+        },
+        typedData: {
+          domain: {
+            name: "HyperliquidSignTransaction",
+            version: "1",
+            chainId: 42161,
+            verifyingContract: "0x0000000000000000000000000000000000000000",
+          },
+          types: {
+            "HyperliquidTransaction:UsdClassTransfer": [
+              { name: "hyperliquidChain", type: "string" },
+              { name: "amount", type: "string" },
+              { name: "toPerp", type: "bool" },
+              { name: "nonce", type: "uint64" },
+            ],
+          },
+          primaryType: "HyperliquidTransaction:UsdClassTransfer",
+          message: { hyperliquidChain: "Mainnet", amount: "10.26", toPerp: false, nonce: 123 },
+        },
+        balance: {},
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const built = await buildPredictionUsdcTransfer({
+      user: "0x0000000000000000000000000000000000000001",
+      amount: "10.26",
+    });
+    expect(built.action).toMatchObject({ type: "usdClassTransfer", toPerp: false, amount: "10.26" });
+
+    const sent = await sendPredictionUsdcTransfer({
+      user: "0x0000000000000000000000000000000000000001",
+      action: built.action,
+      nonce: built.nonce,
+      signature: { r: `0x${"11".repeat(32)}`, s: `0x${"22".repeat(32)}`, v: 27 },
+    });
+    expect(sent.exchangeResult).toEqual({ status: "accepted", label: "Accepted" });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps flag-off, restricted, and unknown users paper-only", () => {
     expect(getPredictionLiveAvailability({
       flagEnabled: false,
@@ -703,6 +825,11 @@ describe("prediction route smoke", () => {
     expect(source).toContain("loadPredictionBalance");
     expect(source).toContain("hasSufficientPredictionSpotBalance");
     expect(source).toContain("Move USDC into Hyperliquid spot balance before signing");
+    expect(source).toContain("Move USDC to predictions balance");
+    expect(source).toContain("buildPredictionUsdcTransfer");
+    expect(source).toContain("sendPredictionUsdcTransfer");
+    expect(source).toContain("refreshPredictionBalanceForWallet");
+    expect(source).toContain("await refreshPredictionBalanceForWallet(props.activeWallet.address)");
   });
 
   it("gates World Cup selected-book streaming to question 32 with diagnostics", () => {

@@ -17,6 +17,7 @@ import type {
   ApproveAgentAction,
   ApproveBuilderFeeAction,
   EIP712TypedData,
+  PredictionUsdcTransferAction,
 } from "@alchemy-hl/shared";
 
 const ARBITRUM_MAINNET_CHAIN_ID_HEX = "0xa4b1" as const;
@@ -43,6 +44,15 @@ const APPROVE_AGENT_TYPES = {
     { name: "hyperliquidChain", type: "string" },
     { name: "agentAddress", type: "address" },
     { name: "agentName", type: "string" },
+    { name: "nonce", type: "uint64" },
+  ],
+} as const;
+
+const USD_CLASS_TRANSFER_TYPES = {
+  "HyperliquidTransaction:UsdClassTransfer": [
+    { name: "hyperliquidChain", type: "string" },
+    { name: "amount", type: "string" },
+    { name: "toPerp", type: "bool" },
     { name: "nonce", type: "uint64" },
   ],
 } as const;
@@ -130,6 +140,41 @@ export function buildApproveAgentTypedData(
       hyperliquidChain: filled.hyperliquidChain,
       agentAddress: filled.agentAddress,
       agentName: filled.agentName,
+      nonce: filled.nonce,
+    },
+  };
+
+  return { typedData, action: filled, nonce };
+}
+
+export function buildUsdClassTransferTypedData(
+  action: Pick<PredictionUsdcTransferAction, "amount" | "toPerp"> & Partial<PredictionUsdcTransferAction>,
+  opts: { isTestnet: boolean; nonce?: number },
+): {
+  typedData: EIP712TypedData;
+  action: PredictionUsdcTransferAction;
+  nonce: number;
+} {
+  const nonce = opts.nonce ?? Date.now();
+  const hyperliquidChain: "Mainnet" | "Testnet" = opts.isTestnet ? "Testnet" : "Mainnet";
+
+  const filled: PredictionUsdcTransferAction = {
+    type: "usdClassTransfer",
+    hyperliquidChain,
+    amount: action.amount,
+    toPerp: false,
+    nonce,
+    signatureChainId: ARBITRUM_MAINNET_CHAIN_ID_HEX,
+  };
+
+  const typedData: EIP712TypedData = {
+    domain: { ...USER_SIGNED_DOMAIN },
+    types: USD_CLASS_TRANSFER_TYPES as unknown as EIP712TypedData["types"],
+    primaryType: "HyperliquidTransaction:UsdClassTransfer",
+    message: {
+      hyperliquidChain: filled.hyperliquidChain,
+      amount: filled.amount,
+      toPerp: filled.toPerp,
       nonce: filled.nonce,
     },
   };
