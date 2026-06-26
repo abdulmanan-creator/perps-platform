@@ -18,6 +18,7 @@ import {
   getOnboardingReadiness,
   type ReadinessItem,
 } from "@/lib/agent-trade/onboarding-readiness";
+import { getBridgeDepositDecision } from "@/lib/agent-trade/legacy-safety";
 import type { AccountValueKind, EligibilityMode, EligibilityResponse } from "@/lib/agent-trade/types";
 
 interface WalletSummary {
@@ -28,6 +29,40 @@ interface WalletSummary {
   walletKind?: "embedded" | "external" | "unknown";
   login?: () => void;
   logout?: () => void;
+}
+
+type WalletAddressCopyState = "idle" | "copied" | "manual";
+
+export function getWalletAddressCopyUi(input: {
+  walletAddress?: string;
+  copyState: WalletAddressCopyState;
+}): {
+  buttonLabel: string;
+  helperText?: string;
+  manualAddress?: string;
+} | undefined {
+  if (!input.walletAddress) {
+    return undefined;
+  }
+
+  if (input.copyState === "copied") {
+    return {
+      buttonLabel: "Copied",
+      helperText: "Address copied.",
+    };
+  }
+
+  if (input.copyState === "manual") {
+    return {
+      buttonLabel: "Copy",
+      helperText: "Clipboard unavailable. Select the full address below.",
+      manualAddress: input.walletAddress,
+    };
+  }
+
+  return {
+    buttonLabel: "Copy",
+  };
 }
 
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
@@ -97,6 +132,8 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
         </div>
       </section>
 
+      <OnboardingPathShell eligibility={eligibility} />
+
       <section className="onboarding-grid">
         <ReadinessOverviewCardShell eligibility={eligibility} />
         <StatusCard eligibility={eligibility} />
@@ -148,6 +185,231 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
         </div>
       </section>
     </main>
+  );
+}
+
+function OnboardingPathShell({ eligibility }: { eligibility: EligibilityResponse }) {
+  if (!HAS_PRIVY) {
+    return (
+      <OnboardingPath
+        eligibility={eligibility}
+        wallet={{ status: "local-dev", authStatus: "not-configured" }}
+        providerAvailable={false}
+      />
+    );
+  }
+  return <PrivyOnboardingPath eligibility={eligibility} />;
+}
+
+function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse }) {
+  const wallet = useWalletSummary();
+  const { fundWallet } = useFundWallet();
+  const [opening, setOpening] = useState(false);
+  const [providerError, setProviderError] = useState<string | null>(null);
+  const providerAvailable = PRIVY_FUNDING_ENABLED && typeof fundWallet === "function";
+
+  async function openProvider() {
+    if (
+      wallet.status !== "connected" ||
+      !wallet.address ||
+      eligibility.state !== "liveEligible" ||
+      !providerAvailable
+    ) {
+      return;
+    }
+
+    setOpening(true);
+    setProviderError(null);
+    try {
+      await fundWallet(wallet.address);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The funding provider could not be opened.";
+      setProviderError(message);
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  return (
+    <OnboardingPath
+      eligibility={eligibility}
+      wallet={wallet}
+      providerAvailable={providerAvailable}
+      providerOpening={opening}
+      providerError={providerError}
+      onOpenProvider={openProvider}
+    />
+  );
+}
+
+function OnboardingPath(props: {
+  eligibility: EligibilityResponse;
+  wallet: WalletSummary;
+  providerAvailable: boolean;
+  providerOpening?: boolean;
+  providerError?: string | null;
+  onOpenProvider?: () => void;
+}) {
+  const [addressCopyState, setAddressCopyState] = useState<WalletAddressCopyState>("idle");
+  const eligibilityDisplay = getEligibilityDisplay(props.eligibility.state);
+  const funding = getFundingDisplay({
+    eligibilityState: props.eligibility.state,
+    hasPrivyEnv: HAS_PRIVY,
+    walletConnected: props.wallet.status === "connected",
+    providerEnabled: PRIVY_FUNDING_ENABLED,
+    providerAvailable: props.providerAvailable,
+    providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
+    depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+    providerOpening: props.providerOpening,
+    providerError: props.providerError,
+  });
+  const walletConnected = props.wallet.status === "connected";
+  const walletAddress = walletConnected ? props.wallet.address : undefined;
+  const canOpenProvider = funding.primaryCtaKind === "open_provider" && funding.primaryCtaEnabled;
+  const depositDecision = getBridgeDepositDecision({
+    featureEnabled: HL_BRIDGE_DEPOSIT_ENABLED,
+    eligibilityState: props.eligibility.state,
+  });
+  const executionLabel = props.eligibility.mainnetExecutionEnabled ? "Mainnet" : "Testnet";
+  const liveEligible = props.eligibility.state === "liveEligible";
+  const fundingStepCopy = liveEligible
+    ? "Fund the embedded wallet with USDC, deposit USDC into Hyperliquid, then return to Agent.trade."
+    : props.eligibility.state === "restricted"
+      ? "Live funding is unavailable for this eligibility state. Paper mode remains available."
+      : "Funding stays gated until wallet readiness and live eligibility are confirmed.";
+  const walletAddressCopyUi = getWalletAddressCopyUi({
+    walletAddress,
+    copyState: addressCopyState,
+  });
+
+  async function copyWalletAddress() {
+    if (!walletAddress || !navigator.clipboard) {
+      setAddressCopyState("manual");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(walletAddress);
+      setAddressCopyState("copied");
+      window.setTimeout(() => setAddressCopyState("idle"), 1600);
+    } catch {
+      setAddressCopyState("manual");
+    }
+  }
+
+  return (
+    <section className="onboarding-path panel">
+      <div className="panel-head">
+        <div>
+          <span>Start path</span>
+          <strong>Sign in to wallet to eligibility to funding</strong>
+        </div>
+        <span className={`readiness-pill ${funding.liveFundingEnabled ? "green" : "amber"}`}>
+          {funding.liveFundingEnabled ? "Funding action ready" : "Funding gated"}
+        </span>
+      </div>
+      <div className="onboarding-path-grid">
+        <PathStep
+          step="1"
+          title={HAS_PRIVY ? "Sign in" : "Local dev"}
+          body={HAS_PRIVY ? "Use configured email, Google, or existing-wallet sign-in." : "Privy is not configured here; paper mode remains available."}
+          status={HAS_PRIVY ? "Ready" : "Privy env missing"}
+          tone={HAS_PRIVY ? "green" : "amber"}
+        />
+        <PathStep
+          step="2"
+          title="Wallet"
+          body={walletConnected ? `Active wallet ${formatWalletAddress(props.wallet.address)}.` : "Sign in to create or connect a self-custodial wallet."}
+          status={walletConnected ? walletKindLabel(props.wallet.walletKind) : "Not connected"}
+          tone={walletConnected ? "green" : "amber"}
+        />
+        <PathStep
+          step="3"
+          title="Eligibility"
+          body={eligibilityDisplay.summary}
+          status={eligibilityDisplay.label}
+          tone={eligibilityDisplay.tone}
+        />
+        <div className="path-step path-step-start">
+          <div className="path-step-top">
+            <span className="path-step-index">4</span>
+            <span className={`readiness-pill ${funding.tone}`}>{funding.title}</span>
+          </div>
+          <strong>Fund your account</strong>
+          <p>{fundingStepCopy}</p>
+          {walletAddress ? (
+            <div className="path-wallet-copy">
+              <span>Wallet address</span>
+              <code title={walletAddress}>{walletAddress}</code>
+              <button type="button" onClick={copyWalletAddress}>{walletAddressCopyUi?.buttonLabel ?? "Copy"}</button>
+              {walletAddressCopyUi?.helperText ? <small>{walletAddressCopyUi.helperText}</small> : null}
+              {walletAddressCopyUi?.manualAddress ? <code className="path-wallet-copy-full">{walletAddressCopyUi.manualAddress}</code> : null}
+            </div>
+          ) : null}
+          {walletConnected ? (
+            <div className="manual-funding-steps">
+              <div>
+                <strong>1. Fund wallet with USDC</strong>
+                <span>{canOpenProvider ? "Provider CTA available" : funding.summary}</span>
+              </div>
+              <div>
+                <strong>2. Deposit USDC into Hyperliquid</strong>
+                <span>{depositDecision.allowed ? "Bridge2 compatibility path is enabled for this eligible user." : depositDecision.summary}</span>
+              </div>
+              <div>
+                <strong>3. Return to Agent.trade terminal</strong>
+                <span>{liveEligible ? "Live orders still require account readiness and explicit confirmation." : "Use paper mode until live eligibility is available."}</span>
+              </div>
+            </div>
+          ) : null}
+          <div className="path-choice-list">
+            <Link className="path-choice active" href="/terminal">
+              <strong>{props.eligibility.state === "liveEligible" ? `Open ${executionLabel.toLowerCase()} ticket` : "Explore paper first"}</strong>
+              <span>{props.eligibility.state === "liveEligible" ? "Live actions still require account state and confirmation." : "Simulate against live prices while readiness is incomplete."}</span>
+            </Link>
+            <button
+              className="path-choice"
+              disabled={!canOpenProvider}
+              onClick={props.onOpenProvider}
+              title={funding.summary}
+            >
+              <strong>{canOpenProvider ? funding.primaryCtaLabel : "Fund wallet"}</strong>
+              <span>{canOpenProvider ? "Opens the configured provider for this wallet." : funding.summary}</span>
+            </button>
+            {depositDecision.allowed ? (
+              <Link className="path-choice" href="/approve">
+                <strong>Deposit into Hyperliquid</strong>
+                <span>Open the gated legacy Bridge2 compatibility path.</span>
+              </Link>
+            ) : (
+              <button className="path-choice" disabled title={depositDecision.summary}>
+                <strong>Deposit into Hyperliquid</strong>
+                <span>{depositDecision.summary}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function PathStep(props: {
+  step: string;
+  title: string;
+  body: string;
+  status: string;
+  tone: "green" | "amber" | "red" | "blue";
+}) {
+  return (
+    <div className="path-step">
+      <div className="path-step-top">
+        <span className="path-step-index">{props.step}</span>
+        <span className={`readiness-pill ${props.tone}`}>{props.status}</span>
+      </div>
+      <strong>{props.title}</strong>
+      <p>{props.body}</p>
+    </div>
   );
 }
 

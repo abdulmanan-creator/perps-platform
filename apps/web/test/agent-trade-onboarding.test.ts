@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getAccountReadinessDisplay, getLiveTradingReadiness } from "../lib/agent-trade/account-readiness";
+import { getWalletAddressCopyUi } from "../components/agent-trade/OnboardingClient";
 import { normalizeEligibilityResponse } from "../lib/agent-trade/eligibility";
 import { getFundingDisplay } from "../lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "../lib/agent-trade/onboarding";
@@ -76,6 +77,23 @@ describe("Agent.trade onboarding helpers", () => {
   it("formats wallet addresses for display", () => {
     expect(formatWalletAddress()).toBe("Not connected");
     expect(formatWalletAddress("0x1234567890abcdef1234567890abcdef12345678")).toBe("0x1234...5678");
+  });
+
+  it("keeps onboarding wallet copy feedback honest and exposes the full manual address", () => {
+    const address = "0x1234567890abcdef1234567890abcdef12345678";
+
+    expect(getWalletAddressCopyUi({ walletAddress: address, copyState: "idle" })).toEqual({
+      buttonLabel: "Copy",
+    });
+    expect(getWalletAddressCopyUi({ walletAddress: address, copyState: "copied" })).toEqual({
+      buttonLabel: "Copied",
+      helperText: "Address copied.",
+    });
+    expect(getWalletAddressCopyUi({ walletAddress: address, copyState: "manual" })).toEqual({
+      buttonLabel: "Copy",
+      helperText: "Clipboard unavailable. Select the full address below.",
+      manualAddress: address,
+    });
   });
 
   it("summarizes missing Privy env as local-dev paper readiness", () => {
