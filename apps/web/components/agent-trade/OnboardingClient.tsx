@@ -25,6 +25,7 @@ import {
   USDC_ARBITRUM,
   buildUsdcPermitTypedData,
   formatUsdc,
+  getGaslessDepositReadiness,
   getGaslessDepositUi,
   splitPermitSignature,
   validateGaslessDepositAmount,
@@ -50,6 +51,19 @@ interface WalletSummary {
 }
 
 type WalletAddressCopyState = "idle" | "copied" | "manual";
+
+interface GaslessDepositSnapshot {
+  walletUsdcUnits: bigint;
+  walletUsdcReadError: boolean;
+  permitNonce?: bigint;
+  baseUsdcUnits: bigint;
+  walletEthLabel: string;
+  backendStatus?: GaslessDepositStatus;
+  hlAccountValueUsd: number;
+  refreshWalletUsdc: () => Promise<unknown>;
+  refreshPermitNonce: () => Promise<unknown>;
+  refreshHlBalance: () => Promise<void>;
+}
 
 export function getWalletAddressCopyUi(input: {
   walletAddress?: string;
@@ -80,6 +94,33 @@ export function getWalletAddressCopyUi(input: {
 
   return {
     buttonLabel: "Copy",
+  };
+}
+
+export function getLegacyDepositPathUi(input: {
+  gaslessEnabled: boolean;
+  legacyAllowed: boolean;
+  legacySummary: string;
+}): { title: string; summary: string; href?: string; disabled: boolean } {
+  if (input.gaslessEnabled) {
+    return {
+      title: "Legacy deposit path disabled",
+      summary: "Use the Hyperliquid deposit card below for gasless Bridge2 permit deposit.",
+      disabled: true,
+    };
+  }
+  if (input.legacyAllowed) {
+    return {
+      title: "Legacy Deposit into Hyperliquid",
+      summary: "Open the gated legacy Bridge2 compatibility path.",
+      href: "/approve",
+      disabled: false,
+    };
+  }
+  return {
+    title: "Legacy deposit path disabled",
+    summary: input.legacySummary,
+    disabled: true,
   };
 }
 
@@ -228,6 +269,10 @@ function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse
   const [opening, setOpening] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
   const providerAvailable = PRIVY_FUNDING_ENABLED && typeof fundWallet === "function";
+  const address = wallet.status === "connected" && wallet.address
+    ? wallet.address as `0x${string}`
+    : undefined;
+  const gasless = useGaslessDepositState(address);
 
   async function openProvider() {
     if (
@@ -259,6 +304,7 @@ function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse
       providerOpening={opening}
       providerError={providerError}
       onOpenProvider={openProvider}
+      gasless={gasless}
     />
   );
 }
@@ -270,6 +316,7 @@ function OnboardingPath(props: {
   providerOpening?: boolean;
   providerError?: string | null;
   onOpenProvider?: () => void;
+  gasless?: GaslessDepositSnapshot;
 }) {
   const [addressCopyState, setAddressCopyState] = useState<WalletAddressCopyState>("idle");
   const eligibilityDisplay = getEligibilityDisplay(props.eligibility.state);
@@ -287,14 +334,28 @@ function OnboardingPath(props: {
   const walletConnected = props.wallet.status === "connected";
   const walletAddress = walletConnected ? props.wallet.address : undefined;
   const canOpenProvider = funding.primaryCtaKind === "open_provider" && funding.primaryCtaEnabled;
+  const gaslessReadiness = getGaslessDepositReadiness({
+    frontendEnabled: GASLESS_HL_DEPOSIT_ENABLED,
+    backendStatus: props.gasless?.backendStatus,
+    walletConnected,
+    eligibilityState: props.eligibility.state,
+    walletUsdcUnits: props.gasless?.walletUsdcUnits ?? 0n,
+    walletUsdcReadError: props.gasless?.walletUsdcReadError,
+    hlAccountValueUsd: props.gasless?.hlAccountValueUsd ?? 0,
+    amount: "5",
+  });
   const depositDecision = getBridgeDepositDecision({
     featureEnabled: HL_BRIDGE_DEPOSIT_ENABLED,
     eligibilityState: props.eligibility.state,
   });
-  const executionLabel = props.eligibility.mainnetExecutionEnabled ? "Mainnet" : "Testnet";
+  const legacyDepositPath = getLegacyDepositPathUi({
+    gaslessEnabled: GASLESS_HL_DEPOSIT_ENABLED,
+    legacyAllowed: depositDecision.allowed,
+    legacySummary: depositDecision.summary,
+  });
   const liveEligible = props.eligibility.state === "liveEligible";
   const fundingStepCopy = liveEligible
-    ? "Fund the embedded wallet with USDC, deposit USDC into Hyperliquid, then return to Agent.trade."
+    ? "Fund wallet means getting native Arbitrum USDC into the Privy wallet. Deposit into Hyperliquid moves that USDC into the trading account. Open a mainnet ticket only after the Hyperliquid balance is funded."
     : props.eligibility.state === "restricted"
       ? "Live funding is unavailable for this eligibility state. Paper mode remains available."
       : "Funding stays gated until wallet readiness and live eligibility are confirmed.";
@@ -317,6 +378,35 @@ function OnboardingPath(props: {
       setAddressCopyState("manual");
     }
   }
+
+  function focusGaslessDepositCard() {
+    const card = document.getElementById("hyperliquid-deposit-card");
+    card?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const action = card?.querySelector<HTMLButtonElement>("[data-gasless-deposit-action]");
+    action?.focus({ preventScroll: true });
+  }
+
+  const primaryPathAction = gaslessReadiness.action === "deposit_hyperliquid" ? (
+    <button className="path-choice active" onClick={focusGaslessDepositCard}>
+      <strong>{gaslessReadiness.primaryLabel}</strong>
+      <span>{gaslessReadiness.summary}</span>
+    </button>
+  ) : gaslessReadiness.action === "open_ticket" ? (
+    <Link className="path-choice active" href="/terminal">
+      <strong>{gaslessReadiness.primaryLabel}</strong>
+      <span>{gaslessReadiness.summary}</span>
+    </Link>
+  ) : props.eligibility.state === "liveEligible" ? (
+    <button className="path-choice active" disabled title={gaslessReadiness.ctaDisabledReason ?? gaslessReadiness.summary}>
+      <strong>Complete funding first</strong>
+      <span>{gaslessReadiness.ctaDisabledReason ?? gaslessReadiness.summary}</span>
+    </button>
+  ) : (
+    <Link className="path-choice active" href="/terminal">
+      <strong>Explore paper first</strong>
+      <span>Simulate against live prices while readiness is incomplete.</span>
+    </Link>
+  );
 
   return (
     <section className="onboarding-path panel">
@@ -371,23 +461,20 @@ function OnboardingPath(props: {
             <div className="manual-funding-steps">
               <div>
                 <strong>1. Fund wallet with USDC</strong>
-                <span>{canOpenProvider ? "Provider CTA available" : funding.summary}</span>
+                <span>{canOpenProvider ? "Provider CTA available to get USDC into the Privy wallet." : funding.summary}</span>
               </div>
               <div>
-                <strong>2. Deposit USDC into Hyperliquid</strong>
-                <span>{depositDecision.allowed ? "Bridge2 compatibility path is enabled for this eligible user." : depositDecision.summary}</span>
+                <strong>2. Deposit into Hyperliquid</strong>
+                <span>{gaslessReadiness.depositNeeded ? gaslessReadiness.summary : "Hyperliquid trading balance is funded."}</span>
               </div>
               <div>
-                <strong>3. Return to Agent.trade terminal</strong>
-                <span>{liveEligible ? "Live orders still require account readiness and explicit confirmation." : "Use paper mode until live eligibility is available."}</span>
+                <strong>3. Open mainnet ticket</strong>
+                <span>{gaslessReadiness.readyToTrade ? "Hyperliquid account is funded; live orders still require confirmation." : "Open a mainnet ticket after Hyperliquid trading balance reaches Agent.trade's $10 minimum."}</span>
               </div>
             </div>
           ) : null}
           <div className="path-choice-list">
-            <Link className="path-choice active" href="/terminal">
-              <strong>{props.eligibility.state === "liveEligible" ? `Open ${executionLabel.toLowerCase()} ticket` : "Explore paper first"}</strong>
-              <span>{props.eligibility.state === "liveEligible" ? "Live actions still require account state and confirmation." : "Simulate against live prices while readiness is incomplete."}</span>
-            </Link>
+            {primaryPathAction}
             <button
               className="path-choice"
               disabled={!canOpenProvider}
@@ -395,17 +482,17 @@ function OnboardingPath(props: {
               title={funding.summary}
             >
               <strong>{canOpenProvider ? funding.primaryCtaLabel : "Fund wallet"}</strong>
-              <span>{canOpenProvider ? "Opens the configured provider for this wallet." : funding.summary}</span>
+              <span>{canOpenProvider ? "Fund wallet: get USDC into the Privy wallet." : funding.summary}</span>
             </button>
-            {depositDecision.allowed ? (
-              <Link className="path-choice" href="/approve">
-                <strong>Deposit into Hyperliquid</strong>
-                <span>Open the gated legacy Bridge2 compatibility path.</span>
+            {legacyDepositPath.href ? (
+              <Link className="path-choice" href={legacyDepositPath.href}>
+                <strong>{legacyDepositPath.title}</strong>
+                <span>{legacyDepositPath.summary}</span>
               </Link>
             ) : (
-              <button className="path-choice" disabled title={depositDecision.summary}>
-                <strong>Deposit into Hyperliquid</strong>
-                <span>{depositDecision.summary}</span>
+              <button className="path-choice" disabled title={legacyDepositPath.summary}>
+                <strong>{legacyDepositPath.title}</strong>
+                <span>{legacyDepositPath.summary}</span>
               </button>
             )}
           </div>
@@ -918,6 +1005,7 @@ function GaslessDepositCardShell({ eligibility }: { eligibility: EligibilityResp
         eligibility={eligibility}
         wallet={{ status: "local-dev", authStatus: "not-configured" }}
         walletUsdcUnits={0n}
+        walletUsdcReadError={false}
         baseUsdcUnits={0n}
         walletEthLabel="Unavailable"
         hlAccountValueUsd={0}
@@ -934,36 +1022,19 @@ function GaslessDepositCardShell({ eligibility }: { eligibility: EligibilityResp
   return <PrivyGaslessDepositCard eligibility={eligibility} />;
 }
 
-function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResponse }) {
-  const { getAccessToken } = usePrivy();
-  const { wallets } = useWallets();
-  const { setActiveWallet } = useSetActiveWallet();
-  const { signTypedDataAsync } = useSignTypedData();
-  const activeWallet = useMemo<ConnectedWallet | undefined>(() => {
-    const embedded = wallets.find((wallet) => wallet.walletClientType === "privy");
-    return embedded ?? wallets[0];
-  }, [wallets]);
-  const wallet = useWalletSummary();
-  const address = wallet.status === "connected" && wallet.address
-    ? wallet.address as `0x${string}`
-    : undefined;
-  const [amount, setAmount] = useState("5");
-  const [phase, setPhase] = useState<GaslessDepositPhase>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [txHash, setTxHash] = useState<Hex | null>(null);
+function useGaslessDepositState(address?: `0x${string}`): GaslessDepositSnapshot {
   const [backendStatus, setBackendStatus] = useState<GaslessDepositStatus | undefined>();
   const [hlAccountValueUsd, setHlAccountValueUsd] = useState(0);
   const [baseUsdcUnits, setBaseUsdcUnits] = useState(0n);
 
-  useEffect(() => {
-    if (activeWallet) {
-      void setActiveWallet(activeWallet);
-    }
-  }, [activeWallet, setActiveWallet]);
-
-  const { data: walletUsdcRaw, refetch: refetchWalletUsdc } = useReadContract({
+  const {
+    data: walletUsdcRaw,
+    isError: walletUsdcReadError,
+    refetch: refetchWalletUsdc,
+  } = useReadContract({
     abi: erc20Abi,
     address: USDC_ARBITRUM,
+    chainId: ARBITRUM_CHAIN_ID,
     functionName: "balanceOf",
     args: address ? [address] : undefined,
     query: {
@@ -974,6 +1045,7 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
   const { data: permitNonceRaw, refetch: refetchPermitNonce } = useReadContract({
     abi: usdcPermitAbi,
     address: USDC_ARBITRUM,
+    chainId: ARBITRUM_CHAIN_ID,
     functionName: "nonces",
     args: address ? [address] : undefined,
     query: {
@@ -1082,21 +1154,60 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
     void refreshHlBalance();
   }, [refreshHlBalance]);
 
+  return {
+    walletUsdcUnits: walletUsdcRaw ?? 0n,
+    walletUsdcReadError,
+    permitNonce: permitNonceRaw,
+    baseUsdcUnits,
+    walletEthLabel: ethBalance?.value == null ? "Not checked" : `${Number(formatEther(ethBalance.value)).toFixed(5)} ETH`,
+    backendStatus,
+    hlAccountValueUsd,
+    refreshWalletUsdc: refetchWalletUsdc,
+    refreshPermitNonce: refetchPermitNonce,
+    refreshHlBalance,
+  };
+}
+
+function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResponse }) {
+  const { getAccessToken } = usePrivy();
+  const { wallets } = useWallets();
+  const { setActiveWallet } = useSetActiveWallet();
+  const { signTypedDataAsync } = useSignTypedData();
+  const activeWallet = useMemo<ConnectedWallet | undefined>(() => {
+    const embedded = wallets.find((wallet) => wallet.walletClientType === "privy");
+    return embedded ?? wallets[0];
+  }, [wallets]);
+  const wallet = useWalletSummary();
+  const address = wallet.status === "connected" && wallet.address
+    ? wallet.address as `0x${string}`
+    : undefined;
+  const [amount, setAmount] = useState("5");
+  const [phase, setPhase] = useState<GaslessDepositPhase>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<Hex | null>(null);
+  const gasless = useGaslessDepositState(address);
+
+  useEffect(() => {
+    if (activeWallet) {
+      void setActiveWallet(activeWallet);
+    }
+  }, [activeWallet, setActiveWallet]);
+
   useEffect(() => {
     if (phase !== "polling" || !address) {
       return undefined;
     }
     const interval = window.setInterval(() => {
-      void refreshHlBalance();
+      void gasless.refreshHlBalance();
     }, 5_000);
     return () => window.clearInterval(interval);
-  }, [address, phase, refreshHlBalance]);
+  }, [address, phase, gasless.refreshHlBalance]);
 
   useEffect(() => {
-    if (phase === "polling" && hlAccountValueUsd >= 5) {
+    if (phase === "polling" && gasless.hlAccountValueUsd >= 5) {
       setPhase("confirmed");
     }
-  }, [hlAccountValueUsd, phase]);
+  }, [gasless.hlAccountValueUsd, phase]);
 
   async function submitGaslessDeposit() {
     if (!address) {
@@ -1104,18 +1215,18 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
     }
     const amountResult = validateGaslessDepositAmount({
       amount,
-      walletUsdcUnits: walletUsdcRaw ?? 0n,
+      walletUsdcUnits: gasless.walletUsdcUnits,
     });
     if (!amountResult.ok) {
       setError(amountResult.message);
       return;
     }
-    if (permitNonceRaw == null) {
+    if (gasless.permitNonce == null) {
       setError("Could not read the USDC permit nonce. Retry in a moment.");
       return;
     }
-    if (!backendStatus?.enabled) {
-      setError(backendStatus?.reason ?? "Gasless deposit not enabled.");
+    if (!gasless.backendStatus?.enabled) {
+      setError(gasless.backendStatus?.reason ?? "Gasless deposit not enabled.");
       return;
     }
 
@@ -1123,10 +1234,10 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 10 * 60);
     const typedData = buildUsdcPermitTypedData({
       owner: address,
-      spender: backendStatus.bridge,
-      token: backendStatus.token,
+      spender: gasless.backendStatus.bridge,
+      token: gasless.backendStatus.token,
       value: amountResult.amountUnits,
-      nonce: permitNonceRaw,
+      nonce: gasless.permitNonce,
       deadline,
     });
 
@@ -1148,8 +1259,8 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
         },
         body: JSON.stringify({
           owner: address,
-          token: backendStatus.token,
-          spender: backendStatus.bridge,
+          token: gasless.backendStatus.token,
+          spender: gasless.backendStatus.bridge,
           amount: amountResult.amountUnits.toString(),
           deadline: Number(deadline),
           signature,
@@ -1161,9 +1272,9 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
       }
       setTxHash(body.txHash);
       setPhase("polling");
-      await refetchWalletUsdc();
-      await refetchPermitNonce();
-      await refreshHlBalance();
+      await gasless.refreshWalletUsdc();
+      await gasless.refreshPermitNonce();
+      await gasless.refreshHlBalance();
     } catch (err) {
       setPhase("error");
       setError(err instanceof Error ? err.message : "Gasless deposit failed.");
@@ -1174,16 +1285,17 @@ function PrivyGaslessDepositCard({ eligibility }: { eligibility: EligibilityResp
     <GaslessDepositCard
       eligibility={eligibility}
       wallet={wallet}
-      walletUsdcUnits={walletUsdcRaw ?? 0n}
-      baseUsdcUnits={baseUsdcUnits}
-      walletEthLabel={ethBalance?.value == null ? "Not checked" : `${Number(formatEther(ethBalance.value)).toFixed(5)} ETH`}
-      hlAccountValueUsd={hlAccountValueUsd}
+      walletUsdcUnits={gasless.walletUsdcUnits}
+      walletUsdcReadError={gasless.walletUsdcReadError}
+      baseUsdcUnits={gasless.baseUsdcUnits}
+      walletEthLabel={gasless.walletEthLabel}
+      hlAccountValueUsd={gasless.hlAccountValueUsd}
       amount={amount}
       setAmount={setAmount}
       phase={phase}
       txHash={txHash}
       error={error}
-      status={backendStatus}
+      status={gasless.backendStatus}
       onSubmit={submitGaslessDeposit}
     />
   );
@@ -1193,6 +1305,7 @@ function GaslessDepositCard(props: {
   eligibility: EligibilityResponse;
   wallet: WalletSummary;
   walletUsdcUnits: bigint;
+  walletUsdcReadError: boolean;
   baseUsdcUnits: bigint;
   walletEthLabel: string;
   hlAccountValueUsd: number;
@@ -1211,7 +1324,18 @@ function GaslessDepositCard(props: {
     walletConnected,
     eligibilityState: props.eligibility.state,
     walletUsdcUnits: props.walletUsdcUnits,
+    walletUsdcReadError: props.walletUsdcReadError,
     baseUsdcUnits: props.baseUsdcUnits,
+    hlAccountValueUsd: props.hlAccountValueUsd,
+    amount: props.amount,
+  });
+  const readiness = getGaslessDepositReadiness({
+    frontendEnabled: GASLESS_HL_DEPOSIT_ENABLED,
+    backendStatus: props.status,
+    walletConnected,
+    eligibilityState: props.eligibility.state,
+    walletUsdcUnits: props.walletUsdcUnits,
+    walletUsdcReadError: props.walletUsdcReadError,
     hlAccountValueUsd: props.hlAccountValueUsd,
     amount: props.amount,
   });
@@ -1241,7 +1365,7 @@ function GaslessDepositCard(props: {
   })();
 
   return (
-    <div className="panel onboarding-card gasless-deposit-card">
+    <div id="hyperliquid-deposit-card" className="panel onboarding-card gasless-deposit-card">
       <div className="panel-head">
         <div>
           <span>Hyperliquid deposit</span>
@@ -1252,9 +1376,17 @@ function GaslessDepositCard(props: {
         </span>
       </div>
       <div className="readiness-list">
-        <ReadinessRow label="Arbitrum wallet USDC" value={`${formatUsdc(props.walletUsdcUnits)} USDC`} ok={props.walletUsdcUnits >= 5_000_000n} />
+        <ReadinessRow label="Active wallet" value={formatWalletAddress(props.wallet.address)} ok={walletConnected} />
+        <ReadinessRow
+          label="Native Arbitrum USDC"
+          value={props.walletUsdcReadError ? "Read failed" : `${formatUsdc(props.walletUsdcUnits)} USDC`}
+          ok={!props.walletUsdcReadError && props.walletUsdcUnits >= 5_000_000n}
+        />
         <ReadinessRow label="Arbitrum ETH gas" value={props.walletEthLabel} ok />
         <ReadinessRow label="Hyperliquid trading balance" value={`$${props.hlAccountValueUsd.toFixed(2)}`} ok={props.hlAccountValueUsd >= MIN_AGENT_TRADE_ORDER_NOTIONAL_USD} />
+        <ReadinessRow label="Backend status" value={props.status?.reason ?? "Not checked"} ok={Boolean(props.status?.enabled)} />
+        <ReadinessRow label="Eligibility" value={getEligibilityDisplay(props.eligibility.state).label} ok={props.eligibility.state === "liveEligible"} />
+        <ReadinessRow label="CTA" value={readiness.ctaEnabled ? "Enabled" : readiness.ctaDisabledReason ?? "Disabled"} ok={readiness.ctaEnabled} />
       </div>
       <div className="gasless-deposit-body">
         <p>{ui.summary}</p>
@@ -1278,6 +1410,7 @@ function GaslessDepositCard(props: {
           <p className="onboarding-note">Deposited, but below Agent.trade&apos;s $10 minimum order notional.</p>
         ) : null}
         <button
+          data-gasless-deposit-action
           className="primary-action compact-button"
           disabled={!ui.ctaEnabled || isBusy}
           onClick={props.onSubmit}

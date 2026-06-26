@@ -34,6 +34,27 @@ export interface GaslessDepositStatus {
   minOrderNotionalUsd: number;
 }
 
+export interface GaslessDepositReadinessInput {
+  frontendEnabled: boolean;
+  backendStatus?: GaslessDepositStatus;
+  walletConnected: boolean;
+  eligibilityState: EligibilityMode;
+  walletUsdcUnits: bigint;
+  walletUsdcReadError?: boolean;
+  hlAccountValueUsd: number;
+  amount: string;
+}
+
+export interface GaslessDepositReadiness {
+  action: "connect_wallet" | "paper" | "fund_wallet" | "deposit_hyperliquid" | "open_ticket";
+  primaryLabel: string;
+  summary: string;
+  ctaEnabled: boolean;
+  ctaDisabledReason?: string;
+  depositNeeded: boolean;
+  readyToTrade: boolean;
+}
+
 export interface PermitTypedDataInput {
   owner: `0x${string}`;
   spender: `0x${string}`;
@@ -135,6 +156,7 @@ export function getGaslessDepositUi(input: {
   walletConnected: boolean;
   eligibilityState: EligibilityMode;
   walletUsdcUnits: bigint;
+  walletUsdcReadError?: boolean;
   baseUsdcUnits?: bigint;
   hlAccountValueUsd: number;
   amount: string;
@@ -191,6 +213,16 @@ export function getGaslessDepositUi(input: {
       readyToTrade: true,
     };
   }
+  if (input.walletUsdcReadError) {
+    return {
+      title: "Wallet balance unavailable",
+      summary: "Agent.trade could not read native Arbitrum USDC for this wallet. Refresh or check the wallet network before depositing.",
+      ctaLabel: "Deposit disabled",
+      ctaEnabled: false,
+      amountError: "Native Arbitrum USDC balance read failed.",
+      readyToTrade: false,
+    };
+  }
   const amount = validateGaslessDepositAmount({
     amount: input.amount,
     walletUsdcUnits: input.walletUsdcUnits,
@@ -217,6 +249,97 @@ export function getGaslessDepositUi(input: {
       : "Native Arbitrum USDC is ready to deposit into Hyperliquid with a gasless permit.",
     ctaLabel: "Deposit to Hyperliquid",
     ctaEnabled: true,
+    readyToTrade: false,
+  };
+}
+
+export function getGaslessDepositReadiness(input: GaslessDepositReadinessInput): GaslessDepositReadiness {
+  if (!input.frontendEnabled) {
+    return {
+      action: "paper",
+      primaryLabel: "Continue in paper mode",
+      summary: "Gasless Hyperliquid deposit is disabled in this web build.",
+      ctaEnabled: false,
+      ctaDisabledReason: "Gasless deposit product flag is off.",
+      depositNeeded: false,
+      readyToTrade: false,
+    };
+  }
+  if (!input.walletConnected) {
+    return {
+      action: "connect_wallet",
+      primaryLabel: "Connect wallet",
+      summary: "Connect the Privy wallet before funding or depositing.",
+      ctaEnabled: false,
+      ctaDisabledReason: "Wallet not connected.",
+      depositNeeded: false,
+      readyToTrade: false,
+    };
+  }
+  if (input.eligibilityState !== "liveEligible") {
+    return {
+      action: "paper",
+      primaryLabel: "Explore paper first",
+      summary: "Restricted, unknown, paper-only, or kill-switch users cannot use live funding or gasless deposit.",
+      ctaEnabled: false,
+      ctaDisabledReason: "Live eligibility required.",
+      depositNeeded: false,
+      readyToTrade: false,
+    };
+  }
+  if (input.hlAccountValueUsd >= MIN_AGENT_TRADE_ORDER_NOTIONAL_USD) {
+    return {
+      action: "open_ticket",
+      primaryLabel: "Open mainnet ticket",
+      summary: "Hyperliquid trading balance is funded for Agent.trade's $10 minimum order notional.",
+      ctaEnabled: true,
+      depositNeeded: false,
+      readyToTrade: true,
+    };
+  }
+  if (!input.backendStatus?.enabled) {
+    return {
+      action: "fund_wallet",
+      primaryLabel: "Fund wallet with USDC",
+      summary: input.backendStatus?.reason ?? "Gasless deposit backend status is unavailable.",
+      ctaEnabled: false,
+      ctaDisabledReason: input.backendStatus?.reason ?? "Backend relayer status unavailable.",
+      depositNeeded: true,
+      readyToTrade: false,
+    };
+  }
+  if (input.walletUsdcReadError) {
+    return {
+      action: "fund_wallet",
+      primaryLabel: "Check wallet balance",
+      summary: "Native Arbitrum USDC balance could not be read, so Agent.trade cannot enable the deposit action yet.",
+      ctaEnabled: false,
+      ctaDisabledReason: "Native Arbitrum USDC balance read failed.",
+      depositNeeded: true,
+      readyToTrade: false,
+    };
+  }
+  const amount = validateGaslessDepositAmount({
+    amount: input.amount,
+    walletUsdcUnits: input.walletUsdcUnits,
+  });
+  if (!amount.ok) {
+    return {
+      action: "fund_wallet",
+      primaryLabel: "Fund wallet with USDC",
+      summary: "Fund wallet means getting native Arbitrum USDC into the Privy wallet before depositing into Hyperliquid.",
+      ctaEnabled: false,
+      ctaDisabledReason: amount.message,
+      depositNeeded: true,
+      readyToTrade: false,
+    };
+  }
+  return {
+    action: "deposit_hyperliquid",
+    primaryLabel: "Deposit USDC into Hyperliquid",
+    summary: "Deposit into Hyperliquid moves native Arbitrum USDC from the Privy wallet into the Hyperliquid trading account via gasless Bridge2 permit.",
+    ctaEnabled: true,
+    depositNeeded: true,
     readyToTrade: false,
   };
 }

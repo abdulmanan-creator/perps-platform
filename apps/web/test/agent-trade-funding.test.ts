@@ -5,6 +5,7 @@ import {
   HL_BRIDGE_ARBITRUM,
   USDC_ARBITRUM,
   buildUsdcPermitTypedData,
+  getGaslessDepositReadiness,
   getGaslessDepositUi,
   validateGaslessDepositAmount,
 } from "../lib/agent-trade/gasless-deposit";
@@ -223,6 +224,119 @@ describe("Agent.trade funding helpers", () => {
     expect(ui.summary.toLowerCase()).toContain("native arbitrum usdc");
     expect(ui.ctaEnabled).toBe(true);
     expect(`${ui.title} ${ui.summary}`).not.toMatch(/\b(Base deposit|ACH|Apple Pay|Google Pay)\b/u);
+  });
+
+  it("prioritizes Hyperliquid deposit for live eligible wallets with USDC and low HL balance", () => {
+    const readiness = getGaslessDepositReadiness({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "liveEligible",
+        liveEligible: true,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "liveEligible",
+      walletUsdcUnits: 12_000_000n,
+      hlAccountValueUsd: 0,
+      amount: "5",
+    });
+
+    expect(readiness.action).toBe("deposit_hyperliquid");
+    expect(readiness.primaryLabel).toBe("Deposit USDC into Hyperliquid");
+    expect(readiness.ctaEnabled).toBe(true);
+  });
+
+  it("prioritizes mainnet ticket only after Hyperliquid balance reaches order minimum", () => {
+    const readiness = getGaslessDepositReadiness({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "liveEligible",
+        liveEligible: true,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "liveEligible",
+      walletUsdcUnits: 12_000_000n,
+      hlAccountValueUsd: 10,
+      amount: "5",
+    });
+
+    expect(readiness.action).toBe("open_ticket");
+    expect(readiness.primaryLabel).toBe("Open mainnet ticket");
+    expect(readiness.readyToTrade).toBe(true);
+  });
+
+  it("keeps restricted users paper-first with no gasless CTA", () => {
+    const readiness = getGaslessDepositReadiness({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "restricted",
+        liveEligible: false,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "restricted",
+      walletUsdcUnits: 12_000_000n,
+      hlAccountValueUsd: 0,
+      amount: "5",
+    });
+
+    expect(readiness.action).toBe("paper");
+    expect(readiness.ctaEnabled).toBe(false);
+    expect(readiness.ctaDisabledReason).toContain("Live eligibility required");
+  });
+
+  it("shows an explicit balance read failure instead of silently treating it as 0", () => {
+    const ui = getGaslessDepositUi({
+      frontendEnabled: true,
+      backendStatus: {
+        enabled: true,
+        reason: "Gasless deposit enabled.",
+        bridge: HL_BRIDGE_ARBITRUM,
+        token: USDC_ARBITRUM,
+        minDepositUsdc: 5,
+        chainId: 42161,
+        eligibilityState: "liveEligible",
+        liveEligible: true,
+        mainnetExecutionEnabled: true,
+        killSwitchEnabled: false,
+        minOrderNotionalUsd: 10,
+      },
+      walletConnected: true,
+      eligibilityState: "liveEligible",
+      walletUsdcUnits: 0n,
+      walletUsdcReadError: true,
+      hlAccountValueUsd: 0,
+      amount: "5",
+    });
+
+    expect(ui.title).toBe("Wallet balance unavailable");
+    expect(ui.amountError).toContain("balance read failed");
+    expect(ui.ctaEnabled).toBe(false);
   });
 
   it("marks the account ready only after Hyperliquid balance reaches order minimum", () => {

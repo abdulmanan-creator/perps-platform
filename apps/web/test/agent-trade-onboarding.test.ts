@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getAccountReadinessDisplay, getLiveTradingReadiness } from "../lib/agent-trade/account-readiness";
-import { getWalletAddressCopyUi } from "../components/agent-trade/OnboardingClient";
+import { getLegacyDepositPathUi, getWalletAddressCopyUi } from "../components/agent-trade/OnboardingClient";
 import { normalizeEligibilityResponse } from "../lib/agent-trade/eligibility";
 import { getFundingDisplay } from "../lib/agent-trade/funding";
 import { formatWalletAddress, getEligibilityDisplay } from "../lib/agent-trade/onboarding";
@@ -94,6 +94,19 @@ describe("Agent.trade onboarding helpers", () => {
       helperText: "Clipboard unavailable. Select the full address below.",
       manualAddress: address,
     });
+  });
+
+  it("labels the legacy Bridge2 path as disabled when gasless deposit is active", () => {
+    const copy = getLegacyDepositPathUi({
+      gaslessEnabled: true,
+      legacyAllowed: true,
+      legacySummary: "Bridge2 compatibility path is enabled.",
+    });
+
+    expect(copy.disabled).toBe(true);
+    expect(copy.href).toBeUndefined();
+    expect(copy.title).toBe("Legacy deposit path disabled");
+    expect(copy.summary).toContain("gasless Bridge2 permit deposit");
   });
 
   it("summarizes missing Privy env as local-dev paper readiness", () => {
