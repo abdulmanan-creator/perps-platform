@@ -16,9 +16,8 @@ import type {
 
 import { ApiException } from "../errors.js";
 import { HlClient } from "../helpers/hlClient.js";
+import { hip4PredictionTechnicalDetails } from "../helpers/predictionHip4.js";
 import { TtlCache, cachedAsync } from "../helpers/ttlCache.js";
-
-const OUTCOME_ASSET_OFFSET = 100_000_000;
 
 const idParamsSchema = z.object({
   questionId: z.coerce.number().int().min(0).optional(),
@@ -91,7 +90,7 @@ export async function predictionRoute(app: FastifyInstance): Promise<void> {
   });
 }
 
-async function fetchPredictionMeta(hl: HlClient): Promise<PredictionMeta> {
+export async function fetchPredictionMeta(hl: HlClient): Promise<PredictionMeta> {
   const raw = await hl.info<HlOutcomeMeta>({ type: "outcomeMeta" });
   if (!raw || !Array.isArray(raw.outcomes) || !Array.isArray(raw.questions)) {
     throw new ApiException(
@@ -156,14 +155,15 @@ function normalizeQuestion(
 function normalizeOutcome(raw: HlOutcome): PredictionOutcome {
   const outcome = raw.outcome;
   const sideSpecs = raw.sideSpecs ?? [];
+  const quoteToken = raw.quoteToken ?? "USDC";
   return {
     outcome,
     name: raw.name ?? `Outcome ${outcome}`,
     description: raw.description ?? "",
-    quoteToken: raw.quoteToken ?? "USDC",
+    quoteToken,
     sides: [
-      makeOutcomeSide(outcome, 0, sideSpecs),
-      makeOutcomeSide(outcome, 1, sideSpecs),
+      makeOutcomeSide(outcome, 0, quoteToken, sideSpecs),
+      makeOutcomeSide(outcome, 1, quoteToken, sideSpecs),
     ],
   };
 }
@@ -171,15 +171,16 @@ function normalizeOutcome(raw: HlOutcome): PredictionOutcome {
 function makeOutcomeSide(
   outcome: number,
   side: PredictionSide,
+  quoteToken: string,
   sideSpecs: Array<{ name?: string }>,
 ): PredictionOutcomeSide {
-  const encoding = 10 * outcome + side;
+  const technical = hip4PredictionTechnicalDetails(outcome, side, quoteToken);
   return {
     side,
     name: sideSpecs[side]?.name ?? (side === 0 ? "Yes" : "No"),
-    encoding,
-    coin: `#${encoding}`,
-    assetId: OUTCOME_ASSET_OFFSET + encoding,
+    encoding: technical.encoding,
+    coin: technical.coin,
+    assetId: technical.assetId,
   };
 }
 
@@ -320,7 +321,7 @@ function parseIdParam(params: unknown, field: "questionId" | "outcome"): number 
   }
 }
 
-function findQuestion(meta: PredictionMeta, questionId: number): PredictionQuestion {
+export function findQuestion(meta: PredictionMeta, questionId: number): PredictionQuestion {
   const question = meta.questions.find((item) => item.questionId === questionId);
   if (!question) {
     throw new ApiException(
@@ -332,7 +333,7 @@ function findQuestion(meta: PredictionMeta, questionId: number): PredictionQuest
   return question;
 }
 
-function findOutcome(meta: PredictionMeta, outcomeId: number): PredictionOutcome {
+export function findOutcome(meta: PredictionMeta, outcomeId: number): PredictionOutcome {
   const outcome = meta.outcomesById.get(outcomeId);
   if (!outcome) {
     throw new ApiException(
@@ -362,7 +363,7 @@ function parseMetadata(description: string): PredictionQuestionMetadata | null {
   return out;
 }
 
-interface PredictionMeta {
+export interface PredictionMeta {
   questions: PredictionQuestion[];
   outcomesById: Map<number, PredictionOutcome>;
 }

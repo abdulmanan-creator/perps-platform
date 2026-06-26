@@ -1,5 +1,8 @@
 import type {
+  OrderAction,
+  PredictionLiveOrderRequest,
   PredictionPaperAccount,
+  PredictionPaperFill,
   PredictionPaperOrderRequest,
   PredictionPaperPosition,
   PredictionOutcome,
@@ -69,6 +72,21 @@ export interface PredictionPortfolioExposure {
   unrealizedPnl: number;
 }
 
+export interface PredictionLiveExchangeResult {
+  status: "filled" | "resting" | "rejected" | "accepted";
+  label: string;
+  reason?: string;
+  oid?: number;
+}
+
+export const PREDICTION_LIVE_EXCHANGE_PATH = "/prediction/exchange";
+
+export function isPredictionLiveTradingEnabled(
+  value = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HIP4_LIVE_TRADING,
+): boolean {
+  return value === "true";
+}
+
 export async function loadPredictionQuestions(): Promise<PredictionQuestion[]> {
   const res = await fetch(`${API_BASE_URL}/prediction/questions`, { cache: "no-store" });
   if (!res.ok) {
@@ -127,6 +145,63 @@ export async function submitPredictionPaperOrder(
     throw new Error(`prediction paper order failed: ${res.status}`);
   }
   return (await res.json()) as { id: string; status: "accepted"; mode: "paper"; account: PredictionPaperAccount };
+}
+
+export function predictionLiveExchangeEndpoint(apiBaseUrl = API_BASE_URL): string {
+  return `${apiBaseUrl}${PREDICTION_LIVE_EXCHANGE_PATH}`;
+}
+
+export function buildPredictionLiveOrderAction(args: {
+  order: PredictionLiveOrderRequest;
+  assetId: number;
+}): OrderAction {
+  return {
+    type: "order",
+    grouping: "na",
+    orders: [
+      {
+        a: args.assetId,
+        b: args.order.action === "buy",
+        p: formatProbabilityWire(args.order.limitProbability),
+        s: String(Math.floor(args.order.contracts)),
+        r: false,
+        t: { limit: { tif: args.order.tif } },
+      },
+    ],
+  };
+}
+
+export function summarizePredictionLiveExchangeResult(response: unknown): PredictionLiveExchangeResult {
+  const direct = response && typeof response === "object"
+    ? (response as { exchangeResult?: PredictionLiveExchangeResult }).exchangeResult
+    : undefined;
+  if (direct?.status) return direct;
+
+  const exchangeResponse = response && typeof response === "object"
+    ? (response as { exchangeResponse?: unknown }).exchangeResponse
+    : response;
+  const inner = exchangeResponse && typeof exchangeResponse === "object"
+    ? (exchangeResponse as { response?: unknown }).response
+    : undefined;
+  const data = inner && typeof inner === "object" ? (inner as { data?: unknown }).data : undefined;
+  const statuses = data && typeof data === "object" ? (data as { statuses?: unknown }).statuses : undefined;
+  if (!Array.isArray(statuses)) return { status: "accepted", label: "Accepted" };
+
+  for (const status of statuses) {
+    const error = status && typeof status === "object" ? (status as { error?: unknown }).error : undefined;
+    if (typeof error === "string" && error.trim()) {
+      return { status: "rejected", label: "Rejected", reason: error.trim() };
+    }
+  }
+  for (const status of statuses) {
+    const filled = status && typeof status === "object" ? (status as { filled?: { oid?: number } }).filled : undefined;
+    if (filled) return { status: "filled", label: "Filled", oid: filled.oid };
+  }
+  for (const status of statuses) {
+    const resting = status && typeof status === "object" ? (status as { resting?: { oid?: number } }).resting : undefined;
+    if (resting) return { status: "resting", label: "Resting open order", oid: resting.oid };
+  }
+  return { status: "accepted", label: "Accepted" };
 }
 
 export function summarizeQuestionOdds(odds: PredictionQuestionOdds): PredictionDiscoveryOddsSummary {
@@ -288,6 +363,20 @@ export function enrichPredictionPaperPositions(
     });
 }
 
+export function predictionPaperPositionsForQuestion(
+  account: PredictionPaperAccount | undefined,
+  questionId: number,
+): PredictionPaperPosition[] {
+  return (account?.positions ?? []).filter((position) => position.questionId === questionId);
+}
+
+export function predictionPaperFillsForQuestion(
+  account: PredictionPaperAccount | undefined,
+  questionId: number,
+): PredictionPaperFill[] {
+  return (account?.fills ?? []).filter((fill) => fill.questionId === questionId);
+}
+
 export function summarizePredictionPortfolioExposure(
   positions: PredictionPaperPosition[],
 ): PredictionPortfolioExposure {
@@ -386,14 +475,21 @@ function clampProbability(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function formatProbabilityWire(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(8).replace(/0+$/u, "").replace(/\.$/u, "");
+}
+
 function round(value: number, decimals = 6): number {
   return Number(value.toFixed(decimals));
 }
 
 export type {
+  PredictionLiveOrderRequest,
   PredictionOutcome,
   PredictionOutcomeOdds,
   PredictionPaperAccount,
+  PredictionPaperFill,
   PredictionPaperOrderRequest,
   PredictionPaperPosition,
   PredictionQuestion,

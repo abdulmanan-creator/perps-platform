@@ -18,7 +18,14 @@ import {
   calculatePortfolioExposure,
   classifyPortfolioRisk,
 } from "@/lib/agent-trade/portfolio";
+import {
+  formatProbability,
+  formatUsdc,
+  loadPredictionPaperAccount,
+  summarizePredictionPortfolioExposure,
+} from "@/lib/agent-trade/predictions";
 import type { EligibilityMode, Fill, OpenOrder, Position, SharedTradingSnapshot } from "@/lib/agent-trade/types";
+import type { PredictionPaperAccount, PredictionPaperFill, PredictionPaperPosition } from "@alchemy-hl/shared";
 
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const LOCAL_DEV_WALLET: WalletReadinessSummary = { status: "local-dev" };
@@ -54,6 +61,7 @@ function usePortfolioWalletSummary(): WalletReadinessSummary {
 
 function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   const [snapshot, setSnapshot] = useState<SharedTradingSnapshot>(MOCK_TRADING_SNAPSHOT);
+  const [predictionPaperAccount, setPredictionPaperAccount] = useState<PredictionPaperAccount | undefined>();
   const [eligibility, setEligibility] = useState<EligibilityMode>("loading");
   const [isLoading, setIsLoading] = useState(true);
 
@@ -62,7 +70,13 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
 
     async function load() {
       setIsLoading(true);
-      const paperAccount = await loadPaperAccount();
+      const [paperAccount, nextPredictionPaperAccount] = await Promise.all([
+        loadPaperAccount(),
+        loadPredictionPaperAccount(),
+      ]);
+      if (!cancelled) {
+        setPredictionPaperAccount(nextPredictionPaperAccount);
+      }
       if (!cancelled && paperAccount && (paperAccount.positions.length > 0 || paperAccount.fills.length > 0)) {
         setSnapshot(mergePaperAccount(MOCK_TRADING_SNAPSHOT, paperAccount));
       }
@@ -224,6 +238,8 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
         </div>
       </section>
 
+      <PredictionPaperPortfolioPanel account={predictionPaperAccount} />
+
       <section className="portfolio-tables">
         <div className="panel">
           <div className="panel-head">
@@ -295,6 +311,83 @@ function PortfolioExperience({ wallet }: { wallet: WalletReadinessSummary }) {
   );
 }
 
+function PredictionPaperPortfolioPanel({ account }: { account: PredictionPaperAccount | undefined }) {
+  const positions = account?.positions ?? [];
+  const fills = account?.fills ?? [];
+  const exposure = summarizePredictionPortfolioExposure(positions);
+
+  return (
+    <section className="panel portfolio-prediction-paper-panel" data-testid="portfolio-prediction-paper-panel">
+      <div className="panel-head">
+        <div>
+          <span>Paper prediction portfolio</span>
+          <strong>{positions.length} exposures / {fills.length} fills</strong>
+        </div>
+      </div>
+      <p className="portfolio-prediction-paper-note">
+        Prediction paper positions are session-scoped and shown separately from perp margin/exposure. Full prediction
+        accounting is limited to the paper ledger until live HIP-4 portfolio indexing is ready.
+      </p>
+      <div className="overview-grid portfolio-prediction-summary">
+        <Metric label="Paper prediction contracts" value={fmtNumber(exposure.totalContracts, 0)} />
+        <Metric label="Paper prediction cost" value={formatUsdc(exposure.totalCost)} />
+        <Metric label="Current probability value" value={formatUsdc(exposure.currentValue)} />
+        <Metric
+          label="Paper prediction PnL"
+          value={formatUsdc(exposure.unrealizedPnl)}
+          tone={exposure.unrealizedPnl >= 0 ? "pos" : "neg"}
+        />
+      </div>
+      <div className="portfolio-table portfolio-prediction-table">
+        <div className="portfolio-row portfolio-row-head">
+          <span>Question</span>
+          <span>Outcome</span>
+          <span>Contracts</span>
+          <span>Avg cost</span>
+          <span>Current probability</span>
+          <span>Current value</span>
+          <span>Unrealized PnL</span>
+        </div>
+        {positions.map((position) => (
+          <PredictionPaperPositionRow key={position.key} position={position} />
+        ))}
+        {positions.length === 0 ? (
+          <div className="portfolio-prediction-empty">No paper prediction exposure in this session.</div>
+        ) : null}
+      </div>
+      <SmallTable
+        title="Paper prediction fills"
+        subtitle={`${fills.length} fills`}
+        rows={fills.slice(0, 8).map((fill) => ({
+          key: predictionPaperFillKey(fill),
+          cells: [
+            `${fill.outcomeName} Paper prediction`,
+            fill.sideName,
+            fmtNumber(fill.contracts, 0),
+            formatProbability(fill.limitProbability),
+            formatUsdc(fill.cost),
+          ],
+        }))}
+      />
+    </section>
+  );
+}
+
+function PredictionPaperPositionRow({ position }: { position: PredictionPaperPosition }) {
+  const unrealizedPnl = position.unrealizedPnl ?? 0;
+  return (
+    <div className="portfolio-row">
+      <strong>{position.questionName}<span className="paper-ledger-badge">Paper prediction</span></strong>
+      <span>{position.outcomeName} / {position.sideName}</span>
+      <span>{fmtNumber(position.contracts, 0)}</span>
+      <span>{formatUsdc(position.avgCost)}</span>
+      <span>{formatProbability(position.currentProbability)}</span>
+      <span>{formatUsdc(position.currentValue)}</span>
+      <span className={unrealizedPnl >= 0 ? "pos" : "neg"}>{formatUsdc(position.unrealizedPnl)}</span>
+    </div>
+  );
+}
+
 function Metric(props: { label: string; value: string; detail?: string; tone?: "pos" | "neg" }) {
   return (
     <div className="metric-tile">
@@ -331,6 +424,15 @@ function fillRowKey(fill: Fill): string {
     fill.side,
     fill.price,
     fill.size,
+  ].join("-");
+}
+
+function predictionPaperFillKey(fill: PredictionPaperFill): string {
+  return [
+    fill.id,
+    fill.questionId,
+    fill.outcome,
+    fill.side,
   ].join("-");
 }
 

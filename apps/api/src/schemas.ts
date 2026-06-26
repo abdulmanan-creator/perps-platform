@@ -126,6 +126,18 @@ export const ActionSchema = z.discriminatedUnion("type", [
   ApproveAgentActionSchema,
 ]);
 
+const PredictionLiveContextSchema = z.object({
+  questionId: z.number().int().min(0),
+  outcome: z.number().int().min(0),
+  side: z.union([z.literal(0), z.literal(1)]),
+  action: z.enum(["buy", "sell"]),
+  contracts: z.number().int().positive(),
+  limitProbability: z.number().gt(0).lt(1),
+  tif: z.enum(["Ioc", "Gtc"]),
+  criteriaAcknowledged: z.boolean(),
+  liveAcknowledged: z.boolean(),
+});
+
 // ---- Top-level /exchange body ----------------------------------------------
 
 /**
@@ -141,6 +153,7 @@ export const ActionSchema = z.discriminatedUnion("type", [
  */
 export const ExchangeBodySchema = z.object({
   action: ActionSchema,
+  prediction: PredictionLiveContextSchema.optional(),
   nonce: z.number().int().min(0).optional(),
   signature: SignatureSchema.optional(),
   user: AddressSchema.optional(),

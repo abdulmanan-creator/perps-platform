@@ -104,6 +104,36 @@ describe("prediction paper routes", () => {
     expect((otherSession.json() as PredictionPaperAccount).positions).toHaveLength(0);
   });
 
+  it("keeps prediction paper account state across refreshes for the same in-memory API process", async () => {
+    const headers = { "x-agent-trade-session-id": "prediction-paper-refresh" };
+    await app.inject({
+      method: "POST",
+      url: "/prediction/paper-orders",
+      headers,
+      payload: paperOrder,
+    });
+
+    const firstRefresh = await app.inject({
+      method: "GET",
+      url: "/prediction/paper-account",
+      headers,
+    });
+    const secondRefresh = await app.inject({
+      method: "GET",
+      url: "/prediction/paper-account",
+      headers,
+    });
+
+    expect(firstRefresh.statusCode).toBe(200);
+    expect(secondRefresh.statusCode).toBe(200);
+    expect(firstRefresh.json()).toMatchObject(secondRefresh.json());
+    expect((secondRefresh.json() as PredictionPaperAccount).fills[0]).toMatchObject({
+      questionId: 32,
+      outcomeName: "Argentina",
+      mode: "paper",
+    });
+  });
+
   it("nets repeated same-market buys into one paper exposure", async () => {
     const headers = { "x-agent-trade-session-id": "prediction-paper-repeat" };
     await app.inject({

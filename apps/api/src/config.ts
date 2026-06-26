@@ -183,6 +183,10 @@ const ConfigSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  AGENT_TRADE_ENABLE_HIP4_LIVE_TRADING: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
   AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS: z.string().default(""),
   AGENT_TRADE_DEPOSIT_RELAYER_PRIVATE_KEY: z.preprocess(
     emptyToUndefined,

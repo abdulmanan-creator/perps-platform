@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { PREDICTION_RISK_COPY } from "../components/agent-trade/PredictionDetailClient";
+import {
+  getPredictionLiveAvailability,
+  PREDICTION_RISK_COPY,
+} from "../components/agent-trade/PredictionDetailClient";
 import {
   calculatePredictionTicketMath,
+  buildPredictionLiveOrderAction,
   enrichPredictionPaperPositions,
   filterAndSortPredictionQuestions,
   formatEmptyBook,
@@ -13,10 +17,15 @@ import {
   formatSpread,
   formatUsdc,
   isResolvingSoon,
+  isPredictionLiveTradingEnabled,
   maxPayoutForContracts,
   premiumForContracts,
+  predictionPaperFillsForQuestion,
+  predictionPaperPositionsForQuestion,
+  summarizePredictionLiveExchangeResult,
   summarizePredictionPortfolioExposure,
   summarizeQuestionOdds,
+  submitPredictionPaperOrder,
   type PredictionDiscoveryQuestion,
 } from "../lib/agent-trade/predictions";
 import type { PredictionPaperAccount, PredictionQuestionOdds } from "@alchemy-hl/shared";
@@ -176,7 +185,49 @@ const paperAccount: PredictionPaperAccount = {
   ],
 };
 
+const paperFill = {
+  id: "prediction_paper_test_1",
+  mode: "paper" as const,
+  questionId: 1,
+  questionName: "World Cup Champion",
+  outcome: 11,
+  outcomeName: "France",
+  side: 0 as const,
+  sideName: "Yes",
+  contracts: 10,
+  limitProbability: 0.2,
+  cost: 2,
+  maxPayout: 10,
+  maxProfit: 8,
+  maxLoss: 2,
+  breakEvenProbability: 0.2,
+  currentProbability: 0.225,
+  quoteToken: "USDC",
+  timestamp: 1000,
+  fromAgent: false,
+};
+
+const paperAccountWithFill: PredictionPaperAccount = {
+  ...paperAccount,
+  fills: [paperFill],
+};
+
+const liveEligible = {
+  state: "liveEligible" as const,
+  executionVenue: "hyperliquid-mainnet",
+  mainnetExecutionEnabled: true,
+  killSwitchEnabled: false,
+  minOrderNotionalUsd: 10,
+  orderNotionalCapUsd: 250,
+  dailyNotionalCapUsd: 1000,
+};
+
 describe("Agent.trade prediction helpers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("filters and sorts prediction questions by query, category, status, and liquidity", () => {
     expect(filterAndSortPredictionQuestions({
       questions: baseQuestions,
@@ -249,8 +300,83 @@ describe("Agent.trade prediction helpers", () => {
     expect(formatUsdc(2.5)).toBe("2.50 USDC");
   });
 
+  it("builds HIP-4 live order actions with official asset encoding", () => {
+    const action = buildPredictionLiveOrderAction({
+      assetId: 100_001_890,
+      order: {
+        questionId: 32,
+        outcome: 189,
+        side: 0,
+        action: "buy",
+        contracts: 53,
+        limitProbability: 0.1888,
+        tif: "Ioc",
+        criteriaAcknowledged: true,
+        liveAcknowledged: true,
+      },
+    });
+    expect(action).toEqual({
+      type: "order",
+      grouping: "na",
+      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "53", r: false, t: { limit: { tif: "Ioc" } } }],
+    });
+  });
+
+  it("keeps HIP-4 live trading default-off and summarizes nested exchange statuses", () => {
+    expect(isPredictionLiveTradingEnabled(undefined)).toBe(false);
+    expect(isPredictionLiveTradingEnabled("false")).toBe(false);
+    expect(isPredictionLiveTradingEnabled("true")).toBe(true);
+    expect(summarizePredictionLiveExchangeResult({
+      exchangeResponse: { status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 99 } }] } } },
+    })).toEqual({ status: "resting", label: "Resting open order", oid: 99 });
+    expect(summarizePredictionLiveExchangeResult({
+      exchangeResponse: { status: "ok", response: { type: "order", data: { statuses: [{ error: "Bad order" }] } } },
+    })).toEqual({ status: "rejected", label: "Rejected", reason: "Bad order" });
+  });
+
+  it("keeps flag-off, restricted, and unknown users paper-only", () => {
+    expect(getPredictionLiveAvailability({
+      flagEnabled: false,
+      eligibility: liveEligible,
+      walletReady: true,
+      authenticated: true,
+      walletAddress: "0xabc",
+    })).toMatchObject({ allowed: false, pathVisible: false });
+
+    for (const state of ["restricted", "unknown"] as const) {
+      expect(getPredictionLiveAvailability({
+        flagEnabled: true,
+        eligibility: { ...liveEligible, state },
+        walletReady: true,
+        authenticated: true,
+        walletAddress: "0xabc",
+      })).toMatchObject({ allowed: false, pathVisible: false });
+    }
+  });
+
+  it("shows the live prediction path for eligible flag-on users", () => {
+    expect(getPredictionLiveAvailability({
+      flagEnabled: true,
+      eligibility: liveEligible,
+      walletReady: true,
+      authenticated: true,
+      walletAddress: "0xabc",
+    })).toMatchObject({
+      allowed: true,
+      pathVisible: true,
+      reason: "Live prediction trading is available for this eligible wallet.",
+    });
+
+    expect(getPredictionLiveAvailability({
+      flagEnabled: true,
+      eligibility: liveEligible,
+      walletReady: true,
+      authenticated: false,
+    })).toMatchObject({ allowed: false, pathVisible: true });
+  });
+
   it("enriches paper portfolio exposure with current probabilities", () => {
-    const positions = enrichPredictionPaperPositions(paperAccount, baseQuestions[1]!, questionOdds);
+    const positions = enrichPredictionPaperPositions(paperAccountWithFill, baseQuestions[1]!, questionOdds);
     expect(positions).toHaveLength(1);
     expect(positions[0]).toMatchObject({
       currentProbability: 0.225,
@@ -267,6 +393,45 @@ describe("Agent.trade prediction helpers", () => {
       maxPayout: 10,
       unrealizedPnl: 0.25,
     });
+  });
+
+  it("filters detail-page paper prediction exposure and fills by question", () => {
+    expect(predictionPaperPositionsForQuestion(paperAccountWithFill, 1)).toHaveLength(1);
+    expect(predictionPaperFillsForQuestion(paperAccountWithFill, 1)).toEqual([paperFill]);
+    expect(predictionPaperPositionsForQuestion(paperAccountWithFill, 999)).toEqual([]);
+    expect(predictionPaperFillsForQuestion(paperAccountWithFill, 999)).toEqual([]);
+  });
+
+  it("submits paper prediction orders only to the paper endpoint", async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      expect(url).toContain("/prediction/paper-orders");
+      expect(url).not.toContain("/exchange");
+      return new Response(JSON.stringify({
+        id: "prediction_paper_test_1",
+        status: "accepted",
+        mode: "paper",
+        account: paperAccountWithFill,
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await submitPredictionPaperOrder({
+      questionId: 1,
+      questionName: "World Cup Champion",
+      outcome: 11,
+      outcomeName: "France",
+      side: 0,
+      sideName: "Yes",
+      contracts: 10,
+      limitProbability: 0.2,
+      currentProbability: 0.225,
+      quoteToken: "USDC",
+      criteriaAcknowledged: true,
+    }, "prediction-paper-web-test");
+
+    expect(result.account.positions).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -298,9 +463,50 @@ describe("prediction route smoke", () => {
 
   it("keeps prediction paper helpers away from exchange submission", () => {
     const source = readFileSync(join(process.cwd(), "lib/agent-trade/predictions.ts"), "utf8");
-    expect(source).toContain("/prediction/paper-orders");
-    expect(source).toContain("/prediction/paper-account");
-    expect(source).not.toContain("/exchange");
+    const paperHelperSource = source.slice(
+      source.indexOf("export async function loadPredictionPaperAccount"),
+      source.indexOf("export function predictionLiveExchangeEndpoint"),
+    );
+    expect(paperHelperSource).toContain("/prediction/paper-orders");
+    expect(paperHelperSource).toContain("/prediction/paper-account");
+    expect(paperHelperSource).not.toContain("/exchange");
+  });
+
+  it("shows prediction-specific paper exposure panels in detail and portfolio pages", () => {
+    const detailSource = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    const portfolioSource = readFileSync(join(process.cwd(), "components/agent-trade/PortfolioClient.tsx"), "utf8");
+
+    expect(detailSource).toContain("Paper prediction portfolio");
+    expect(detailSource).toContain("Paper prediction fill");
+    expect(portfolioSource).toContain("portfolio-prediction-paper-panel");
+    expect(portfolioSource).toContain("shown separately from perp margin/exposure");
+  });
+
+  it("gates live prediction confirmation behind flag and readiness checks", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    expect(source).toContain("Live HIP-4 prediction trading is disabled");
+    expect(source).toContain("Confirm live prediction order");
+    expect(source).toContain("predictionLiveExchangeEndpoint");
+    expect(source).toContain("Review live order");
+    expect(source).toContain("Prediction market order, not a leveraged perp.");
+  });
+
+  it("renders technical details in the live prediction confirmation", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    for (const label of [
+      "Question",
+      "Outcome",
+      "Side",
+      "Buy/sell",
+      "Contracts",
+      "Limit probability",
+      "Max cost",
+      "Asset id",
+      "Coin",
+      "Acknowledgement",
+    ]) {
+      expect(source).toContain(`label="${label}"`);
+    }
   });
 });
 

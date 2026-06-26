@@ -81,6 +81,7 @@ export function assertAgentTradeExchangeAllowed(args: {
   cfg: Config;
   action: Action;
   user?: `0x${string}`;
+  riskAckGuidance?: string;
 }): void {
   if (!isAgentTradeGuardedAction(args.action)) {
     return;
@@ -116,7 +117,8 @@ export function assertAgentTradeExchangeAllowed(args: {
       throw new ApiException(
         "INVALID_PARAMS",
         "Live orders require explicit risk and terms acknowledgement.",
-        "Send x-agent-trade-risk-accepted:true and x-agent-trade-terms-accepted:true only after the user confirms the leveraged-perp modal.",
+        args.riskAckGuidance ??
+          "Send x-agent-trade-risk-accepted:true and x-agent-trade-terms-accepted:true only after the user confirms the leveraged-perp modal.",
       );
     }
   }

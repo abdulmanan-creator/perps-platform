@@ -151,3 +151,22 @@ export interface PredictionPaperAccount {
   positions: PredictionPaperPosition[];
   fills: PredictionPaperFill[];
 }
+
+export interface PredictionLiveOrderRequest {
+  questionId: number;
+  outcome: number;
+  side: PredictionSide;
+  action: "buy" | "sell";
+  contracts: number;
+  limitProbability: number;
+  tif: "Ioc" | "Gtc";
+  criteriaAcknowledged: boolean;
+  liveAcknowledged: boolean;
+}
+
+export interface PredictionLiveOrderTechnicalDetails {
+  encoding: number;
+  coin: string;
+  assetId: number;
+  quoteToken: string;
+}
