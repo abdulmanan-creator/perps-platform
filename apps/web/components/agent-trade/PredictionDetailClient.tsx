@@ -24,6 +24,7 @@ import {
   formatSpread,
   formatUsdc,
   buildPredictionLiveOrderAction,
+  getPredictionHip4MinOrderCostUsd,
   isPredictionLiveTradingEnabled,
   loadPredictionQuestion,
   loadPredictionQuestionOdds,
@@ -500,11 +501,12 @@ function PredictionPaperTicket(props: {
   }, [props.selectedSide?.coin]);
 
   const math = calculatePredictionTicketMath(contracts, limitProbability);
+  const hip4MinOrderCostUsd = getPredictionHip4MinOrderCostUsd();
   const quoteToken = props.selectedOutcome?.quoteToken ?? props.question.quoteToken ?? props.question.quoteTokens[0] ?? "USDC";
   const liquidityWarning = paperLiquidityWarning(props.selectedSide);
   const selectedTechnical = props.selectedOutcome?.sides[props.selectedSideIndex];
   const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
-  const canSubmitLive = canSubmit && liveAvailable.allowed && Boolean(selectedTechnical) && math.estimatedCost >= props.eligibility.minOrderNotionalUsd;
+  const canSubmitLive = canSubmit && liveAvailable.allowed && Boolean(selectedTechnical) && math.estimatedCost >= hip4MinOrderCostUsd;
 
   async function submitPaperOrder() {
     if (!props.selectedOutcome || !props.selectedSide || !canSubmit) return;
@@ -677,11 +679,12 @@ function PredictionPaperTicket(props: {
           <div className="prediction-ticket-body prediction-ticket-technical">
             <MetricCell label="Asset id" value={String(selectedTechnical.assetId)} />
             <MetricCell label="Coin" value={selectedTechnical.coin} />
+            <MetricCell label="HIP-4 min cost" value={formatUsdc(hip4MinOrderCostUsd)} />
           </div>
         ) : null}
         <p className="market-notice">{liquidityWarning}</p>
-        {mode === "live" && math.estimatedCost < props.eligibility.minOrderNotionalUsd ? (
-          <p className="market-notice">Live cost must be at least {formatUsdc(props.eligibility.minOrderNotionalUsd)}.</p>
+        {mode === "live" && math.estimatedCost < hip4MinOrderCostUsd ? (
+          <p className="market-notice">Live HIP-4 cost must be at least {formatUsdc(hip4MinOrderCostUsd)}.</p>
         ) : null}
         <label className="prediction-ack-row">
           <input

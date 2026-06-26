@@ -178,7 +178,7 @@ describe("Agent.trade safety helper", () => {
       assertAgentTradeExchangeAllowed({
         req: req(ackHeaders()),
         cfg: cfg(),
-        action: order(1000, 0.009),
+        action: order(1000, 0.00999),
         user: USER,
       }),
     ).toThrow(/minimum trade size/i);

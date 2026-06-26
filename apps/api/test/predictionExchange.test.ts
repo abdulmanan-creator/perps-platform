@@ -54,7 +54,7 @@ const prediction: PredictionLiveOrderRequest = {
   outcome: 189,
   side: 0,
   action: "buy",
-  contracts: 53,
+  contracts: 6,
   limitProbability: 0.1888,
   tif: "Ioc",
   criteriaAcknowledged: true,
@@ -170,7 +170,7 @@ describe("prediction live exchange route", () => {
     expect(body.action).toMatchObject({
       type: "order",
       grouping: "na",
-      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "53", r: false, t: { limit: { tif: "Ioc" } } }],
+      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "6", r: false, t: { limit: { tif: "Ioc" } } }],
     });
     expect(body.action.type === "order" ? body.action.orders[0]!.a : null).toBe(100_001_890);
     expect(hip4PredictionEncoding(189, 0)).toBe(1_890);
@@ -186,11 +186,7 @@ describe("prediction live exchange route", () => {
       { label: "asset", prediction, action: actionFor(prediction, 100_001_891) },
       { label: "price", prediction: { ...prediction, limitProbability: 1 }, action: actionFor({ ...prediction, limitProbability: 1 }) },
       { label: "contracts", prediction: { ...prediction, contracts: 0 }, action: actionFor({ ...prediction, contracts: 0 }) },
-      {
-        label: "cost",
-        prediction: { ...prediction, contracts: 10, limitProbability: 0.5 },
-        action: actionFor({ ...prediction, contracts: 10, limitProbability: 0.5 }),
-      },
+      { label: "cost", prediction: { ...prediction, contracts: 5, limitProbability: 0.198 }, action: actionFor({ ...prediction, contracts: 5, limitProbability: 0.198 }) },
     ];
 
     for (const item of cases) {
@@ -202,6 +198,29 @@ describe("prediction live exchange route", () => {
       });
       expect(res.statusCode, item.label).toBe(422);
     }
+  });
+
+  it("blocks HIP-4 prediction orders below $1 and allows $1 or more", async () => {
+    const belowMin = { ...prediction, contracts: 5, limitProbability: 0.198 };
+    const belowRes = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { prediction: belowMin, action: actionFor(belowMin) },
+    });
+
+    expect(belowRes.statusCode).toBe(422);
+    expect(belowRes.json().message).toBe("HIP-4 prediction orders must be at least $1.");
+
+    const atMin = { ...prediction, contracts: 5, limitProbability: 0.2 };
+    const atMinRes = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { prediction: atMin, action: actionFor(atMin) },
+    });
+
+    expect(atMinRes.statusCode, atMinRes.body).toBe(200);
   });
 
   it("keeps sell behavior disabled for HIP4-C", async () => {
@@ -239,7 +258,7 @@ describe("prediction live exchange route", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonRes({
         status: "ok",
-        response: { type: "order", data: { statuses: [{ error: "Order must have minimum value of $10." }] } },
+        response: { type: "order", data: { statuses: [{ error: "Order must have minimum value of $1." }] } },
       }),
     );
 
@@ -251,7 +270,7 @@ describe("prediction live exchange route", () => {
     });
 
     expect(sendRes.statusCode).toBe(422);
-    expect(sendRes.json().message).toContain("Order must have minimum value of $10.");
+    expect(sendRes.json().message).toContain("Order must have minimum value of $1.");
   });
 });
 

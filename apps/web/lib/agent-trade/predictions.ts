@@ -87,6 +87,13 @@ export function isPredictionLiveTradingEnabled(
   return value === "true";
 }
 
+export function getPredictionHip4MinOrderCostUsd(
+  value = process.env.NEXT_PUBLIC_AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
+): number {
+  const parsed = Number(value ?? "1");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
 export async function loadPredictionQuestions(): Promise<PredictionQuestion[]> {
   const res = await fetch(`${API_BASE_URL}/prediction/questions`, { cache: "no-store" });
   if (!res.ok) {

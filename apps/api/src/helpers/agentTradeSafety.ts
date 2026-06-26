@@ -82,6 +82,9 @@ export function assertAgentTradeExchangeAllowed(args: {
   action: Action;
   user?: `0x${string}`;
   riskAckGuidance?: string;
+  minOrderNotionalUsd?: number;
+  minOrderMessage?: string;
+  minOrderGuidance?: string;
 }): void {
   if (!isAgentTradeGuardedAction(args.action)) {
     return;
@@ -138,11 +141,13 @@ export function assertAgentTradeExchangeAllowed(args: {
   }
 
   const notionalUsd = actionNotionalUsd(args.action);
-  if (notionalUsd < args.cfg.AGENT_TRADE_MIN_ORDER_NOTIONAL_USD) {
+  const minOrderNotionalUsd =
+    args.minOrderNotionalUsd ?? args.cfg.AGENT_TRADE_MIN_ORDER_NOTIONAL_USD;
+  if (notionalUsd < minOrderNotionalUsd) {
     throw new ApiException(
       "INVALID_PARAMS",
-      "Order is below Hyperliquid's minimum trade size.",
-      `Increase order notional to at least ${args.cfg.AGENT_TRADE_MIN_ORDER_NOTIONAL_USD} USD.`,
+      args.minOrderMessage ?? "Order is below Hyperliquid's minimum trade size.",
+      args.minOrderGuidance ?? `Increase order notional to at least ${minOrderNotionalUsd} USD.`,
     );
   }
 

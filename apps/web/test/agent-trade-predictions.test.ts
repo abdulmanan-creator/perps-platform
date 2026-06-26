@@ -16,6 +16,7 @@ import {
   formatProbabilityPrice,
   formatSpread,
   formatUsdc,
+  getPredictionHip4MinOrderCostUsd,
   isResolvingSoon,
   isPredictionLiveTradingEnabled,
   maxPayoutForContracts,
@@ -308,7 +309,7 @@ describe("Agent.trade prediction helpers", () => {
         outcome: 189,
         side: 0,
         action: "buy",
-        contracts: 53,
+        contracts: 6,
         limitProbability: 0.1888,
         tif: "Ioc",
         criteriaAcknowledged: true,
@@ -318,14 +319,17 @@ describe("Agent.trade prediction helpers", () => {
     expect(action).toEqual({
       type: "order",
       grouping: "na",
-      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "53", r: false, t: { limit: { tif: "Ioc" } } }],
+      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "6", r: false, t: { limit: { tif: "Ioc" } } }],
     });
   });
 
-  it("keeps HIP-4 live trading default-off and summarizes nested exchange statuses", () => {
+  it("keeps HIP-4 live trading default-off, uses a $1 HIP-4 min, and summarizes nested exchange statuses", () => {
     expect(isPredictionLiveTradingEnabled(undefined)).toBe(false);
     expect(isPredictionLiveTradingEnabled("false")).toBe(false);
     expect(isPredictionLiveTradingEnabled("true")).toBe(true);
+    expect(getPredictionHip4MinOrderCostUsd(undefined)).toBe(1);
+    expect(getPredictionHip4MinOrderCostUsd("2.5")).toBe(2.5);
+    expect(getPredictionHip4MinOrderCostUsd("bad")).toBe(1);
     expect(summarizePredictionLiveExchangeResult({
       exchangeResponse: { status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 99 } }] } } },
     })).toEqual({ status: "resting", label: "Resting open order", oid: 99 });
@@ -459,6 +463,8 @@ describe("prediction route smoke", () => {
     const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
     expect(source).toContain("Live prediction data unavailable");
     expect(source).toContain("Back to predictions");
+    expect(source).toContain("HIP-4 min cost");
+    expect(source).toContain("getPredictionHip4MinOrderCostUsd");
   });
 
   it("keeps prediction paper helpers away from exchange submission", () => {

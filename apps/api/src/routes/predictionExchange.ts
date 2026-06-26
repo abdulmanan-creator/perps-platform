@@ -25,7 +25,6 @@ import { fetchPredictionMeta, findQuestion, type PredictionMeta } from "./predic
 import type { ExchangeBody } from "../schemas.js";
 
 const ROUTE = "/prediction/exchange";
-const PREDICTION_MIN_COST_USD = 10;
 const PREDICTION_ACK_GUIDANCE =
   "Send x-agent-trade-risk-accepted:true and x-agent-trade-terms-accepted:true only after the user confirms the live prediction-market order.";
 
@@ -79,6 +78,9 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
           action: body.action,
           user: body.user,
           riskAckGuidance: PREDICTION_ACK_GUIDANCE,
+          minOrderNotionalUsd: app.config.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
+          minOrderMessage: predictionMinCostMessage(app.config),
+          minOrderGuidance: predictionMinCostGuidance(app.config),
         });
       },
       afterBuild: async ({ req, body, response }) => {
@@ -146,6 +148,9 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
           action: body.action,
           user: signer,
           riskAckGuidance: PREDICTION_ACK_GUIDANCE,
+          minOrderNotionalUsd: app.config.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
+          minOrderMessage: predictionMinCostMessage(app.config),
+          minOrderGuidance: predictionMinCostGuidance(app.config),
         });
       },
       afterSend: async ({ req, body, signer, exchangeResponse, latencyMs, builderFeeBps }) => {
@@ -303,11 +308,11 @@ export function validatePredictionLiveExchange(args: {
   }
 
   const costUsd = prediction.limitProbability * prediction.contracts;
-  if (costUsd < PREDICTION_MIN_COST_USD) {
+  if (costUsd < args.cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD) {
     throw new ApiException(
       "INVALID_PARAMS",
-      "Prediction order cost is below the minimum trade size.",
-      `Increase contracts or price so cost is at least ${PREDICTION_MIN_COST_USD} USDC.`,
+      predictionMinCostMessage(args.cfg),
+      predictionMinCostGuidance(args.cfg),
     );
   }
 
@@ -375,6 +380,18 @@ function assertActionMatchesPrediction(
       "Use the same whole contract count in prediction.contracts and order.s.",
     );
   }
+}
+
+function predictionMinCostMessage(cfg: Config): string {
+  return `HIP-4 prediction orders must be at least $${formatUsd(cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD)}.`;
+}
+
+function predictionMinCostGuidance(cfg: Config): string {
+  return `Increase contracts or limit probability so cost is at least ${formatUsd(cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD)} USDC.`;
+}
+
+function formatUsd(value: number): string {
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2);
 }
 
 function validationPayload(validated: PredictionValidation) {
