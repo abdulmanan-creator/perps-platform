@@ -282,6 +282,51 @@ describe("signature recovery", () => {
     fetchSpy.mockRestore();
   });
 
+  it("approveBuilderFee nested Hyperliquid status errors surface as rejected", async () => {
+    const pk = generatePrivateKey();
+    const account = privateKeyToAccount(pk);
+
+    const buildRes = await app.inject({
+      method: "POST",
+      url: "/exchange",
+      payload: { action: { type: "approveBuilderFee", maxFeeRate: "0.04%" } },
+    });
+    const built = buildRes.json() as BuildResponse;
+    if (!built.typedData) throw new Error("missing typedData");
+
+    const sigHex = await account.signTypedData({
+      domain: built.typedData.domain,
+      types: built.typedData.types,
+      primaryType: built.typedData.primaryType,
+      message: built.typedData.message,
+    });
+    const sig = splitHexSig(sigHex);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          response: {
+            type: "default",
+            data: { statuses: [{ error: "Builder fee has not been approved." }] },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const sendRes = await app.inject({
+      method: "POST",
+      url: "/exchange",
+      payload: { action: built.action, nonce: built.nonce, signature: sig },
+    });
+
+    expect(sendRes.statusCode).toBe(422);
+    expect(sendRes.json().error).toBe("HL_EXCHANGE_REJECTED");
+    expect(sendRes.json().message).toContain("Builder fee has not been approved.");
+    expect(sendRes.json().guidance).toBe("Builder fee has not been approved.");
+  });
+
   it("rejects a tampered signature with SIGNATURE_INVALID", async () => {
     const pk = generatePrivateKey();
     const account = privateKeyToAccount(pk);

@@ -36,6 +36,10 @@ export interface LiveExchangePreSubmitInput {
   walletAddress?: string;
   accountAddress?: string;
   liveAccountDataLoaded?: boolean;
+  builderApprovalRequired?: boolean;
+  builderFeeApproved?: boolean;
+  builderApprovalLoading?: boolean;
+  builderApprovalUnavailable?: boolean;
 }
 
 export const AGENT_PANEL_HEADING = "Ask Agent.trade";
@@ -153,6 +157,17 @@ export function liveOrderPreSubmitBlockReason(input: LiveExchangePreSubmitInput)
     input.walletAddress.toLowerCase() !== input.accountAddress.toLowerCase()
   ) {
     return "Active wallet changed. Refreshing Hyperliquid account state before live trading.";
+  }
+  if (input.builderApprovalRequired) {
+    if (input.builderApprovalLoading) {
+      return "Checking Agent.trade builder fee approval before live trading.";
+    }
+    if (input.builderApprovalUnavailable) {
+      return "Agent.trade builder fee approval could not be checked. Refresh wallet readiness before live trading.";
+    }
+    if (!input.builderFeeApproved) {
+      return "Approve Agent.trade builder fee before first live order.";
+    }
   }
   return undefined;
 }

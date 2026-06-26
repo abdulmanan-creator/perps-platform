@@ -356,6 +356,54 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(reason).toContain("Active wallet changed");
   });
 
+  it("blocks live submit before wallet signing when builder approval is missing", () => {
+    const reason = liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: 20,
+      minOrderNotionalUsd: 10,
+      liveAllowed: true,
+      liveDisabledReason: "Live ready.",
+      walletAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      accountAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      liveAccountDataLoaded: true,
+      builderApprovalRequired: true,
+      builderFeeApproved: false,
+    });
+
+    expect(reason).toBe("Approve Agent.trade builder fee before first live order.");
+  });
+
+  it("keeps live submit enabled after builder approval is confirmed", () => {
+    const reason = liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: 20,
+      minOrderNotionalUsd: 10,
+      liveAllowed: true,
+      liveDisabledReason: "Live ready.",
+      walletAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      accountAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      liveAccountDataLoaded: true,
+      builderApprovalRequired: true,
+      builderFeeApproved: true,
+    });
+
+    expect(reason).toBeUndefined();
+  });
+
+  it("blocks live submit while builder approval status is unavailable", () => {
+    const reason = liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: 20,
+      minOrderNotionalUsd: 10,
+      liveAllowed: true,
+      liveDisabledReason: "Live ready.",
+      builderApprovalRequired: true,
+      builderApprovalUnavailable: true,
+    });
+
+    expect(reason).toContain("could not be checked");
+  });
+
   it("normalizes raw wallet signatures into JSON-safe Hyperliquid signatures", () => {
     const r = "11".repeat(32);
     const s = "22".repeat(32);

@@ -4,11 +4,31 @@ import { getAccountReadinessDisplay, getLiveTradingReadiness } from "../lib/agen
 import { getLegacyDepositPathUi, getWalletAddressCopyUi } from "../components/agent-trade/OnboardingClient";
 import { normalizeEligibilityResponse } from "../lib/agent-trade/eligibility";
 import { getFundingDisplay } from "../lib/agent-trade/funding";
+import {
+  builderApprovalMaxFeeRate,
+  getBuilderApprovalReadiness,
+  type BuilderApprovalState,
+} from "../lib/agent-trade/builder-approval";
 import { formatWalletAddress, getEligibilityDisplay } from "../lib/agent-trade/onboarding";
 import { getOnboardingReadiness, supportedSignInMethods } from "../lib/agent-trade/onboarding-readiness";
 import type { EligibilityMode } from "../lib/agent-trade/types";
 
 describe("Agent.trade onboarding helpers", () => {
+  const builderApprovalBase: BuilderApprovalState = {
+    approved: false,
+    maxFeeRate: "0%",
+    maxFeeRaw: 0,
+    canTradePerps: false,
+    canTradeSpot: false,
+    builder: "0xAAAA000000000000000000000000000000000001",
+    feeBreakdown: {
+      configuredPerpsBps: 4,
+      configuredSpotBps: 5,
+      protocolMaxPerpsBps: 10,
+      protocolMaxSpotBps: 100,
+    },
+  };
+
   it("normalizes REGION_BLOCKED eligibility responses into restricted paper mode", async () => {
     const display = await normalizeEligibilityResponse(new Response(JSON.stringify({
       error: "REGION_BLOCKED",
@@ -107,6 +127,74 @@ describe("Agent.trade onboarding helpers", () => {
     expect(copy.href).toBeUndefined();
     expect(copy.title).toBe("Legacy deposit path disabled");
     expect(copy.summary).toContain("gasless Bridge2 permit deposit");
+  });
+
+  it("shows builder approval required for live eligible funded wallets without approval", () => {
+    const readiness = getBuilderApprovalReadiness({
+      hasPrivyEnv: true,
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "embedded",
+      },
+      eligibilityState: "liveEligible",
+      hlAccountValueUsd: 25,
+      minOrderNotionalUsd: 10,
+      approval: builderApprovalBase,
+    });
+
+    expect(readiness.status).toBe("approval-required");
+    expect(readiness.ctaEnabled).toBe(true);
+    expect(readiness.ctaLabel).toBe("Approve Agent.trade builder fee");
+    expect(readiness.summary).toContain("does not grant autonomous trading");
+    expect(builderApprovalMaxFeeRate(builderApprovalBase)).toBe("0.04%");
+  });
+
+  it("marks builder approval ready when Hyperliquid maxBuilderFee covers perps", () => {
+    const readiness = getBuilderApprovalReadiness({
+      hasPrivyEnv: true,
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+        walletKind: "embedded",
+      },
+      eligibilityState: "liveEligible",
+      hlAccountValueUsd: 25,
+      minOrderNotionalUsd: 10,
+      approval: {
+        ...builderApprovalBase,
+        approved: true,
+        canTradePerps: true,
+        maxFeeRate: "0.04%",
+        maxFeeRaw: 40,
+      },
+    });
+
+    expect(readiness.status).toBe("approved");
+    expect(readiness.approved).toBe(true);
+    expect(readiness.ctaEnabled).toBe(false);
+    expect(readiness.summary).toContain("Every live order still requires explicit confirmation");
+  });
+
+  it("hides builder approval CTA for restricted users", () => {
+    const readiness = getBuilderApprovalReadiness({
+      hasPrivyEnv: true,
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+      },
+      eligibilityState: "restricted",
+      hlAccountValueUsd: 25,
+      minOrderNotionalUsd: 10,
+      approval: builderApprovalBase,
+    });
+
+    expect(readiness.status).toBe("ineligible");
+    expect(readiness.ctaVisible).toBe(false);
+    expect(readiness.summary).toContain("cannot approve builder fees");
   });
 
   it("summarizes missing Privy env as local-dev paper readiness", () => {

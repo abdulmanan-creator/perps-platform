@@ -719,6 +719,24 @@ describe("Agent.trade route safety", () => {
     await app.close();
   });
 
+  it("restricted eligibility blocks approveBuilderFee on /agent-trade/exchange", async () => {
+    const app = await appWithConfig(cfg());
+    await agentTradeRoute(app);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/exchange",
+      headers: ackHeaders("US"),
+      payload: { action: { type: "approveBuilderFee", maxFeeRate: "0.04%" } },
+    });
+
+    expect(res.statusCode).toBe(451);
+    expect(res.json().message).toMatch(/not eligible/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("unknown eligibility blocks updateLeverage on /agent/exchange", async () => {
     const app = await appWithConfig(cfg());
     await agentRoute(app);

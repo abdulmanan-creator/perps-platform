@@ -34,6 +34,9 @@ import {
   type HyperliquidPricePrecision,
 } from "@/lib/agent-trade/format";
 import { buildSwitchingMarketSnapshot, loadTerminalCandles, loadTradingSnapshot } from "@/lib/agent-trade/data";
+import {
+  type BuilderApprovalState,
+} from "@/lib/agent-trade/builder-approval";
 import { DEFAULT_ELIGIBILITY_RESPONSE, normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
 import { MOCK_TRADING_SNAPSHOT } from "@/lib/agent-trade/mock-data";
@@ -301,6 +304,11 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     orderNotionalCapUsd: 250,
     dailyNotionalCapUsd: 1000,
   });
+  const [builderApproval, setBuilderApproval] = useState<{
+    approval?: BuilderApprovalState;
+    loading: boolean;
+    error?: string;
+  }>({ loading: false });
   const [mode, setMode] = useState<"paper" | "live">("paper");
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState<OrderDraft>(() => buildDefaultDraft(MOCK_TRADING_SNAPSHOT));
@@ -369,6 +377,45 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       window.clearInterval(timer);
     };
   }, [requestedSymbol, wallet.address, wallet.status]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadApproval() {
+      if (wallet.status !== "connected" || !wallet.address) {
+        setBuilderApproval({ loading: false });
+        return;
+      }
+
+      setBuilderApproval((current) => ({ ...current, loading: true, error: undefined }));
+      try {
+        const res = await fetch(`${API_BASE_URL}/approval?user=${encodeURIComponent(wallet.address)}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          throw new Error(`approval status ${res.status}`);
+        }
+        const approval = await res.json() as BuilderApprovalState;
+        if (!cancelled) {
+          setBuilderApproval({ approval, loading: false });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setBuilderApproval({
+            loading: false,
+            error: err instanceof Error ? err.message : "Builder approval status unavailable.",
+          });
+        }
+      }
+    }
+
+    void loadApproval();
+    const timer = window.setInterval(loadApproval, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [wallet.address, wallet.status]);
 
   useEffect(() => {
     if (!draftParam || importedConnectorDraftRef.current === draftParam) {
@@ -746,6 +793,16 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
     liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
   });
+  const builderApprovalRequired =
+    liveReadiness.allowed &&
+    snapshot.account.liveAccountDataLoaded &&
+    snapshot.account.equityUsd >= eligibility.minOrderNotionalUsd;
+  const builderApprovalInput = {
+    builderApprovalRequired,
+    builderFeeApproved: builderApproval.approval?.canTradePerps === true,
+    builderApprovalLoading: builderApproval.loading,
+    builderApprovalUnavailable: Boolean(builderApproval.error) || (!builderApproval.loading && !builderApproval.approval),
+  };
   const ticketLiveBlockReason = accountWalletMismatchReason ?? liveOrderPreSubmitBlockReason({
     mode,
     notionalUsd: notional,
@@ -755,6 +812,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     walletAddress: activeWalletAddress,
     accountAddress: snapshot.account.address,
     liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+    ...builderApprovalInput,
   });
   const activeLiveBlockReason = accountWalletMismatchReason ?? liveOrderPreSubmitBlockReason({
     mode: activeMode,
@@ -765,6 +823,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     walletAddress: activeWalletAddress,
     accountAddress: snapshot.account.address,
     liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+    ...builderApprovalInput,
   });
   const liveDisabledReason = ticketLiveBlockReason ?? liveReadiness.disabledReason;
   const activeLiveDisabledReason = activeLiveBlockReason ?? liveReadiness.disabledReason;
@@ -1104,6 +1163,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       walletAddress: wallet.status === "connected" ? wallet.address : undefined,
       accountAddress: snapshot.account.address,
       liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+      ...builderApprovalInput,
     });
     if (blockReason) {
       throw new Error(blockReason);
@@ -1228,6 +1288,21 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       }
       if (!liveReadiness.allowed) {
         setSubmitState({ message: liveReadiness.disabledReason });
+        return;
+      }
+      const closeBlockReason = liveOrderPreSubmitBlockReason({
+        mode: "live",
+        notionalUsd: position.size * market.markPrice,
+        minOrderNotionalUsd: eligibility.minOrderNotionalUsd,
+        liveAllowed: liveReadiness.allowed,
+        liveDisabledReason: liveReadiness.disabledReason,
+        walletAddress: wallet.status === "connected" ? wallet.address : undefined,
+        accountAddress: snapshot.account.address,
+        liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+        ...builderApprovalInput,
+      });
+      if (closeBlockReason) {
+        setSubmitState({ message: closeBlockReason });
         return;
       }
       if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {

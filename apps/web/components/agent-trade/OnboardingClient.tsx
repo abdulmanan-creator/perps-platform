@@ -32,12 +32,24 @@ import {
   type GaslessDepositPhase,
   type GaslessDepositStatus,
 } from "@/lib/agent-trade/gasless-deposit";
+import {
+  builderApprovalMaxFeeRate,
+  formatBuilderFeeBps,
+  getBuilderApprovalReadiness,
+  type BuilderApprovalState,
+} from "@/lib/agent-trade/builder-approval";
 import { formatWalletAddress, getEligibilityDisplay } from "@/lib/agent-trade/onboarding";
 import {
   getOnboardingReadiness,
   type ReadinessItem,
 } from "@/lib/agent-trade/onboarding-readiness";
 import { getBridgeDepositDecision } from "@/lib/agent-trade/legacy-safety";
+import {
+  liveOrderErrorMessage,
+  normalizeHexSignature,
+  withExplicitEip712Domain,
+  type HyperliquidTypedData,
+} from "@/lib/agent-trade/terminal";
 import type { AccountValueKind, EligibilityMode, EligibilityResponse } from "@/lib/agent-trade/types";
 
 interface WalletSummary {
@@ -48,6 +60,10 @@ interface WalletSummary {
   walletKind?: "embedded" | "external" | "unknown";
   login?: () => void;
   logout?: () => void;
+}
+
+interface Eip1193Provider {
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>;
 }
 
 type WalletAddressCopyState = "idle" | "copied" | "manual";
@@ -205,6 +221,7 @@ export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboar
       <section className="onboarding-grid wide">
         <FundingCardShell eligibility={eligibility} />
         <GaslessDepositCardShell eligibility={eligibility} />
+        <BuilderApprovalCardShell eligibility={eligibility} />
         <RiskCard state={eligibility.state} />
       </section>
 
@@ -273,6 +290,39 @@ function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse
     ? wallet.address as `0x${string}`
     : undefined;
   const gasless = useGaslessDepositState(address);
+  const [builderApproval, setBuilderApproval] = useState<BuilderApprovalState | undefined>();
+  const [builderApprovalLoading, setBuilderApprovalLoading] = useState(false);
+  const [builderApprovalError, setBuilderApprovalError] = useState<string | null>(null);
+
+  const refreshBuilderApproval = useCallback(async () => {
+    if (!address) {
+      setBuilderApproval(undefined);
+      setBuilderApprovalLoading(false);
+      setBuilderApprovalError(null);
+      return;
+    }
+
+    setBuilderApprovalLoading(true);
+    setBuilderApprovalError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/approval?user=${encodeURIComponent(address)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new Error(`approval status ${res.status}`);
+      }
+      setBuilderApproval(await res.json() as BuilderApprovalState);
+    } catch (err) {
+      setBuilderApproval(undefined);
+      setBuilderApprovalError(err instanceof Error ? err.message : "Builder approval status unavailable.");
+    } finally {
+      setBuilderApprovalLoading(false);
+    }
+  }, [address]);
+
+  useEffect(() => {
+    void refreshBuilderApproval();
+  }, [refreshBuilderApproval]);
 
   async function openProvider() {
     if (
@@ -305,6 +355,9 @@ function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse
       providerError={providerError}
       onOpenProvider={openProvider}
       gasless={gasless}
+      builderApproval={builderApproval}
+      builderApprovalLoading={builderApprovalLoading}
+      builderApprovalError={builderApprovalError}
     />
   );
 }
@@ -317,6 +370,9 @@ function OnboardingPath(props: {
   providerError?: string | null;
   onOpenProvider?: () => void;
   gasless?: GaslessDepositSnapshot;
+  builderApproval?: BuilderApprovalState;
+  builderApprovalLoading?: boolean;
+  builderApprovalError?: string | null;
 }) {
   const [addressCopyState, setAddressCopyState] = useState<WalletAddressCopyState>("idle");
   const eligibilityDisplay = getEligibilityDisplay(props.eligibility.state);
@@ -343,6 +399,16 @@ function OnboardingPath(props: {
     walletUsdcReadError: props.gasless?.walletUsdcReadError,
     hlAccountValueUsd: props.gasless?.hlAccountValueUsd ?? 0,
     amount: "5",
+  });
+  const builderReadiness = getBuilderApprovalReadiness({
+    hasPrivyEnv: HAS_PRIVY,
+    wallet: toReadinessWallet(props.wallet),
+    eligibilityState: props.eligibility.state,
+    hlAccountValueUsd: props.gasless?.hlAccountValueUsd ?? 0,
+    minOrderNotionalUsd: props.eligibility.minOrderNotionalUsd,
+    approval: props.builderApproval,
+    approvalLoading: props.builderApprovalLoading,
+    approvalError: props.builderApprovalError,
   });
   const depositDecision = getBridgeDepositDecision({
     featureEnabled: HL_BRIDGE_DEPOSIT_ENABLED,
@@ -386,10 +452,27 @@ function OnboardingPath(props: {
     action?.focus({ preventScroll: true });
   }
 
+  function focusBuilderApprovalCard() {
+    const card = document.getElementById("builder-approval-card");
+    card?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const action = card?.querySelector<HTMLButtonElement>("[data-builder-approval-action]");
+    action?.focus({ preventScroll: true });
+  }
+
   const primaryPathAction = gaslessReadiness.action === "deposit_hyperliquid" ? (
     <button className="path-choice active" onClick={focusGaslessDepositCard}>
       <strong>{gaslessReadiness.primaryLabel}</strong>
       <span>{gaslessReadiness.summary}</span>
+    </button>
+  ) : gaslessReadiness.action === "open_ticket" && builderReadiness.status === "approval-required" ? (
+    <button className="path-choice active" onClick={focusBuilderApprovalCard}>
+      <strong>{builderReadiness.ctaLabel}</strong>
+      <span>{builderReadiness.summary}</span>
+    </button>
+  ) : gaslessReadiness.action === "open_ticket" && !builderReadiness.approved ? (
+    <button className="path-choice active" disabled title={builderReadiness.ctaDisabledReason ?? builderReadiness.summary}>
+      <strong>Complete builder approval</strong>
+      <span>{builderReadiness.ctaDisabledReason ?? builderReadiness.summary}</span>
     </button>
   ) : gaslessReadiness.action === "open_ticket" ? (
     <Link className="path-choice active" href="/terminal">
@@ -469,7 +552,13 @@ function OnboardingPath(props: {
               </div>
               <div>
                 <strong>3. Open mainnet ticket</strong>
-                <span>{gaslessReadiness.readyToTrade ? "Hyperliquid account is funded; live orders still require confirmation." : "Open a mainnet ticket after Hyperliquid trading balance reaches Agent.trade's $10 minimum."}</span>
+                <span>
+                  {gaslessReadiness.readyToTrade
+                    ? builderReadiness.approved
+                      ? "Hyperliquid account is funded and builder fee is approved; live orders still require confirmation."
+                      : "Approve Agent.trade builder fee before opening a live mainnet ticket."
+                    : "Open a mainnet ticket after Hyperliquid trading balance reaches Agent.trade's $10 minimum."}
+                </span>
               </div>
             </div>
           ) : null}
@@ -1420,6 +1509,266 @@ function GaslessDepositCard(props: {
       </div>
     </div>
   );
+}
+
+function BuilderApprovalCardShell({ eligibility }: { eligibility: EligibilityResponse }) {
+  if (!HAS_PRIVY) {
+    return (
+      <BuilderApprovalCard
+        eligibility={eligibility}
+        wallet={{ status: "local-dev", authStatus: "not-configured" }}
+        hlAccountValueUsd={0}
+        approvalLoading={false}
+        approvalError={null}
+        approval={undefined}
+        phase="idle"
+        actionMessage={null}
+        onApprove={() => undefined}
+      />
+    );
+  }
+  return <PrivyBuilderApprovalCard eligibility={eligibility} />;
+}
+
+type BuilderApprovalPhase = "idle" | "building" | "signing" | "submitting" | "approved" | "error";
+
+function PrivyBuilderApprovalCard({ eligibility }: { eligibility: EligibilityResponse }) {
+  const { wallets } = useWallets();
+  const activeWallet = useMemo<ConnectedWallet | undefined>(() => {
+    const embedded = wallets.find((wallet) => wallet.walletClientType === "privy");
+    return embedded ?? wallets[0];
+  }, [wallets]);
+  const wallet = useWalletSummary();
+  const address = wallet.status === "connected" && wallet.address
+    ? wallet.address as `0x${string}`
+    : undefined;
+  const [approval, setApproval] = useState<BuilderApprovalState | undefined>();
+  const [approvalLoading, setApprovalLoading] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [hlAccountValueUsd, setHlAccountValueUsd] = useState(0);
+  const [phase, setPhase] = useState<BuilderApprovalPhase>("idle");
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+
+  const refreshApproval = useCallback(async () => {
+    if (!address) {
+      setApproval(undefined);
+      setApprovalLoading(false);
+      setApprovalError(null);
+      return;
+    }
+
+    setApprovalLoading(true);
+    setApprovalError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/approval?user=${encodeURIComponent(address)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new Error(`approval status ${res.status}`);
+      }
+      setApproval(await res.json() as BuilderApprovalState);
+    } catch (err) {
+      setApproval(undefined);
+      setApprovalError(err instanceof Error ? err.message : "Builder approval status unavailable.");
+    } finally {
+      setApprovalLoading(false);
+    }
+  }, [address]);
+
+  const refreshHlBalance = useCallback(async () => {
+    if (!address) {
+      setHlAccountValueUsd(0);
+      return;
+    }
+    try {
+      const balance = await api.balance(address);
+      setHlAccountValueUsd(Number(balance.accountValue ?? 0));
+    } catch {
+      setHlAccountValueUsd(0);
+    }
+  }, [address]);
+
+  useEffect(() => {
+    void refreshApproval();
+  }, [refreshApproval]);
+
+  useEffect(() => {
+    void refreshHlBalance();
+  }, [refreshHlBalance]);
+
+  async function approveBuilderFee() {
+    if (!address || !activeWallet) {
+      return;
+    }
+    const maxFeeRate = builderApprovalMaxFeeRate(approval);
+    if (!maxFeeRate) {
+      setPhase("error");
+      setActionMessage("Configured Agent.trade builder fee could not be read. Refresh approval status before approving.");
+      return;
+    }
+
+    const headers = {
+      "content-type": "application/json",
+      "x-agent-trade-risk-accepted": "true",
+      "x-agent-trade-terms-accepted": "true",
+    };
+
+    try {
+      setActionMessage(null);
+      setPhase("building");
+      const provider = await activeWallet.getEthereumProvider() as Eip1193Provider;
+      const action = { type: "approveBuilderFee", maxFeeRate };
+      const buildRes = await fetch(`${API_BASE_URL}/agent-trade/exchange`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ user: address, action }),
+      });
+      if (!buildRes.ok) {
+        throw new Error(liveOrderErrorMessage(await readBuilderApprovalError(buildRes, "Builder approval build failed")));
+      }
+      const built = await readJsonOrEmpty(buildRes) as { typedData?: HyperliquidTypedData; nonce: number; action: unknown };
+      if (!built.typedData) {
+        throw new Error("Builder approval build did not return typed data for wallet signing.");
+      }
+
+      setPhase("signing");
+      const rawSignature = await provider.request({
+        method: "eth_signTypedData_v4",
+        params: [address, JSON.stringify(withExplicitEip712Domain(built.typedData))],
+      });
+      if (typeof rawSignature !== "string") {
+        throw new Error("Wallet returned an invalid signature.");
+      }
+
+      setPhase("submitting");
+      const signature = normalizeHexSignature(rawSignature as `0x${string}`);
+      const sendRes = await fetch(`${API_BASE_URL}/agent-trade/exchange`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ action: built.action, nonce: built.nonce, signature }),
+      });
+      if (!sendRes.ok) {
+        throw new Error(liveOrderErrorMessage(await readBuilderApprovalError(sendRes, "Builder approval send failed")));
+      }
+      setPhase("approved");
+      setActionMessage("Builder fee approved. Live orders still require confirmation.");
+      await refreshApproval();
+      await refreshHlBalance();
+    } catch (err) {
+      setPhase("error");
+      setActionMessage(err instanceof Error ? err.message : "Builder approval failed.");
+    }
+  }
+
+  return (
+    <BuilderApprovalCard
+      eligibility={eligibility}
+      wallet={wallet}
+      hlAccountValueUsd={hlAccountValueUsd}
+      approvalLoading={approvalLoading}
+      approvalError={approvalError}
+      approval={approval}
+      phase={phase}
+      actionMessage={actionMessage}
+      onApprove={approveBuilderFee}
+    />
+  );
+}
+
+function BuilderApprovalCard(props: {
+  eligibility: EligibilityResponse;
+  wallet: WalletSummary;
+  hlAccountValueUsd: number;
+  approvalLoading: boolean;
+  approvalError: string | null;
+  approval?: BuilderApprovalState;
+  phase: BuilderApprovalPhase;
+  actionMessage: string | null;
+  onApprove: () => void;
+}) {
+  const readiness = getBuilderApprovalReadiness({
+    hasPrivyEnv: HAS_PRIVY,
+    wallet: toReadinessWallet(props.wallet),
+    eligibilityState: props.eligibility.state,
+    hlAccountValueUsd: props.hlAccountValueUsd,
+    minOrderNotionalUsd: props.eligibility.minOrderNotionalUsd,
+    approval: props.approval,
+    approvalLoading: props.approvalLoading,
+    approvalError: props.approvalError,
+  });
+  const isBusy = props.phase === "building" || props.phase === "signing" || props.phase === "submitting";
+  const phaseLabel = (() => {
+    if (props.phase === "building") return "Preparing approval";
+    if (props.phase === "signing") return "Sign builder approval";
+    if (props.phase === "submitting") return "Submitting approval";
+    if (props.phase === "approved") return "Builder fee approved";
+    if (props.phase === "error") return "Approval failed";
+    return readiness.title;
+  })();
+  const ctaDisabledReason = readiness.ctaDisabledReason ?? (isBusy ? "Approval is in progress." : undefined);
+
+  return (
+    <div id="builder-approval-card" className="panel onboarding-card builder-approval-card">
+      <div className="panel-head">
+        <div>
+          <span>Builder approval</span>
+          <strong>{phaseLabel}</strong>
+        </div>
+        <span className={`readiness-pill ${readiness.approved ? "green" : readiness.ctaEnabled ? "blue" : "amber"}`}>
+          {readiness.approved ? "Approved" : readiness.ctaEnabled ? "Action needed" : "Gated"}
+        </span>
+      </div>
+      <div className="readiness-list">
+        <ReadinessRow label="Active wallet" value={formatWalletAddress(props.wallet.address)} ok={props.wallet.status === "connected"} />
+        <ReadinessRow label="Hyperliquid trading balance" value={`$${props.hlAccountValueUsd.toFixed(2)}`} ok={props.hlAccountValueUsd >= props.eligibility.minOrderNotionalUsd} />
+        <ReadinessRow label="Eligibility" value={getEligibilityDisplay(props.eligibility.state).label} ok={props.eligibility.state === "liveEligible"} />
+        <ReadinessRow label="Builder address" value={formatWalletAddress(props.approval?.builder)} ok={Boolean(props.approval?.builder)} />
+        <ReadinessRow label="Configured fee" value={formatBuilderFeeBps(props.approval)} ok={Boolean(props.approval?.feeBreakdown?.configuredPerpsBps != null)} />
+        <ReadinessRow label="Current max fee" value={props.approval?.maxFeeRate ?? "Not checked"} ok={props.approval?.canTradePerps === true} />
+        <ReadinessRow label="Readiness" value={readiness.approved ? "Live orders ready after confirmation" : readiness.ctaEnabled ? "Approval required" : ctaDisabledReason ?? readiness.title} ok={readiness.approved} />
+      </div>
+      <div className="gasless-deposit-body">
+        <p>{readiness.summary}</p>
+        <p>Approving the builder fee lets Hyperliquid apply Agent.trade&apos;s configured builder code and fee. It does not grant autonomous trading; every live order still requires confirmation.</p>
+        {props.actionMessage ? <p className={props.phase === "error" ? "form-error" : undefined}>{props.actionMessage}</p> : null}
+        {readiness.ctaVisible ? (
+          <button
+            data-builder-approval-action
+            className="primary-action compact-button"
+            disabled={!readiness.ctaEnabled || isBusy}
+            onClick={props.onApprove}
+          >
+            {isBusy ? phaseLabel : readiness.ctaLabel}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+async function readBuilderApprovalError(response: Response, fallback: string) {
+  const json = await readJsonOrEmpty(response);
+  if (json && typeof json === "object") {
+    const body = json as { message?: string; guidance?: string; code?: string };
+    return {
+      code: body.code,
+      guidance: body.guidance,
+      message: body.message ?? fallback,
+    };
+  }
+  return { message: fallback };
+}
+
+async function readJsonOrEmpty(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return {};
+  }
 }
 
 const usdcPermitAbi = [

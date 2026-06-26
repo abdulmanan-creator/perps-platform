@@ -142,11 +142,11 @@ export class HlClient {
     if (path === "/exchange") {
       const exchangeResult = classifyHlExchangeResponse(parsed);
       if (exchangeResult.status === "rejected") {
-        const reason = exchangeResult.reason ?? "Hyperliquid rejected the order.";
-        this.logger?.warn({ reason }, "hl_rejected_order_status");
+        const reason = exchangeResult.reason ?? "Hyperliquid rejected the action.";
+        this.logger?.warn({ reason }, "hl_rejected_action_status");
         throw new ApiException(
           "HL_EXCHANGE_REJECTED",
-          `Hyperliquid rejected the order: ${reason}`,
+          `Hyperliquid rejected the action: ${reason}`,
           reason,
         );
       }
@@ -165,10 +165,6 @@ export function classifyHlExchangeResponse(response: unknown): HlExchangeResult 
   }
 
   const exchangeResponse = inner as { type?: unknown; data?: unknown };
-  if (exchangeResponse.type !== "order") {
-    return { status: "accepted", label: "Accepted" };
-  }
-
   const statuses = exchangeResponse.data && typeof exchangeResponse.data === "object"
     ? (exchangeResponse.data as { statuses?: unknown }).statuses
     : undefined;
@@ -181,6 +177,10 @@ export function classifyHlExchangeResponse(response: unknown): HlExchangeResult 
     if (error) {
       return { status: "rejected", label: "Rejected", reason: error };
     }
+  }
+
+  if (exchangeResponse.type !== "order") {
+    return { status: "accepted", label: "Accepted" };
   }
 
   if (statuses.some((status) => hasOrderStatusKey(status, "filled"))) {
