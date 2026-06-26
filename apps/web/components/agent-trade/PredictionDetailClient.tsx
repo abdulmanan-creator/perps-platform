@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePrivy, useWallets, type ConnectedWallet } from "@privy-io/react-auth";
 
 import type {
@@ -17,6 +17,7 @@ import type {
 
 import {
   calculatePredictionTicketMath,
+  clearPredictionStreamOutcomeOdds,
   enrichPredictionPaperPositions,
   formatEmptyBook,
   formatProbability,
@@ -27,12 +28,20 @@ import {
   getPredictionHip4MinOrderCostUsd,
   hasValidPredictionTopOfBook,
   isPredictionLiveTradingEnabled,
+  isPredictionWorldCupStreamEnabled,
   loadPredictionQuestion,
   loadPredictionOutcomeOdds,
   loadPredictionQuestionOddsProgressive,
   loadPredictionPaperAccount,
+  mergePredictionL2BookUpdate,
   mergePredictionOutcomeOdds,
+  normalizePredictionL2BookMessage,
   predictionPaperFillsForQuestion,
+  predictionHip4Coin,
+  predictionHyperliquidWsUrl,
+  predictionL2BookSubscription,
+  predictionL2BookUnsubscribe,
+  predictionStreamStatusLabel,
   probabilityFromSide,
   predictionLiveExchangeEndpoint,
   predictionCategoryLabel,
@@ -41,6 +50,7 @@ import {
   submitPredictionPaperOrder,
   summarizePredictionPortfolioExposure,
   summarizePredictionLiveExchangeResult,
+  type PredictionStreamStatus,
 } from "@/lib/agent-trade/predictions";
 import { API_BASE_URL } from "@/lib/api";
 import { DEFAULT_ELIGIBILITY_RESPONSE, normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
@@ -68,6 +78,10 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const [oddsRefreshNonce, setOddsRefreshNonce] = useState(0);
   const [error, setError] = useState<string | undefined>();
   const [eligibility, setEligibility] = useState<EligibilityResponse>(DEFAULT_ELIGIBILITY_RESPONSE);
+  const [predictionStreamStatus, setPredictionStreamStatus] = useState<PredictionStreamStatus>("idle");
+  const [predictionStreamCoin, setPredictionStreamCoin] = useState<string | undefined>();
+  const [predictionStreamLastBookAt, setPredictionStreamLastBookAt] = useState<number | undefined>();
+  const previousStreamOutcomeRef = useRef<number | undefined>();
   const { ready: privyReady, authenticated, login } = usePrivy();
   const { wallets } = useWallets();
   const activeWallet = wallets[0];
@@ -175,6 +189,108 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isPredictionWorldCupStreamEnabled(questionId) || !question || selectedOutcomeId === undefined) {
+      setPredictionStreamStatus("idle");
+      setPredictionStreamCoin(undefined);
+      setPredictionStreamLastBookAt(undefined);
+      return;
+    }
+
+    const selectedCoin = predictionHip4Coin(selectedOutcomeId, selectedSideIndex);
+    setPredictionStreamCoin(selectedCoin);
+    setPredictionStreamLastBookAt(undefined);
+    setOdds((current) => {
+      const previousOutcome = previousStreamOutcomeRef.current;
+      previousStreamOutcomeRef.current = selectedOutcomeId;
+      return previousOutcome !== undefined && previousOutcome !== selectedOutcomeId
+        ? clearPredictionStreamOutcomeOdds(current, previousOutcome)
+        : current;
+    });
+
+    if (typeof WebSocket === "undefined") {
+      setPredictionStreamStatus("rest_fallback");
+      return;
+    }
+
+    let closed = false;
+    const socket = new WebSocket(predictionHyperliquidWsUrl());
+    setPredictionStreamStatus("connecting");
+
+    const sendJson = (payload: unknown) => {
+      socket.send(JSON.stringify(payload));
+    };
+
+    socket.onopen = () => {
+      if (closed) return;
+      sendJson(predictionL2BookSubscription(selectedCoin));
+    };
+    socket.onmessage = (event) => {
+      if (closed) return;
+      try {
+        const update = normalizePredictionL2BookMessage({
+          message: JSON.parse(String(event.data)),
+          selectedCoin,
+        });
+        if (!update) return;
+        setOdds((current) => mergePredictionL2BookUpdate({
+          current,
+          question,
+          outcomeId: selectedOutcomeId,
+          sideIndex: selectedSideIndex,
+          update,
+        }));
+        setPredictionStreamStatus("live");
+        setPredictionStreamLastBookAt(update.receivedAt);
+      } catch {
+        setPredictionStreamStatus("rest_fallback");
+      }
+    };
+    socket.onerror = () => {
+      if (!closed) setPredictionStreamStatus("rest_fallback");
+    };
+    socket.onclose = () => {
+      if (!closed) setPredictionStreamStatus("disconnected");
+    };
+
+    return () => {
+      closed = true;
+      if (socket.readyState === WebSocket.OPEN) {
+        sendJson(predictionL2BookUnsubscribe(selectedCoin));
+      }
+      socket.close();
+    };
+  }, [questionId, question, selectedOutcomeId, selectedSideIndex]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target = window as typeof window & {
+      __agentTradePredictionStream?: {
+        questionId: number;
+        selectedOutcome: number | null;
+        selectedSide: 0 | 1;
+        selectedCoin: string | null;
+        status: PredictionStreamStatus;
+        lastBookAt: number | null;
+      };
+    };
+    if (process.env.NODE_ENV === "production") {
+      delete target.__agentTradePredictionStream;
+      return;
+    }
+    target.__agentTradePredictionStream = {
+      questionId,
+      selectedOutcome: selectedOutcomeId ?? null,
+      selectedSide: selectedSideIndex,
+      selectedCoin: predictionStreamCoin ?? null,
+      status: predictionStreamStatus,
+      lastBookAt: predictionStreamLastBookAt ?? null,
+    };
+    return () => {
+      delete target.__agentTradePredictionStream;
+    };
+  }, [questionId, selectedOutcomeId, selectedSideIndex, predictionStreamCoin, predictionStreamStatus, predictionStreamLastBookAt]);
+
   const selectedOdds = selectedOutcomeId === undefined ? undefined : selectedOutcomeOdds(odds, selectedOutcomeId);
   const selectedSide = selectedOdds?.sides[selectedSideIndex];
   const selectedOutcome = useMemo<PredictionOutcome | undefined>(
@@ -242,6 +358,9 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
         </div>
         <div className="prediction-detail-health">
           <span className="state-pill live">{predictionStatusLabel(question)}</span>
+          {isPredictionWorldCupStreamEnabled(question.questionId) ? (
+            <span className="state-pill account-warning">{predictionStreamStatusLabel(predictionStreamStatus)}</span>
+          ) : null}
           <span>{predictionCategoryLabel(question)}</span>
           <span>{(question.quoteToken ?? question.quoteTokens.join(", ")) || "Quote token pending"}</span>
         </div>

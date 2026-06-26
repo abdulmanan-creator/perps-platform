@@ -7,6 +7,7 @@ import type {
   PredictionPaperPosition,
   PredictionOutcome,
   PredictionOutcomeOdds,
+  PredictionOutcomeSide,
   PredictionQuestion,
   PredictionQuestionOdds,
   PredictionSideOdds,
@@ -79,6 +80,15 @@ export interface PredictionLiveExchangeResult {
   oid?: number;
 }
 
+export type PredictionStreamStatus = "idle" | "connecting" | "live" | "rest_fallback" | "disconnected";
+
+export interface PredictionL2BookUpdate {
+  coin: string;
+  receivedAt: number;
+  bids: Array<{ px: string; sz: string }>;
+  asks: Array<{ px: string; sz: string }>;
+}
+
 export const PREDICTION_LIVE_EXCHANGE_PATH = "/prediction/exchange";
 export const PREDICTION_ODDS_TIMEOUT_MS = 4_500;
 export const PREDICTION_ODDS_CONCURRENCY = 2;
@@ -100,6 +110,58 @@ export function getPredictionHip4MinOrderCostUsd(
 ): number {
   const parsed = Number(value ?? "10");
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
+}
+
+export function isPredictionWorldCupStreamEnabled(questionId: number): boolean {
+  return questionId === WORLD_CUP_QUESTION_ID;
+}
+
+export function predictionHip4Encoding(outcome: number, side: 0 | 1): number {
+  return 10 * outcome + side;
+}
+
+export function predictionHip4Coin(outcome: number, side: 0 | 1): string {
+  return `#${predictionHip4Encoding(outcome, side)}`;
+}
+
+export function predictionHyperliquidWsUrl(): string {
+  return process.env.NEXT_PUBLIC_HYPERLIQUID_WS_URL ?? "wss://api.hyperliquid.xyz/ws";
+}
+
+export function predictionL2BookSubscription(coin: string) {
+  return {
+    method: "subscribe",
+    subscription: {
+      type: "l2Book",
+      coin,
+      nSigFigs: 5,
+      fast: true,
+    },
+  };
+}
+
+export function predictionL2BookUnsubscribe(coin: string) {
+  return {
+    ...predictionL2BookSubscription(coin),
+    method: "unsubscribe",
+  };
+}
+
+export function predictionStreamStatusLabel(status: PredictionStreamStatus): string {
+  switch (status) {
+    case "idle":
+      return "REST fallback";
+    case "connecting":
+      return "REST fallback";
+    case "live":
+      return "Live World Cup book";
+    case "rest_fallback":
+      return "REST fallback";
+    case "disconnected":
+      return "Stream disconnected";
+    default:
+      return assertNeverPredictionStreamStatus(status);
+  }
 }
 
 export async function loadPredictionQuestions(): Promise<PredictionQuestion[]> {
@@ -335,6 +397,87 @@ export function mergePredictionOutcomeOdds(
   };
 }
 
+export function clearPredictionStreamOutcomeOdds(
+  current: PredictionQuestionOdds | undefined,
+  outcomeId: number | undefined,
+): PredictionQuestionOdds | undefined {
+  if (!current || outcomeId === undefined) {
+    return current;
+  }
+  return {
+    ...current,
+    outcomes: current.outcomes.filter((outcome) => outcome.outcome !== outcomeId),
+    fetchedAt: Date.now(),
+  };
+}
+
+export function normalizePredictionL2BookMessage(args: {
+  message: unknown;
+  selectedCoin: string;
+  now?: number;
+}): PredictionL2BookUpdate | undefined {
+  const record = objectRecord(args.message);
+  if (!record || record.channel === "subscriptionResponse" || record.channel === "pong") {
+    return undefined;
+  }
+  if (record.channel !== "l2Book") {
+    return undefined;
+  }
+
+  const data = objectRecord(record.data);
+  const coin = typeof data?.coin === "string" ? data.coin : undefined;
+  if (coin !== args.selectedCoin) {
+    return undefined;
+  }
+
+  const levels = Array.isArray(data?.levels) ? data.levels : [];
+  const bids = parsePredictionBookLevels(levels[0]);
+  const asks = parsePredictionBookLevels(levels[1]);
+  return {
+    coin,
+    receivedAt: args.now ?? Date.now(),
+    bids,
+    asks,
+  };
+}
+
+export function mergePredictionL2BookUpdate(args: {
+  current: PredictionQuestionOdds | undefined;
+  question: PredictionQuestion;
+  outcomeId: number;
+  sideIndex: 0 | 1;
+  update: PredictionL2BookUpdate;
+}): PredictionQuestionOdds {
+  const outcome = predictionQuestionOutcome(args.question, args.outcomeId);
+  if (!outcome) {
+    return args.current ?? {
+      questionId: args.question.questionId,
+      name: args.question.name,
+      fetchedAt: args.update.receivedAt,
+      outcomes: [],
+    };
+  }
+
+  const existingOutcome = selectedOutcomeOdds(args.current, args.outcomeId);
+  const existingSides = existingOutcome?.sides ?? [
+    emptyPredictionSideOdds(outcome.sides[0], args.update.receivedAt),
+    emptyPredictionSideOdds(outcome.sides[1], args.update.receivedAt),
+  ];
+  const nextSides = [...existingSides] as [PredictionSideOdds, PredictionSideOdds];
+  nextSides[args.sideIndex] = predictionSideOddsFromBook({
+    side: outcome.sides[args.sideIndex],
+    update: args.update,
+  });
+
+  return mergePredictionOutcomeOdds(args.current, args.question, {
+    outcome: outcome.outcome,
+    name: outcome.name,
+    description: outcome.description,
+    quoteToken: outcome.quoteToken,
+    sides: nextSides,
+  });
+}
+
 export function prioritizePredictionOutcomeIds(
   question: PredictionQuestion,
   selectedOutcomeId?: number,
@@ -554,6 +697,121 @@ function uniqueNumbers(values: Array<number | undefined>): number[] {
   return Array.from(new Set(values.filter((value): value is number => typeof value === "number")));
 }
 
+function predictionQuestionOutcome(
+  question: PredictionQuestion,
+  outcomeId: number,
+): PredictionOutcome | undefined {
+  return question.namedOutcomes.find((outcome) => outcome.outcome === outcomeId) ??
+    (question.fallbackOutcome?.outcome === outcomeId ? question.fallbackOutcome ?? undefined : undefined);
+}
+
+function predictionSideOddsFromBook(args: {
+  side: PredictionOutcomeSide;
+  update: PredictionL2BookUpdate;
+}): PredictionSideOdds {
+  const bid = args.update.bids[0]?.px ?? null;
+  const ask = args.update.asks[0]?.px ?? null;
+  const bidNumber = bid === null ? null : Number(bid);
+  const askNumber = ask === null ? null : Number(ask);
+  const midpointProbability = bidNumber !== null &&
+    askNumber !== null &&
+    Number.isFinite(bidNumber) &&
+    Number.isFinite(askNumber)
+    ? round((bidNumber + askNumber) / 2)
+    : null;
+  const spread = bidNumber !== null &&
+    askNumber !== null &&
+    Number.isFinite(bidNumber) &&
+    Number.isFinite(askNumber)
+    ? round(askNumber - bidNumber)
+    : null;
+
+  return {
+    ...args.side,
+    bestBid: bid,
+    bestAsk: ask,
+    midpointProbability,
+    spread,
+    depth: predictionDepthSummary(args.update.bids, args.update.asks),
+    emptyBook: args.update.bids.length === 0 && args.update.asks.length === 0,
+    fetchedAt: args.update.receivedAt,
+  };
+}
+
+function emptyPredictionSideOdds(
+  side: PredictionOutcomeSide,
+  fetchedAt: number,
+): PredictionSideOdds {
+  return {
+    ...side,
+    bestBid: null,
+    bestAsk: null,
+    midpointProbability: null,
+    spread: null,
+    depth: { bidLevels: 0, askLevels: 0, bidSize: 0, askSize: 0, bidNotional: 0, askNotional: 0 },
+    emptyBook: true,
+    fetchedAt,
+  };
+}
+
+function predictionDepthSummary(
+  bids: Array<{ px: string; sz: string }>,
+  asks: Array<{ px: string; sz: string }>,
+) {
+  return {
+    bidLevels: bids.length,
+    askLevels: asks.length,
+    bidSize: round(sumPredictionBookSize(bids)),
+    askSize: round(sumPredictionBookSize(asks)),
+    bidNotional: round(sumPredictionBookNotional(bids)),
+    askNotional: round(sumPredictionBookNotional(asks)),
+  };
+}
+
+function sumPredictionBookSize(levels: Array<{ px: string; sz: string }>): number {
+  return levels.reduce((sum, level) => sum + (finitePositiveNumber(level.sz) ?? 0), 0);
+}
+
+function sumPredictionBookNotional(levels: Array<{ px: string; sz: string }>): number {
+  return levels.reduce((sum, level) => {
+    const px = finitePositiveNumber(level.px) ?? 0;
+    const sz = finitePositiveNumber(level.sz) ?? 0;
+    return sum + px * sz;
+  }, 0);
+}
+
+function parsePredictionBookLevels(input: unknown): Array<{ px: string; sz: string }> {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input.flatMap((item) => {
+    const record = objectRecord(item);
+    const px = typeof record?.px === "string" ? record.px : undefined;
+    const sz = typeof record?.sz === "string" ? record.sz : undefined;
+    if (px === undefined || sz === undefined) {
+      return [];
+    }
+    if (finitePositiveNumber(px) === null || finitePositiveNumber(sz) === null) {
+      return [];
+    }
+    return [{ px, sz }];
+  });
+}
+
+function finitePositiveNumber(input: string | undefined): number | null {
+  if (input === undefined) {
+    return null;
+  }
+  const parsed = Number(input);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function objectRecord(input: unknown): Record<string, unknown> | undefined {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : undefined;
+}
+
 function matchesPredictionQuery(question: PredictionDiscoveryQuestion, query: string): boolean {
   if (!query) return true;
   const haystack = [
@@ -650,6 +908,10 @@ function formatHyperliquidPrice(price: string | number, szDecimals: number, isSp
 
 function round(value: number, decimals = 6): number {
   return Number(value.toFixed(decimals));
+}
+
+function assertNeverPredictionStreamStatus(status: never): string {
+  return status;
 }
 
 export type {

@@ -9,6 +9,7 @@ import {
 import {
   calculatePredictionTicketMath,
   buildPredictionLiveOrderAction,
+  clearPredictionStreamOutcomeOdds,
   enrichPredictionPaperPositions,
   filterAndSortPredictionQuestions,
   formatEmptyBook,
@@ -21,11 +22,17 @@ import {
   hasValidPredictionTopOfBook,
   isResolvingSoon,
   isPredictionLiveTradingEnabled,
+  isPredictionWorldCupStreamEnabled,
   loadPredictionDiscoveryOddsSummaries,
+  mergePredictionL2BookUpdate,
   maxPayoutForContracts,
+  normalizePredictionL2BookMessage,
   premiumForContracts,
   predictionPaperFillsForQuestion,
+  predictionHip4Coin,
+  predictionL2BookSubscription,
   predictionPaperPositionsForQuestion,
+  predictionStreamStatusLabel,
   prioritizePredictionOutcomeIds,
   summarizePredictionLiveExchangeResult,
   summarizePredictionPortfolioExposure,
@@ -360,6 +367,100 @@ describe("Agent.trade prediction helpers", () => {
     });
   });
 
+  it("gates HIP-4 prediction streaming to World Cup question 32", () => {
+    expect(isPredictionWorldCupStreamEnabled(32)).toBe(true);
+    expect(isPredictionWorldCupStreamEnabled(31)).toBe(false);
+    expect(predictionStreamStatusLabel("live")).toBe("Live World Cup book");
+    expect(predictionStreamStatusLabel("rest_fallback")).toBe("REST fallback");
+    expect(predictionStreamStatusLabel("disconnected")).toBe("Stream disconnected");
+  });
+
+  it("maps selected outcome and side to one HIP-4 l2Book subscription coin", () => {
+    expect(predictionHip4Coin(189, 0)).toBe("#1890");
+    expect(predictionHip4Coin(189, 1)).toBe("#1891");
+
+    const subscription = predictionL2BookSubscription(predictionHip4Coin(189, 0));
+    expect(subscription).toEqual({
+      method: "subscribe",
+      subscription: { type: "l2Book", coin: "#1890", nSigFigs: 5, fast: true },
+    });
+    expect(JSON.stringify(subscription)).not.toContain("#1730");
+    expect(Array.isArray(subscription)).toBe(false);
+  });
+
+  it("normalizes selected HIP-4 l2Book updates and ignores other coins", () => {
+    const message = {
+      channel: "l2Book",
+      data: {
+        coin: "#110",
+        levels: [
+          [{ px: "0.21", sz: "40" }],
+          [{ px: "0.24", sz: "10" }],
+        ],
+      },
+    };
+
+    expect(normalizePredictionL2BookMessage({
+      message,
+      selectedCoin: "#111",
+      now: 123,
+    })).toBeUndefined();
+    expect(normalizePredictionL2BookMessage({
+      message,
+      selectedCoin: "#110",
+      now: 123,
+    })).toEqual({
+      coin: "#110",
+      receivedAt: 123,
+      bids: [{ px: "0.21", sz: "40" }],
+      asks: [{ px: "0.24", sz: "10" }],
+    });
+  });
+
+  it("merges a selected-side l2Book update into World Cup odds", () => {
+    const worldCup = { ...baseQuestions[1]!, questionId: 32 };
+    const update = normalizePredictionL2BookMessage({
+      message: {
+        channel: "l2Book",
+        data: {
+          coin: "#110",
+          levels: [
+            [{ px: "0.21", sz: "40" }],
+            [{ px: "0.24", sz: "10" }],
+          ],
+        },
+      },
+      selectedCoin: "#110",
+      now: 456,
+    });
+    if (!update) throw new Error("missing l2Book update");
+
+    const merged = mergePredictionL2BookUpdate({
+      current: undefined,
+      question: worldCup,
+      outcomeId: 11,
+      sideIndex: 0,
+      update,
+    });
+    const side = merged.outcomes[0]?.sides[0];
+    expect(merged.outcomes).toHaveLength(1);
+    expect(side).toMatchObject({
+      bestBid: "0.21",
+      bestAsk: "0.24",
+      midpointProbability: 0.225,
+      spread: 0.03,
+      depth: { bidLevels: 1, askLevels: 1, bidSize: 40, askSize: 10, bidNotional: 8.4, askNotional: 2.4 },
+      emptyBook: false,
+      fetchedAt: 456,
+    });
+  });
+
+  it("clears stale selected-outcome stream odds when the outcome changes", () => {
+    const cleared = clearPredictionStreamOutcomeOdds(questionOdds, 11);
+    expect(cleared?.outcomes).toHaveLength(0);
+    expect(clearPredictionStreamOutcomeOdds(questionOdds, 999)?.outcomes).toHaveLength(1);
+  });
+
   it("normalizes HIP-4 live order prices with Hyperliquid spot rules", () => {
     expect(formatPredictionLivePriceWire(0.18879)).toBe("0.18879");
     expect(formatPredictionLivePriceWire(0.188789123)).toBe("0.18879");
@@ -564,6 +665,15 @@ describe("prediction route smoke", () => {
     expect(source).toContain("Selected outcome odds are loading");
     expect(source).toContain("Live review requires a valid two-sided top of book");
     expect(source).toContain("hasValidPredictionTopOfBook");
+  });
+
+  it("gates World Cup selected-book streaming to question 32 with diagnostics", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    expect(source).toContain("isPredictionWorldCupStreamEnabled(questionId)");
+    expect(source).toContain("predictionL2BookSubscription(selectedCoin)");
+    expect(source).toContain("__agentTradePredictionStream");
+    expect(source).toContain("clearPredictionStreamOutcomeOdds");
+    expect(source).not.toContain("WORLD_CUP_PRIORITY_OUTCOMES.map");
   });
 
   it("renders technical details in the live prediction confirmation", () => {
