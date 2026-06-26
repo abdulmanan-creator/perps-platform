@@ -14,6 +14,16 @@ const HEX_PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
 
 const emptyToUndefined = (value: unknown) => value === "" ? undefined : value;
 
+function parseAddressSet(input: string): ReadonlySet<string> {
+  return new Set(
+    input
+      .split(",")
+      .map((address) => address.trim())
+      .filter((address) => address.length > 0)
+      .map((address) => getAddress(address).toLowerCase()),
+  );
+}
+
 /**
  * Normalize a URL-ish string into a full URL with scheme.
  *
@@ -173,6 +183,7 @@ const ConfigSchema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS: z.string().default(""),
   AGENT_TRADE_DEPOSIT_RELAYER_PRIVATE_KEY: z.preprocess(
     emptyToUndefined,
     z.string().regex(HEX_PRIVATE_KEY, "must be a 0x-prefixed 32-byte private key").optional(),
@@ -201,6 +212,8 @@ export type Config = Omit<
   restrictedCountries: ReadonlySet<string>;
   /** Lowercased addresses allowed to exercise mainnet execution. */
   agentTradeAllowlist: ReadonlySet<string>;
+  /** Lowercased wallets allowed to use the gasless deposit relayer. */
+  gaslessDepositAllowedWallets: ReadonlySet<string>;
   /** Checksummed Hyperliquid Bridge2 contract on Arbitrum. */
   AGENT_TRADE_HL_BRIDGE_ARBITRUM: `0x${string}`;
   /** Checksummed native Circle USDC contract on Arbitrum. */
@@ -239,6 +252,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .map((address) => address.trim().toLowerCase())
       .filter((address) => address.length > 0),
   );
+  const gaslessDepositAllowedWallets = parseAddressSet(
+    parsed.AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS,
+  );
 
   return {
     ...parsed,
@@ -249,6 +265,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     isTestnet: parsed.HYPERLIQUID_API_URL.includes("testnet"),
     restrictedCountries,
     agentTradeAllowlist,
+    gaslessDepositAllowedWallets,
     WEB_ORIGIN: normalizeOrigins(parsed.WEB_ORIGIN),
   };
 }

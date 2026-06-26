@@ -5,6 +5,7 @@ import { ApiException } from "../errors.js";
 import { eligibilityForRequest } from "../helpers/agentTradeSafety.js";
 import { recordAuditEvent } from "../helpers/agentTradeAudit.js";
 import {
+  gaslessDepositWalletAllowed,
   gaslessDepositStatus,
   validateAndRelayGaslessDeposit,
   type GaslessDepositPermitPayload,
@@ -45,8 +46,16 @@ export async function agentTradeDepositRoute(app: FastifyInstance): Promise<void
 
     const state = eligibilityForRequest(req, app.config);
     const status = gaslessDepositStatus(app.config);
+    const allowlist = gaslessDepositWalletAllowed({
+      cfg: app.config,
+      wallet: query.user as `0x${string}` | undefined,
+    });
+    const enabled = status.enabled && allowlist.allowed;
     return reply.send({
       ...status,
+      enabled,
+      reason: status.enabled && !allowlist.allowed ? allowlist.reason : status.reason,
+      allowed: allowlist.allowed,
       eligibilityState: state,
       liveEligible: state === "liveEligible",
       mainnetExecutionEnabled: app.config.AGENT_TRADE_MAINNET_EXECUTION_ENABLED,

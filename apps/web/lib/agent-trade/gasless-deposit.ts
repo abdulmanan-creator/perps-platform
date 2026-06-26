@@ -22,6 +22,7 @@ export type GaslessDepositPhase =
 export interface GaslessDepositStatus {
   enabled: boolean;
   reason: string;
+  allowed?: boolean;
   bridge: `0x${string}`;
   token: `0x${string}`;
   minDepositUsdc: number;

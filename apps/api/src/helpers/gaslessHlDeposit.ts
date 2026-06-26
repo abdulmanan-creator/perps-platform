@@ -84,6 +84,34 @@ export function gaslessDepositStatus(cfg: Config): {
   };
 }
 
+export function gaslessDepositWalletAllowed(args: {
+  cfg: Config;
+  wallet?: `0x${string}`;
+}): { allowed: boolean; reason: string } {
+  if (!args.wallet) {
+    return {
+      allowed: false,
+      reason: "Wallet is not allowlisted for gasless deposits.",
+    };
+  }
+  if (args.cfg.gaslessDepositAllowedWallets.size === 0) {
+    return {
+      allowed: false,
+      reason: "Wallet is not allowlisted for gasless deposits.",
+    };
+  }
+  if (!args.cfg.gaslessDepositAllowedWallets.has(args.wallet.toLowerCase())) {
+    return {
+      allowed: false,
+      reason: "Wallet is not allowlisted for gasless deposits.",
+    };
+  }
+  return {
+    allowed: true,
+    reason: "Wallet is allowlisted for gasless deposits.",
+  };
+}
+
 export async function validateAndRelayGaslessDeposit(args: {
   cfg: Config;
   req: FastifyRequest;
@@ -189,6 +217,15 @@ function assertGaslessDepositPolicy(args: {
       "REGION_BLOCKED",
       "Live eligibility is required for gasless Hyperliquid deposits.",
       "Restricted, unknown, paper-only, or kill-switch states cannot relay deposits.",
+    );
+  }
+
+  const allowlist = gaslessDepositWalletAllowed({ cfg: args.cfg, wallet: args.authWallet });
+  if (!allowlist.allowed) {
+    throw new ApiException(
+      "NOT_APPROVED",
+      allowlist.reason,
+      "Ask the Agent.trade operator to add this wallet to AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS before using the relayer.",
     );
   }
 

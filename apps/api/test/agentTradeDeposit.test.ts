@@ -25,6 +25,7 @@ const baseEnv = {
   PRIVY_APP_ID: "test-app-id",
   PRIVY_APP_SECRET: "test-secret",
   AGENT_TRADE_ENABLE_GASLESS_HL_DEPOSIT: "true",
+  AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS: USER,
   AGENT_TRADE_DEPOSIT_RELAYER_PRIVATE_KEY: RELAYER_KEY,
   AGENT_TRADE_MAINNET_EXECUTION_ENABLED: "true",
 } as unknown as NodeJS.ProcessEnv;
@@ -134,6 +135,79 @@ describe("Agent.trade gasless Hyperliquid deposit route", () => {
     });
     expect(res.statusCode).toBe(422);
     expect(res.json().message).toMatch(/not enabled/i);
+  });
+
+  it("blocks status and relays when the gasless allowlist is empty", async () => {
+    await app.close();
+    let submitted = false;
+    setGaslessDepositRuntimeForTests({
+      nowSeconds: () => 1_700_000_000,
+      readUsdcBalance: async () => 20_000_000n,
+      submitBridgeDeposit: async () => {
+        submitted = true;
+        return TX_HASH;
+      },
+    });
+    app = await buildApp(cfg({ AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS: "" }));
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/agent-trade/deposit/status?user=${USER}`,
+      headers: liveHeaders(),
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      enabled: false,
+      allowed: false,
+    });
+    expect(status.json().reason).toMatch(/not allowlisted/i);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/deposit/permit",
+      headers: liveHeaders(),
+      payload: payload(),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toMatch(/not allowlisted/i);
+    expect(submitted).toBe(false);
+  });
+
+  it("blocks non-allowlisted live-eligible wallets before relay submission", async () => {
+    await app.close();
+    let submitted = false;
+    setGaslessDepositRuntimeForTests({
+      nowSeconds: () => 1_700_000_000,
+      readUsdcBalance: async () => 20_000_000n,
+      submitBridgeDeposit: async () => {
+        submitted = true;
+        return TX_HASH;
+      },
+    });
+    app = await buildApp(cfg({ AGENT_TRADE_GASLESS_DEPOSIT_ALLOWED_WALLETS: OTHER }));
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/deposit/permit",
+      headers: liveHeaders(),
+      payload: payload(),
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toMatch(/not allowlisted/i);
+    expect(submitted).toBe(false);
+  });
+
+  it("lets allowlisted wallets proceed to existing validation", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-trade/deposit/permit",
+      headers: liveHeaders(),
+      payload: payload({ amount: "4999999" }),
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().message).toMatch(/minimum deposit is 5 USDC/i);
   });
 
   it("blocks restricted and unknown users", async () => {
