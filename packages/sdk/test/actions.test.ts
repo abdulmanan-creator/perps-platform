@@ -87,9 +87,9 @@ describe("buildLimitOrder", () => {
     expect(a.orders[0]?.p).toBe("76.16");
   });
 
-  it("formats spot outcome prices with HIP-4-compatible precision", () => {
+  it("keeps generic spot limit price formatting unchanged", () => {
     const a = buildLimitOrder({
-      assetIndex: 100_002_170,
+      assetIndex: 10_000,
       szDecimals: 0,
       isSpot: true,
       side: "buy",
@@ -97,7 +97,7 @@ describe("buildLimitOrder", () => {
       price: 0.188789123,
       tif: "Ioc",
     });
-    expect(a.orders[0]).toMatchObject({ a: 100_002_170, p: "0.18879", s: "53" });
+    expect(a.orders[0]).toMatchObject({ a: 10_000, p: "0.18879", s: "53" });
   });
 });
 

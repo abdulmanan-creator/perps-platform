@@ -424,7 +424,7 @@ export class Alchemy {
       isSpot: true, // spot-style precision + builder fee classification
       side: p.action,
       size: contracts,
-      price,
+      price: roundOutcomeProbabilityPrice(price),
       tif: p.tif ?? "Gtc",
       reduceOnly: false,
       cloid: p.cloid,
@@ -679,6 +679,13 @@ export interface TriggerOpts {
 
 function isSignerConfig(opts: ClientOptions): opts is ClientOptions & SignerConfig {
   return "privateKey" in opts || ("account" in opts && "signTypedDataAsync" in opts);
+}
+
+function roundOutcomeProbabilityPrice(price: number): string {
+  return (Math.round(price * 10_000) / 10_000)
+    .toFixed(4)
+    .replace(/0+$/u, "")
+    .replace(/\.$/u, "");
 }
 
 /** Decode a JWT's `sub` claim without verifying (read-side default only). */

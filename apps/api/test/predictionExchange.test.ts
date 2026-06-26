@@ -37,13 +37,20 @@ const OUTCOME_META = {
       sideSpecs: [{ name: "Yes" }, { name: "No" }],
       quoteToken: "USDC",
     },
+    {
+      outcome: 217,
+      name: "USA",
+      description: "This outcome resolves to Yes if USA wins.",
+      sideSpecs: [{ name: "Yes" }, { name: "No" }],
+      quoteToken: "USDC",
+    },
   ],
   questions: [
     {
       question: 32,
       name: "2026 World Cup Champion",
       description: "metadata=category:sports|subCategory:football",
-      namedOutcomes: [189],
+      namedOutcomes: [189, 217],
       settledNamedOutcomes: [],
     },
   ],
@@ -83,11 +90,10 @@ function actionFor(
 }
 
 function formatPrice(value: number): string {
-  const decimalRounded = Number(value.toFixed(8));
-  const exp = Math.floor(Math.log10(Math.abs(decimalRounded)));
-  const decimalsForSigFigs = Math.max(0, 5 - 1 - exp);
-  const rounded = Number(decimalRounded.toFixed(Math.min(8, decimalsForSigFigs)));
-  return rounded.toFixed(10).replace(/\.?0+$/u, "");
+  return (Math.round(value * 10_000) / 10_000)
+    .toFixed(4)
+    .replace(/0+$/u, "")
+    .replace(/\.$/u, "");
 }
 
 async function buildApp(env: NodeJS.ProcessEnv = baseEnv): Promise<FastifyInstance> {
@@ -199,7 +205,7 @@ describe("prediction live exchange route", () => {
       { label: "price", prediction: { ...prediction, limitProbability: 1 }, action: actionFor({ ...prediction, limitProbability: 1 }) },
       { label: "contracts", prediction: { ...prediction, contracts: 0 }, action: actionFor({ ...prediction, contracts: 0 }) },
       { label: "cost", prediction: { ...prediction, contracts: 52, limitProbability: 0.1888 }, action: actionFor({ ...prediction, contracts: 52, limitProbability: 0.1888 }) },
-      { label: "wire price", prediction, action: actionFor(prediction, 100_001_890, "0.18880001") },
+      { label: "wire price", prediction, action: actionFor(prediction, 100_001_890, "0.18879") },
     ];
 
     for (const item of cases) {
@@ -247,7 +253,22 @@ describe("prediction live exchange route", () => {
 
     expect(res.statusCode, res.body).toBe(200);
     expect((res.json() as BuildResponse).action).toMatchObject({
-      orders: [{ p: "0.18879", s: "53" }],
+      orders: [{ p: "0.1888", s: "53" }],
+    });
+  });
+
+  it("normalizes low-probability HIP-4 prices to the 0.0001 outcome tick", async () => {
+    const lowProbability = { ...prediction, outcome: 217, contracts: 250, limitProbability: 0.04002 };
+    const res = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { prediction: lowProbability, action: actionFor(lowProbability, 100_002_170) },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as BuildResponse).action).toMatchObject({
+      orders: [{ a: 100_002_170, p: "0.04", s: "250" }],
     });
   });
 

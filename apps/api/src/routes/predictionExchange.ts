@@ -384,10 +384,10 @@ function assertActionMatchesPrediction(
 }
 
 function predictionLimitPriceWire(limitProbability: number): string {
-  return formatHyperliquidPrice(limitProbability, 0, true);
+  return formatHip4PredictionPrice(limitProbability);
 }
 
-function formatHyperliquidPrice(price: string | number, szDecimals: number, isSpot: boolean): string {
+function formatHip4PredictionPrice(price: string | number): string {
   const parsed = typeof price === "number" ? price : Number(price);
   if (!Number.isFinite(parsed)) {
     throw new ApiException(
@@ -397,16 +397,10 @@ function formatHyperliquidPrice(price: string | number, szDecimals: number, isSp
     );
   }
   if (parsed === 0) return "0";
-
-  const maxDecimals = isSpot ? 8 : 6;
-  const decimalsAllowed = Math.max(0, maxDecimals - szDecimals);
-  const decimalRounded = Number(parsed.toFixed(decimalsAllowed));
-  const exp = Math.floor(Math.log10(Math.abs(decimalRounded)));
-  const decimalsForSigFigs = Math.max(0, 5 - 1 - exp);
-  const finalDecimals = Math.min(decimalsAllowed, decimalsForSigFigs);
-  const rounded = Number(decimalRounded.toFixed(finalDecimals));
-
-  return rounded.toFixed(10).replace(/\.?0+$/u, "");
+  return (Math.round(parsed * 10_000) / 10_000)
+    .toFixed(4)
+    .replace(/0+$/u, "")
+    .replace(/\.$/u, "");
 }
 
 function predictionMinCostMessage(cfg: Config): string {

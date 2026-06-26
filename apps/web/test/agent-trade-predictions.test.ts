@@ -462,8 +462,10 @@ describe("Agent.trade prediction helpers", () => {
   });
 
   it("normalizes HIP-4 live order prices with Hyperliquid spot rules", () => {
-    expect(formatPredictionLivePriceWire(0.18879)).toBe("0.18879");
-    expect(formatPredictionLivePriceWire(0.188789123)).toBe("0.18879");
+    expect(formatPredictionLivePriceWire(0.18879)).toBe("0.1888");
+    expect(formatPredictionLivePriceWire(0.188789123)).toBe("0.1888");
+    expect(formatPredictionLivePriceWire(0.04002)).toBe("0.04");
+    expect(formatPredictionLivePriceWire(0.037455)).toBe("0.0375");
 
     const action = buildPredictionLiveOrderAction({
       assetId: 100_002_170,
@@ -473,13 +475,13 @@ describe("Agent.trade prediction helpers", () => {
         side: 0,
         action: "buy",
         contracts: 53,
-        limitProbability: 0.188789123,
+        limitProbability: 0.037455,
         tif: "Ioc",
         criteriaAcknowledged: true,
         liveAcknowledged: true,
       },
     });
-    expect(action.orders[0]).toMatchObject({ a: 100_002_170, p: "0.18879", s: "53" });
+    expect(action.orders[0]).toMatchObject({ a: 100_002_170, p: "0.0375", s: "53" });
   });
 
   it("keeps HIP-4 live trading default-off, uses a $10 HIP-4 min, and summarizes nested exchange statuses", () => {

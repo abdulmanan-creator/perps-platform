@@ -86,21 +86,21 @@ describe("outcome markets", () => {
   it("outcomeOrder encodes assetId = 100M + 10*outcome + side, integer contracts", async () => {
     const sdk = new Alchemy({ baseUrl: "http://x", agentJwt: jwtFor(USER) });
     const result = await sdk.outcomeOrder({
-      outcome: 104,
-      side: 1,
+      outcome: 217,
+      side: 0,
       action: "buy",
-      contracts: 25,
-      price: 0.99, // 99% implied probability of No Change
+      contracts: 250,
+      price: 0.04002,
     });
     expect(result.restingOid).toBe(77);
     const body = sent[0]!.body as {
       action: { orders: Array<{ a: number; b: boolean; p: string; s: string; r: boolean }> };
     };
     const leg = body.action.orders[0]!;
-    expect(leg.a).toBe(100_001_041);
+    expect(leg.a).toBe(100_002_170);
     expect(leg.b).toBe(true);
-    expect(leg.p).toBe("0.99");
-    expect(leg.s).toBe("25");
+    expect(leg.p).toBe("0.04");
+    expect(leg.s).toBe("250");
     expect(leg.r).toBe(false);
   });
 
