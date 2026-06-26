@@ -1729,6 +1729,12 @@ function BuilderApprovalCard(props: {
       </div>
       <div className="gasless-deposit-body">
         <p>{readiness.summary}</p>
+        {props.hlAccountValueUsd > 0 && props.hlAccountValueUsd < props.eligibility.minOrderNotionalUsd ? (
+          <p>
+            Trading balance is below/near the recommended amount for live orders.
+            Approval can be completed now; orders still require sufficient margin and $10+ notional.
+          </p>
+        ) : null}
         <p>Approving the builder fee lets Hyperliquid apply Agent.trade&apos;s configured builder code and fee. It does not grant autonomous trading; every live order still requires confirmation.</p>
         {props.actionMessage ? <p className={props.phase === "error" ? "form-error" : undefined}>{props.actionMessage}</p> : null}
         {readiness.ctaVisible ? (

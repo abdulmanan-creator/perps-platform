@@ -44,6 +44,10 @@ export interface LiveExchangePreSubmitInput {
 
 export const AGENT_PANEL_HEADING = "Ask Agent.trade";
 
+export function getLiveBuilderApprovalRequired(input: { liveAllowed: boolean }): boolean {
+  return input.liveAllowed;
+}
+
 export function normalizeHexSignature(hex: `0x${string}`): JsonSafeSignature {
   const stripped = hex.replace(/^0x/u, "");
   if (stripped.length !== 130) {

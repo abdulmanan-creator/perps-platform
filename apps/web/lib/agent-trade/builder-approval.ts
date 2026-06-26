@@ -97,15 +97,15 @@ export function getBuilderApprovalReadiness(input: {
     };
   }
 
-  if (input.hlAccountValueUsd < input.minOrderNotionalUsd) {
+  if (!Number.isFinite(input.hlAccountValueUsd) || input.hlAccountValueUsd <= 0) {
     return {
       status: "funding-required",
       title: "Fund Hyperliquid first",
-      summary: `Deposit enough USDC into Hyperliquid to reach Agent.trade's $${input.minOrderNotionalUsd} minimum order notional before approving the builder fee.`,
+      summary: "Deposit USDC into Hyperliquid before approving the builder fee. Hyperliquid requires a funded account before wallet setup actions.",
       ctaLabel: "Approval waits for funding",
       ctaVisible: true,
       ctaEnabled: false,
-      ctaDisabledReason: "Hyperliquid trading balance is below the order minimum.",
+      ctaDisabledReason: "Hyperliquid trading balance is empty or unavailable.",
       approved: false,
     };
   }
@@ -140,7 +140,9 @@ export function getBuilderApprovalReadiness(input: {
     return {
       status: "approved",
       title: "Builder fee approved",
-      summary: "This wallet has approved the configured Agent.trade builder fee for Hyperliquid perps. Every live order still requires explicit confirmation.",
+      summary: input.hlAccountValueUsd < input.minOrderNotionalUsd
+        ? `This wallet has approved the configured Agent.trade builder fee for Hyperliquid perps. Trading balance is below Agent.trade's $${input.minOrderNotionalUsd}+ order notional requirement; orders still require sufficient margin and explicit confirmation.`
+        : "This wallet has approved the configured Agent.trade builder fee for Hyperliquid perps. Every live order still requires explicit confirmation.",
       ctaLabel: "Approved",
       ctaVisible: true,
       ctaEnabled: false,
@@ -151,7 +153,9 @@ export function getBuilderApprovalReadiness(input: {
   return {
     status: "approval-required",
     title: "Builder approval required",
-    summary: "Approve Agent.trade builder fee so Hyperliquid can apply the configured builder code and fee. This does not grant autonomous trading; every order still requires confirmation.",
+    summary: input.hlAccountValueUsd < input.minOrderNotionalUsd
+      ? `Approve Agent.trade builder fee now. Trading balance is below Agent.trade's $${input.minOrderNotionalUsd}+ order notional requirement; orders still require sufficient margin and explicit confirmation.`
+      : "Approve Agent.trade builder fee so Hyperliquid can apply the configured builder code and fee. This does not grant autonomous trading; every order still requires confirmation.",
     ctaLabel: "Approve Agent.trade builder fee",
     ctaVisible: true,
     ctaEnabled: true,

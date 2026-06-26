@@ -64,6 +64,7 @@ import {
   closePositionDraft,
   closePositionSubmitState,
   getConfirmationAckCopy,
+  getLiveBuilderApprovalRequired,
   getTerminalFreshness,
   getTerminalEligibilityStatus,
   getTicketSource,
@@ -793,10 +794,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
     liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
   });
-  const builderApprovalRequired =
-    liveReadiness.allowed &&
-    snapshot.account.liveAccountDataLoaded &&
-    snapshot.account.equityUsd >= eligibility.minOrderNotionalUsd;
+  const builderApprovalRequired = getLiveBuilderApprovalRequired({ liveAllowed: liveReadiness.allowed });
   const builderApprovalInput = {
     builderApprovalRequired,
     builderFeeApproved: builderApproval.approval?.canTradePerps === true,

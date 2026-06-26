@@ -48,6 +48,7 @@ import {
   closePositionDraft,
   closePositionSubmitState,
   getConfirmationAckCopy,
+  getLiveBuilderApprovalRequired,
   getTerminalEligibilityStatus,
   getTerminalFreshness,
   getTicketSource,
@@ -370,6 +371,25 @@ describe("Agent.trade terminal product-loop helpers", () => {
       builderFeeApproved: false,
     });
 
+    expect(reason).toBe("Approve Agent.trade builder fee before first live order.");
+  });
+
+  it("requires builder approval for live orders even when funded balance is below order notional minimum", () => {
+    const builderApprovalRequired = getLiveBuilderApprovalRequired({ liveAllowed: true });
+    const reason = liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: 20,
+      minOrderNotionalUsd: 10,
+      liveAllowed: true,
+      liveDisabledReason: "Live ready.",
+      walletAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      accountAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      liveAccountDataLoaded: true,
+      builderApprovalRequired,
+      builderFeeApproved: false,
+    });
+
+    expect(builderApprovalRequired).toBe(true);
     expect(reason).toBe("Approve Agent.trade builder fee before first live order.");
   });
 

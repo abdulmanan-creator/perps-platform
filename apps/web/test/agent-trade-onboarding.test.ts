@@ -129,7 +129,7 @@ describe("Agent.trade onboarding helpers", () => {
     expect(copy.summary).toContain("gasless Bridge2 permit deposit");
   });
 
-  it("shows builder approval required for live eligible funded wallets without approval", () => {
+  it("shows builder approval required for live eligible $5 funded wallets without approval", () => {
     const readiness = getBuilderApprovalReadiness({
       hasPrivyEnv: true,
       wallet: {
@@ -139,7 +139,7 @@ describe("Agent.trade onboarding helpers", () => {
         walletKind: "embedded",
       },
       eligibilityState: "liveEligible",
-      hlAccountValueUsd: 25,
+      hlAccountValueUsd: 5,
       minOrderNotionalUsd: 10,
       approval: builderApprovalBase,
     });
@@ -147,8 +147,28 @@ describe("Agent.trade onboarding helpers", () => {
     expect(readiness.status).toBe("approval-required");
     expect(readiness.ctaEnabled).toBe(true);
     expect(readiness.ctaLabel).toBe("Approve Agent.trade builder fee");
-    expect(readiness.summary).toContain("does not grant autonomous trading");
+    expect(readiness.summary).toContain("Approve Agent.trade builder fee now");
+    expect(readiness.summary).toContain("$10+ order notional");
     expect(builderApprovalMaxFeeRate(builderApprovalBase)).toBe("0.04%");
+  });
+
+  it("waits for a non-empty Hyperliquid account before builder approval", () => {
+    const readiness = getBuilderApprovalReadiness({
+      hasPrivyEnv: true,
+      wallet: {
+        status: "connected",
+        authStatus: "authenticated",
+        address: "0x1234567890abcdef1234567890abcdef12345678",
+      },
+      eligibilityState: "liveEligible",
+      hlAccountValueUsd: 0,
+      minOrderNotionalUsd: 10,
+      approval: builderApprovalBase,
+    });
+
+    expect(readiness.status).toBe("funding-required");
+    expect(readiness.ctaEnabled).toBe(false);
+    expect(readiness.ctaDisabledReason).toContain("empty or unavailable");
   });
 
   it("marks builder approval ready when Hyperliquid maxBuilderFee covers perps", () => {
