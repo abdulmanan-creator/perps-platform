@@ -25,6 +25,14 @@ export interface ExchangePayload {
   vaultAddress?: `0x${string}`;
 }
 
+export type HlOrderResultStatus = "filled" | "resting" | "accepted" | "rejected";
+
+export interface HlExchangeResult {
+  status: HlOrderResultStatus;
+  label: string;
+  reason?: string;
+}
+
 export class HlClient {
   private readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
@@ -131,6 +139,74 @@ export class HlClient {
       );
     }
 
+    if (path === "/exchange") {
+      const exchangeResult = classifyHlExchangeResponse(parsed);
+      if (exchangeResult.status === "rejected") {
+        const reason = exchangeResult.reason ?? "Hyperliquid rejected the order.";
+        this.logger?.warn({ reason }, "hl_rejected_order_status");
+        throw new ApiException(
+          "HL_EXCHANGE_REJECTED",
+          `Hyperliquid rejected the order: ${reason}`,
+          reason,
+        );
+      }
+    }
+
     return parsed as T;
   }
+}
+
+export function classifyHlExchangeResponse(response: unknown): HlExchangeResult {
+  const inner = response && typeof response === "object"
+    ? (response as { response?: unknown }).response
+    : undefined;
+  if (!inner || typeof inner !== "object") {
+    return { status: "accepted", label: "Accepted" };
+  }
+
+  const exchangeResponse = inner as { type?: unknown; data?: unknown };
+  if (exchangeResponse.type !== "order") {
+    return { status: "accepted", label: "Accepted" };
+  }
+
+  const statuses = exchangeResponse.data && typeof exchangeResponse.data === "object"
+    ? (exchangeResponse.data as { statuses?: unknown }).statuses
+    : undefined;
+  if (!Array.isArray(statuses)) {
+    return { status: "accepted", label: "Accepted" };
+  }
+
+  for (const status of statuses) {
+    const error = orderStatusError(status);
+    if (error) {
+      return { status: "rejected", label: "Rejected", reason: error };
+    }
+  }
+
+  if (statuses.some((status) => hasOrderStatusKey(status, "filled"))) {
+    return { status: "filled", label: "Filled" };
+  }
+  if (statuses.some((status) => hasOrderStatusKey(status, "resting"))) {
+    return { status: "resting", label: "Resting open order" };
+  }
+
+  return { status: "accepted", label: "Accepted" };
+}
+
+function orderStatusError(status: unknown): string | undefined {
+  if (!status || typeof status !== "object") {
+    return undefined;
+  }
+
+  const error = (status as { error?: unknown }).error;
+  if (typeof error !== "string") {
+    return undefined;
+  }
+
+  const safe = error.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+  return safe.slice(0, 500) || "Hyperliquid rejected the order.";
+}
+
+function hasOrderStatusKey(status: unknown, key: "filled" | "resting"): boolean {
+  return Boolean(status && typeof status === "object" && key in status);
 }

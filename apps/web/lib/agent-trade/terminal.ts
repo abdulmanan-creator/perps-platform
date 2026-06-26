@@ -27,6 +27,17 @@ export interface SubmitState {
   detail?: string;
 }
 
+export interface LiveExchangePreSubmitInput {
+  mode: "paper" | "live";
+  notionalUsd: number;
+  minOrderNotionalUsd: number;
+  liveAllowed: boolean;
+  liveDisabledReason: string;
+  walletAddress?: string;
+  accountAddress?: string;
+  liveAccountDataLoaded?: boolean;
+}
+
 export const AGENT_PANEL_HEADING = "Ask Agent.trade";
 
 export function normalizeHexSignature(hex: `0x${string}`): JsonSafeSignature {
@@ -123,6 +134,106 @@ export function liveOrderSubmitState(args: {
     detail: args.resultSummary ?? "Refreshing live Hyperliquid account state.",
     scannerUrl: args.scannerUrl ?? undefined,
   };
+}
+
+export function liveOrderPreSubmitBlockReason(input: LiveExchangePreSubmitInput): string | undefined {
+  if (input.mode !== "live") {
+    return undefined;
+  }
+  if (!input.liveAllowed) {
+    return input.liveDisabledReason;
+  }
+  if (!Number.isFinite(input.notionalUsd) || input.notionalUsd < input.minOrderNotionalUsd) {
+    return `Live orders must be at least ${formatSubmitUsd(input.minOrderNotionalUsd)} notional. Increase size before submitting.`;
+  }
+  if (
+    input.liveAccountDataLoaded &&
+    input.walletAddress &&
+    input.accountAddress &&
+    input.walletAddress.toLowerCase() !== input.accountAddress.toLowerCase()
+  ) {
+    return "Active wallet changed. Refreshing Hyperliquid account state before live trading.";
+  }
+  return undefined;
+}
+
+export function summarizeExchangeResponse(response: unknown): string {
+  const record = response && typeof response === "object"
+    ? response as {
+      exchangeResult?: { status?: string; label?: string; reason?: string };
+      exchangeResponse?: unknown;
+      status?: string;
+      response?: unknown;
+      message?: string;
+    }
+    : undefined;
+
+  const result = record?.exchangeResult;
+  if (result?.status === "rejected") {
+    return `Rejected: ${result.reason ?? "Hyperliquid rejected the order."}`;
+  }
+  if (result?.status === "filled") {
+    return "Filled.";
+  }
+  if (result?.status === "resting") {
+    return "Resting open order.";
+  }
+  if (result?.label) {
+    return result.label;
+  }
+
+  const exchangeResponse = record?.exchangeResponse ?? response;
+  const nested = parseNestedOrderStatus(exchangeResponse);
+  if (nested) {
+    return nested;
+  }
+
+  const inner = record?.exchangeResponse && typeof record.exchangeResponse === "object"
+    ? record.exchangeResponse as { status?: string; response?: { type?: string; data?: unknown } }
+    : undefined;
+  const status = inner?.status ?? record?.status;
+  const type = inner?.response?.type;
+  if (status && type) {
+    return `Hyperliquid returned ${status} (${type}).`;
+  }
+  if (status) {
+    return `Hyperliquid returned ${status}.`;
+  }
+  if (record?.message) {
+    return record.message;
+  }
+  return "Hyperliquid response received. Refreshing order state.";
+}
+
+function parseNestedOrderStatus(response: unknown): string | undefined {
+  const record = response && typeof response === "object"
+    ? response as { response?: unknown }
+    : undefined;
+  const inner = record?.response && typeof record.response === "object"
+    ? record.response as { type?: unknown; data?: unknown }
+    : undefined;
+  if (inner?.type !== "order") {
+    return undefined;
+  }
+  const statuses = inner.data && typeof inner.data === "object"
+    ? (inner.data as { statuses?: unknown }).statuses
+    : undefined;
+  if (!Array.isArray(statuses)) {
+    return undefined;
+  }
+
+  for (const status of statuses) {
+    if (status && typeof status === "object" && typeof (status as { error?: unknown }).error === "string") {
+      return `Rejected: ${(status as { error: string }).error}`;
+    }
+  }
+  if (statuses.some((status) => status && typeof status === "object" && "filled" in status)) {
+    return "Filled.";
+  }
+  if (statuses.some((status) => status && typeof status === "object" && "resting" in status)) {
+    return "Resting open order.";
+  }
+  return undefined;
 }
 
 export function closePositionDraft(position: Position): OrderDraft {

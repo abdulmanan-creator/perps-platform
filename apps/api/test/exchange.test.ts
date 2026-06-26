@@ -481,7 +481,109 @@ describe("HL error mapping", () => {
     // baseEnv uses the testnet URL → testnet faucet link in guidance.
     expect(body.guidance).toContain("hyperliquid-testnet.xyz/drip");
   });
+
+  it("maps nested order status errors in HTTP 200 responses to HL_EXCHANGE_REJECTED", async () => {
+    const pk = generatePrivateKey();
+    const account = privateKeyToAccount(pk);
+
+    const buildRes = await app.inject({
+      method: "POST",
+      url: "/exchange",
+      payload: { action: makeOrder(0) },
+    });
+    const built = buildRes.json() as BuildResponse;
+    if (!built.typedData) throw new Error("missing typedData");
+
+    const sigHex = await account.signTypedData({
+      domain: built.typedData.domain,
+      types: built.typedData.types,
+      primaryType: built.typedData.primaryType,
+      message: built.typedData.message,
+    });
+    const sig = splitHexSig(sigHex);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          response: {
+            type: "order",
+            data: { statuses: [{ error: "Order must have minimum value of $10." }] },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const sendRes = await app.inject({
+      method: "POST",
+      url: "/exchange",
+      payload: { action: built.action, nonce: built.nonce, signature: sig },
+    });
+
+    expect(sendRes.statusCode).toBe(422);
+    const body = sendRes.json();
+    expect(body.error).toBe("HL_EXCHANGE_REJECTED");
+    expect(body.message).toContain("Order must have minimum value of $10.");
+    expect(body.guidance).toBe("Order must have minimum value of $10.");
+  });
+
+  it("preserves filled order responses with structured exchangeResult detail", async () => {
+    const response = await signAndSendMockedOrder({
+      app,
+      hlResponse: { status: "ok", response: { type: "order", data: { statuses: [{ filled: { totalSz: "0.1", avgPx: "100" } }] } } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().exchangeResult).toEqual({ status: "filled", label: "Filled" });
+  });
+
+  it("preserves resting order responses with structured exchangeResult detail", async () => {
+    const response = await signAndSendMockedOrder({
+      app,
+      hlResponse: { status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 99 } }] } } },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().exchangeResult).toEqual({ status: "resting", label: "Resting open order" });
+  });
 });
+
+async function signAndSendMockedOrder(args: {
+  app: FastifyInstance;
+  hlResponse: unknown;
+}) {
+  const pk = generatePrivateKey();
+  const account = privateKeyToAccount(pk);
+  const buildRes = await args.app.inject({
+    method: "POST",
+    url: "/exchange",
+    payload: { action: makeOrder(0) },
+  });
+  const built = buildRes.json() as BuildResponse;
+  if (!built.typedData) throw new Error("missing typedData");
+
+  const sigHex = await account.signTypedData({
+    domain: built.typedData.domain,
+    types: built.typedData.types,
+    primaryType: built.typedData.primaryType,
+    message: built.typedData.message,
+  });
+  const sig = splitHexSig(sigHex);
+
+  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    new Response(JSON.stringify(args.hlResponse), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+
+  return await args.app.inject({
+    method: "POST",
+    url: "/exchange",
+    payload: { action: built.action, nonce: built.nonce, signature: sig },
+  });
+}
 
 function splitHexSig(hex: `0x${string}`): {
   r: `0x${string}`;

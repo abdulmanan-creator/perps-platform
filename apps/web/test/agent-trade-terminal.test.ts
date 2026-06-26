@@ -52,6 +52,7 @@ import {
   getTerminalFreshness,
   getTicketSource,
   liveOrderErrorMessage,
+  liveOrderPreSubmitBlockReason,
   liveOrderSubmitState,
   normalizeHexSignature,
   normalizeTerminalCandlesResponse,
@@ -59,6 +60,7 @@ import {
   paperOrderEndpoint,
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
+  summarizeExchangeResponse,
   terminalChartLabel,
   withExplicitEip712Domain,
   TERMINAL_CHART_INTERVAL_GROUPS,
@@ -284,6 +286,74 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(liveOrderErrorMessage({ message: "builder fee approval missing" })).toContain("Builder fee approval");
     expect(liveOrderErrorMessage({ message: "below $10 min notional" })).toContain("$10 minimum notional");
     expect(liveOrderErrorMessage({ message: "HL_EXCHANGE_REJECTED: rejected" })).toContain("Hyperliquid rejected");
+  });
+
+  it("shows nested Hyperliquid order errors as rejected instead of success", () => {
+    const summary = summarizeExchangeResponse({
+      success: true,
+      exchangeResponse: {
+        status: "ok",
+        response: {
+          type: "order",
+          data: { statuses: [{ error: "Order must have minimum value of $10." }] },
+        },
+      },
+    });
+
+    expect(summary).toBe("Rejected: Order must have minimum value of $10.");
+  });
+
+  it("shows filled Hyperliquid responses as filled", () => {
+    expect(summarizeExchangeResponse({
+      exchangeResult: { status: "filled", label: "Filled" },
+      exchangeResponse: {
+        status: "ok",
+        response: {
+          type: "order",
+          data: { statuses: [{ filled: { totalSz: "0.1", avgPx: "100" } }] },
+        },
+      },
+    })).toBe("Filled.");
+  });
+
+  it("shows resting Hyperliquid responses as open-order success", () => {
+    expect(summarizeExchangeResponse({
+      exchangeResult: { status: "resting", label: "Resting open order" },
+      exchangeResponse: {
+        status: "ok",
+        response: {
+          type: "order",
+          data: { statuses: [{ resting: { oid: 99 } }] },
+        },
+      },
+    })).toBe("Resting open order.");
+  });
+
+  it("blocks live submit below the configured minimum notional", () => {
+    const reason = liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: 5,
+      minOrderNotionalUsd: 10,
+      liveAllowed: true,
+      liveDisabledReason: "Live ready.",
+    });
+
+    expect(reason).toContain("$10.00 notional");
+  });
+
+  it("blocks live submit when account state is for a different wallet", () => {
+    const reason = liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: 20,
+      minOrderNotionalUsd: 10,
+      liveAllowed: true,
+      liveDisabledReason: "Live ready.",
+      walletAddress: "0x31Ab9F30D205B2fb5fAC3DB47493D445eFC8FbCb",
+      accountAddress: "0x4DA360ca0Da696bA4D56D94C3eF2D4Ba4F26cb43",
+      liveAccountDataLoaded: true,
+    });
+
+    expect(reason).toContain("Active wallet changed");
   });
 
   it("normalizes raw wallet signatures into JSON-safe Hyperliquid signatures", () => {

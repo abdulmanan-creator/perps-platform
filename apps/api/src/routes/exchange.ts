@@ -18,7 +18,7 @@ import {
 } from "../helpers/eip712.js";
 import { deriveAgentAddress, AGENT_NAME } from "../helpers/agent.js";
 import { recoverActionSigner } from "../helpers/verify.js";
-import { HlClient } from "../helpers/hlClient.js";
+import { HlClient, classifyHlExchangeResponse, type HlExchangeResult } from "../helpers/hlClient.js";
 import { metrics, recordOrderOutcome } from "../helpers/metrics.js";
 import { TtlCache } from "../helpers/ttlCache.js";
 
@@ -206,10 +206,12 @@ export async function registerExchangeEndpoint(
         }
         await args.hooks?.afterSend?.({ req, body, signer, exchangeResponse, latencyMs, builderFeeBps: builderFee });
 
-        const out: SendResponse = {
+        const exchangeResult = classifyHlExchangeResponse(exchangeResponse);
+        const out: SendResponse & { exchangeResult: HlExchangeResult } = {
           success: true,
           user: signer,
           exchangeResponse,
+          exchangeResult,
         };
         return reply.send(out);
       } catch (err) {

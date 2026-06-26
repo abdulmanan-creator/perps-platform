@@ -65,12 +65,14 @@ import {
   getTerminalEligibilityStatus,
   getTicketSource,
   liveOrderErrorMessage,
+  liveOrderPreSubmitBlockReason,
   liveOrderSubmitState,
   normalizeHexSignature,
   paperOrderSubmitState,
   paperOrderEndpoint,
   paperOrderFailureMessage,
   resolveTypedPromptMarket,
+  summarizeExchangeResponse,
   terminalChartLabel,
   withExplicitEip712Domain,
   TERMINAL_CHART_INTERVAL_GROUPS,
@@ -720,6 +722,13 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     ],
   );
   const eligibilityStatus = getTerminalEligibilityStatus(eligibility.state);
+  const activeWalletAddress = wallet.status === "connected" ? wallet.address : undefined;
+  const accountWalletMismatchReason =
+    activeWalletAddress &&
+    snapshot.account.liveAccountDataLoaded &&
+    snapshot.account.address.toLowerCase() !== activeWalletAddress.toLowerCase()
+      ? `Active wallet changed from ${shortAddress(snapshot.account.address)} to ${shortAddress(activeWalletAddress)}. Refreshing Hyperliquid account state before live trading.`
+      : undefined;
   const accountReadiness = getAccountReadinessDisplay({
     wallet,
     eligibilityState: eligibility.state,
@@ -737,8 +746,30 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
     liveAccountDataUnavailable: snapshot.account.liveAccountDataUnavailable,
   });
-  const liveDisabledReason = liveReadiness.disabledReason;
-  const canLiveTrade = mode === "live" && liveReadiness.allowed;
+  const ticketLiveBlockReason = accountWalletMismatchReason ?? liveOrderPreSubmitBlockReason({
+    mode,
+    notionalUsd: notional,
+    minOrderNotionalUsd: eligibility.minOrderNotionalUsd,
+    liveAllowed: liveReadiness.allowed,
+    liveDisabledReason: liveReadiness.disabledReason,
+    walletAddress: activeWalletAddress,
+    accountAddress: snapshot.account.address,
+    liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+  });
+  const activeLiveBlockReason = accountWalletMismatchReason ?? liveOrderPreSubmitBlockReason({
+    mode: activeMode,
+    notionalUsd: activeNotional,
+    minOrderNotionalUsd: eligibility.minOrderNotionalUsd,
+    liveAllowed: liveReadiness.allowed,
+    liveDisabledReason: liveReadiness.disabledReason,
+    walletAddress: activeWalletAddress,
+    accountAddress: snapshot.account.address,
+    liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+  });
+  const liveDisabledReason = ticketLiveBlockReason ?? liveReadiness.disabledReason;
+  const activeLiveDisabledReason = activeLiveBlockReason ?? liveReadiness.disabledReason;
+  const canLiveTrade = mode === "live" && !ticketLiveBlockReason;
+  const canSubmitActiveLiveOrder = activeMode === "live" && !activeLiveBlockReason;
 
   useEffect(() => {
     if (mode === "live" && !liveReadiness.allowed) {
@@ -1064,8 +1095,18 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   }
 
   async function submitLiveOrder(orderDraft: OrderDraft = draft, orderMarket: ClosePositionIntent["market"] | SharedTradingSnapshot["market"] = snapshot.market, orderNotional: number = notional) {
-    if (!canLiveTrade) {
-      throw new Error(liveDisabledReason);
+    const blockReason = accountWalletMismatchReason ?? liveOrderPreSubmitBlockReason({
+      mode: "live",
+      notionalUsd: orderNotional,
+      minOrderNotionalUsd: eligibility.minOrderNotionalUsd,
+      liveAllowed: liveReadiness.allowed,
+      liveDisabledReason: liveReadiness.disabledReason,
+      walletAddress: wallet.status === "connected" ? wallet.address : undefined,
+      accountAddress: snapshot.account.address,
+      liveAccountDataLoaded: snapshot.account.liveAccountDataLoaded,
+    });
+    if (blockReason) {
+      throw new Error(blockReason);
     }
     if (wallet.status !== "connected" || !wallet.address || !wallet.getEthereumProvider) {
       throw new Error("Wallet required.");
@@ -1074,17 +1115,28 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
     const user = wallet.address as `0x${string}`;
     const action = buildHlOrderAction(orderDraft, orderMarket);
     const exchangeResponse = await buildSignAndSendLiveAction(action, user, provider);
-    const refreshed = await loadTradingSnapshot(snapshot.market.base, {
-      accountAddress: user,
+    const refreshed = await refreshAfterLiveExchange({
+      user,
+      marketBase: snapshot.market.base,
+      before: snapshot,
+      exchangeResponse,
     });
     setSnapshot(refreshed.snapshot);
     setBottomTab("fills");
+    const resultSummary = [
+      summarizeExchangeResponse(exchangeResponse),
+      summarizeObservedLiveState({
+        before: snapshot,
+        after: refreshed.snapshot,
+        response: exchangeResponse,
+      }),
+    ].filter(Boolean).join(" ");
     const submitStateArgs = {
       scannerUrl: hypurrscanAddressUrl(user),
       market: orderDraft.symbol,
       side: orderDraft.side,
       notionalUsd: orderNotional,
-      resultSummary: summarizeExchangeResponse(exchangeResponse),
+      resultSummary,
     };
     setSubmitState(orderDraft.reduceOnly
       ? closePositionSubmitState({ mode: "live", ...submitStateArgs })
@@ -1112,7 +1164,12 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       const provider = await wallet.getEthereumProvider();
       const user = wallet.address as `0x${string}`;
       const exchangeResponse = await buildSignAndSendLiveAction(order.cancelAction, user, provider);
-      const refreshed = await loadTradingSnapshot(snapshot.market.base, { accountAddress: user });
+      const refreshed = await refreshAfterLiveExchange({
+        user,
+        marketBase: snapshot.market.base,
+        before: snapshot,
+        exchangeResponse,
+      });
       setSnapshot(refreshed.snapshot);
       setBottomTab("orders");
       setSubmitState({
@@ -1341,8 +1398,8 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
           marginRequired={activeMarginRequired}
           fees={activeFees}
           liquidation={activeLiquidation}
-          canLiveTrade={canLiveTrade}
-          liveDisabledReason={liveDisabledReason}
+          canLiveTrade={canSubmitActiveLiveOrder}
+          liveDisabledReason={activeLiveDisabledReason}
           eligibility={eligibility}
           intent={closeIntent ? "close" : "order"}
           modalError={modalError}
@@ -1401,31 +1458,63 @@ async function readJsonOrEmpty(response: Response): Promise<unknown> {
   }
 }
 
-function summarizeExchangeResponse(response: unknown): string {
-  if (!response || typeof response !== "object") {
-    return "Hyperliquid response received. Refreshing order state.";
+async function refreshAfterLiveExchange(args: {
+  user: `0x${string}`;
+  marketBase: string;
+  before: SharedTradingSnapshot;
+  exchangeResponse: unknown;
+}): Promise<{ snapshot: SharedTradingSnapshot }> {
+  let latest = await loadTradingSnapshot(args.marketBase, { accountAddress: args.user });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (hasObservedAccountChange(args.before, latest.snapshot)) {
+      return latest;
+    }
+    await delay(900);
+    latest = await loadTradingSnapshot(args.marketBase, { accountAddress: args.user });
   }
-  const record = response as {
-    exchangeResponse?: unknown;
-    status?: string;
-    response?: unknown;
-    message?: string;
-  };
-  const inner = record.exchangeResponse && typeof record.exchangeResponse === "object"
-    ? record.exchangeResponse as { status?: string; response?: { type?: string; data?: unknown } }
-    : undefined;
-  const status = inner?.status ?? record.status;
-  const type = inner?.response?.type;
-  if (status && type) {
-    return `Hyperliquid returned ${status} (${type}).`;
+  return latest;
+}
+
+function summarizeObservedLiveState(args: {
+  before: SharedTradingSnapshot;
+  after: SharedTradingSnapshot;
+  response: unknown;
+}): string | undefined {
+  const responseSummary = summarizeExchangeResponse(args.response);
+  if (responseSummary === "Resting open order." && args.after.account.openOrders.length > args.before.account.openOrders.length) {
+    return "Open order is visible in account state.";
   }
-  if (status) {
-    return `Hyperliquid returned ${status}.`;
+  if (responseSummary === "Filled." && args.after.account.fills.length > args.before.account.fills.length) {
+    return "Fill is visible in account state.";
   }
-  if (record.message) {
-    return record.message;
+  if (args.after.account.positions.length !== args.before.account.positions.length) {
+    return "Position state updated.";
   }
-  return "Hyperliquid response received. Refreshing order state.";
+  if (args.after.account.fills.length > args.before.account.fills.length) {
+    return "New fill is visible in account state.";
+  }
+  if (args.after.account.openOrders.length > args.before.account.openOrders.length) {
+    return "New open order is visible in account state.";
+  }
+  return "No fill, position, or open-order change observed yet.";
+}
+
+function hasObservedAccountChange(before: SharedTradingSnapshot, after: SharedTradingSnapshot): boolean {
+  return (
+    after.account.fills.length > before.account.fills.length ||
+    after.account.openOrders.length > before.account.openOrders.length ||
+    after.account.positions.length !== before.account.positions.length ||
+    after.account.equityUsd !== before.account.equityUsd ||
+    after.account.availableUsd !== before.account.availableUsd
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function TerminalRail() {
