@@ -1,5 +1,6 @@
 import type {
   OrderAction,
+  PredictionBalanceState,
   PredictionLiveOrderRequest,
   PredictionPaperAccount,
   PredictionPaperFill,
@@ -90,6 +91,7 @@ export interface PredictionL2BookUpdate {
 }
 
 export const PREDICTION_LIVE_EXCHANGE_PATH = "/prediction/exchange";
+export const PREDICTION_BALANCE_PATH = "/prediction/balance";
 export const PREDICTION_ODDS_TIMEOUT_MS = 4_500;
 export const PREDICTION_ODDS_CONCURRENCY = 2;
 const WORLD_CUP_QUESTION_ID = 32;
@@ -267,6 +269,16 @@ export async function loadPredictionPaperAccount(
   } catch {
     return undefined;
   }
+}
+
+export async function loadPredictionBalance(user: string): Promise<PredictionBalanceState> {
+  const url = new URL(`${API_BASE_URL}${PREDICTION_BALANCE_PATH}`);
+  url.searchParams.set("user", user);
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`prediction balance request failed: ${res.status}`);
+  }
+  return (await res.json()) as PredictionBalanceState;
 }
 
 export async function submitPredictionPaperOrder(
@@ -495,6 +507,15 @@ export function prioritizePredictionOutcomeIds(
 
 export function hasValidPredictionTopOfBook(side: PredictionSideOdds | undefined): boolean {
   return Boolean(side?.bestBid && side.bestAsk && !side.emptyBook);
+}
+
+export function hasSufficientPredictionSpotBalance(
+  balance: PredictionBalanceState | undefined,
+  requiredCostUsd: number,
+): boolean {
+  if (!balance || !Number.isFinite(requiredCostUsd)) return false;
+  const available = Number(balance.spotUsdcAvailable);
+  return Number.isFinite(available) && available + 1e-9 >= requiredCostUsd;
 }
 
 export function filterAndSortPredictionQuestions(args: {
@@ -909,6 +930,7 @@ function assertNeverPredictionStreamStatus(status: never): string {
 }
 
 export type {
+  PredictionBalanceState,
   PredictionLiveOrderRequest,
   PredictionOutcome,
   PredictionOutcomeOdds,

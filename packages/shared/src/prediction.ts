@@ -170,3 +170,24 @@ export interface PredictionLiveOrderTechnicalDetails {
   assetId: number;
   quoteToken: string;
 }
+
+export interface PredictionSpotBalance {
+  coin: string;
+  token: number | string | null;
+  total: string;
+  hold: string;
+  available: string;
+  entryNtl: string | null;
+}
+
+export interface PredictionBalanceState {
+  user: `0x${string}`;
+  source: "spotClearinghouseState";
+  spotUsdc: PredictionSpotBalance;
+  spotUsdcAvailable: string;
+  perpWithdrawable: string | null;
+  balances: PredictionSpotBalance[];
+  outcomeBalances: PredictionSpotBalance[];
+  fetchedAt: number;
+  guidance: string;
+}

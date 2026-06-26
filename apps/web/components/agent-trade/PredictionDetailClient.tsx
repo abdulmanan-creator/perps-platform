@@ -6,6 +6,7 @@ import { usePrivy, useWallets, type ConnectedWallet } from "@privy-io/react-auth
 
 import type {
   PredictionLiveOrderRequest,
+  PredictionBalanceState,
   PredictionOutcome,
   PredictionPaperAccount,
   PredictionPaperFill,
@@ -26,6 +27,7 @@ import {
   formatUsdc,
   buildPredictionLiveOrderAction,
   getPredictionHip4MinOrderCostUsd,
+  hasSufficientPredictionSpotBalance,
   hasValidPredictionTopOfBook,
   isPredictionLiveTradingEnabled,
   isPredictionWorldCupStreamEnabled,
@@ -33,6 +35,7 @@ import {
   loadPredictionOutcomeOdds,
   loadPredictionQuestionOddsProgressive,
   loadPredictionPaperAccount,
+  loadPredictionBalance,
   mergePredictionL2BookUpdate,
   mergePredictionOutcomeOdds,
   normalizePredictionL2BookMessage,
@@ -708,6 +711,9 @@ function PredictionPaperTicket(props: {
   >("idle");
   const [liveMessage, setLiveMessage] = useState<string | undefined>();
   const [liveProofUrl, setLiveProofUrl] = useState<string | null>(null);
+  const [predictionBalance, setPredictionBalance] = useState<PredictionBalanceState | undefined>();
+  const [predictionBalanceStatus, setPredictionBalanceStatus] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  const [predictionBalanceError, setPredictionBalanceError] = useState<string | undefined>();
 
   useEffect(() => {
     if (!liveAvailable.pathVisible && mode === "live") setMode("paper");
@@ -717,6 +723,36 @@ function PredictionPaperTicket(props: {
     setLimitProbability(probabilityFromSide(props.selectedSide) ?? 0.5);
   }, [props.selectedSide?.coin]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const wallet = props.activeWallet?.address;
+    if (!liveAvailable.pathVisible || !wallet) {
+      setPredictionBalance(undefined);
+      setPredictionBalanceStatus("idle");
+      setPredictionBalanceError(undefined);
+      return;
+    }
+    setPredictionBalanceStatus("loading");
+    setPredictionBalanceError(undefined);
+    void loadPredictionBalance(wallet)
+      .then((balance) => {
+        if (!cancelled) {
+          setPredictionBalance(balance);
+          setPredictionBalanceStatus("ready");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPredictionBalance(undefined);
+          setPredictionBalanceStatus("failed");
+          setPredictionBalanceError("Could not verify Hyperliquid spot-style prediction balance. Retry before signing live HIP-4 orders.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [liveAvailable.pathVisible, props.activeWallet?.address]);
+
   const math = calculatePredictionTicketMath(contracts, limitProbability);
   const hip4MinOrderCostUsd = getPredictionHip4MinOrderCostUsd();
   const quoteToken = props.selectedOutcome?.quoteToken ?? props.question.quoteToken ?? props.question.quoteTokens[0] ?? "USDC";
@@ -724,12 +760,15 @@ function PredictionPaperTicket(props: {
   const selectedTechnical = props.selectedOutcome?.sides[props.selectedSideIndex];
   const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
   const selectedTopOfBookReady = hasValidPredictionTopOfBook(props.selectedSide);
+  const predictionBalanceSufficient = hasSufficientPredictionSpotBalance(predictionBalance, math.estimatedCost);
   const canSubmitLive =
     canSubmit &&
     liveAvailable.allowed &&
     Boolean(selectedTechnical) &&
     selectedTopOfBookReady &&
-    math.estimatedCost >= hip4MinOrderCostUsd;
+    math.estimatedCost >= hip4MinOrderCostUsd &&
+    predictionBalanceStatus === "ready" &&
+    predictionBalanceSufficient;
 
   async function submitPaperOrder() {
     if (!props.selectedOutcome || !props.selectedSide || !canSubmit) return;
@@ -905,6 +944,34 @@ function PredictionPaperTicket(props: {
             <MetricCell label="HIP-4 min cost" value={formatUsdc(hip4MinOrderCostUsd)} />
           </div>
         ) : null}
+        {mode === "live" ? (
+          <div className="prediction-balance-diagnostic">
+            <div className="prediction-ticket-body prediction-ticket-technical">
+              <MetricCell
+                label="HIP-4 spendable"
+                value={predictionBalanceStatus === "ready" ? formatUsdc(Number(predictionBalance?.spotUsdcAvailable ?? 0)) : "--"}
+              />
+              <MetricCell
+                label="Perp withdrawable"
+                value={predictionBalanceStatus === "ready" ? formatUsdc(Number(predictionBalance?.perpWithdrawable ?? 0)) : "--"}
+              />
+            </div>
+            <p className="market-notice">
+              Prediction markets use Hyperliquid spot-style balance; perp margin balance may not be spendable here.
+            </p>
+            {predictionBalanceStatus === "loading" ? (
+              <p className="market-notice">Checking HIP-4 spendable balance before live signing.</p>
+            ) : null}
+            {predictionBalanceStatus === "failed" ? (
+              <p className="market-notice">{predictionBalanceError}</p>
+            ) : null}
+            {predictionBalanceStatus === "ready" && !predictionBalanceSufficient ? (
+              <p className="market-notice">
+                Move USDC into Hyperliquid spot balance before signing. Use Hyperliquid Portfolio transfer from Perps to Spot, then retry.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <p className="market-notice">{liquidityWarning}</p>
         {mode === "live" && props.selectedSideLoading ? (
           <p className="market-notice">Selected outcome odds are loading. Live review unlocks after bid and ask are available.</p>
@@ -961,6 +1028,7 @@ function PredictionPaperTicket(props: {
               <MetricCell label="Contracts" value={math.contracts.toFixed(0)} />
               <MetricCell label="Limit probability" value={formatProbability(math.probability)} />
               <MetricCell label="Max cost" value={formatUsdc(math.estimatedCost)} />
+              <MetricCell label="HIP-4 spendable" value={formatUsdc(Number(predictionBalance?.spotUsdcAvailable ?? 0))} />
               <MetricCell label="Asset id" value={String(selectedTechnical.assetId)} />
               <MetricCell label="Coin" value={selectedTechnical.coin} />
               <MetricCell label="Acknowledgement" value="Criteria and live risk accepted" />

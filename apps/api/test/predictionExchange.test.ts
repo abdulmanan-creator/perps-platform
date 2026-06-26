@@ -15,9 +15,11 @@ import {
   hip4PredictionCoin,
   hip4PredictionEncoding,
 } from "../src/helpers/predictionHip4.js";
+import { predictionBalanceRoute } from "../src/routes/predictionBalance.js";
 import { predictionExchangeRoute } from "../src/routes/predictionExchange.js";
 
 const TEST_BUILDER = "0xAAAA000000000000000000000000000000000001" as const;
+const TEST_USER = "0x0000000000000000000000000000000000000001" as const;
 
 const baseEnv = {
   ALCHEMY_BUILDER_ADDRESS: TEST_BUILDER,
@@ -68,6 +70,18 @@ const prediction: PredictionLiveOrderRequest = {
   liveAcknowledged: true,
 };
 
+const DEFAULT_SPOT_STATE = {
+  balances: [
+    { coin: "USDC", token: 0, hold: "1.25", total: "101.25", entryNtl: "0.0" },
+    { coin: "+2170", token: 100_002_170, hold: "0", total: "4", entryNtl: "0.16" },
+  ],
+};
+
+const DEFAULT_PERP_STATE = {
+  withdrawable: "250.00",
+  marginSummary: { accountValue: "260.00", totalMarginUsed: "10.00" },
+};
+
 function actionFor(
   input: PredictionLiveOrderRequest = prediction,
   assetId = 100_001_890,
@@ -103,6 +117,7 @@ async function buildApp(env: NodeJS.ProcessEnv = baseEnv): Promise<FastifyInstan
     if (err instanceof ApiException) return sendError(reply, err);
     return reply.code(500).send({ error: "INTERNAL_ERROR", message: (err as Error).message });
   });
+  await app.register(predictionBalanceRoute);
   await app.register(predictionExchangeRoute);
   return app;
 }
@@ -114,10 +129,27 @@ function jsonRes(body: unknown, status = 200) {
   });
 }
 
-function mockOutcomeMeta() {
+function mockOutcomeMeta(args: {
+  spotState?: unknown;
+  perpState?: unknown;
+  exchangeResponse?: unknown;
+} = {}) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
     const body = JSON.parse((init?.body as string) ?? "{}") as { type?: string };
     if (body.type === "outcomeMeta") return jsonRes(OUTCOME_META);
+    if (body.type === "spotClearinghouseState") {
+      if (args.spotState instanceof Error) throw args.spotState;
+      return jsonRes(args.spotState ?? DEFAULT_SPOT_STATE);
+    }
+    if (body.type === "clearinghouseState") return jsonRes(args.perpState ?? DEFAULT_PERP_STATE);
+    if (!body.type && "action" in body) {
+      return jsonRes(
+        args.exchangeResponse ?? {
+          status: "ok",
+          response: { type: "order", data: { statuses: [{ resting: { oid: 123 } }] } },
+        },
+      );
+    }
     throw new Error(`Unexpected fetch: ${body.type}`);
   });
 }
@@ -154,7 +186,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction, action: actionFor() },
+      payload: { user: TEST_USER, prediction, action: actionFor() },
     });
 
     expect(res.statusCode).toBe(451);
@@ -166,7 +198,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders("US"),
-      payload: { prediction, action: actionFor() },
+      payload: { user: TEST_USER, prediction, action: actionFor() },
     });
 
     expect(res.statusCode).toBe(451);
@@ -178,7 +210,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction, action: actionFor() },
+      payload: { user: TEST_USER, prediction, action: actionFor() },
     });
 
     expect(res.statusCode, res.body).toBe(200);
@@ -194,6 +226,61 @@ describe("prediction live exchange route", () => {
     expect(hip4PredictionEncoding(189, 0)).toBe(1_890);
     expect(hip4PredictionCoin(189, 0)).toBe("#1890");
     expect(hip4PredictionAssetId(189, 0)).toBe(100_001_890);
+  });
+
+  it("reports prediction spot balance separately from perp withdrawable", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/prediction/balance?user=${TEST_USER}`,
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({
+      source: "spotClearinghouseState",
+      spotUsdcAvailable: "100",
+      perpWithdrawable: "250.00",
+      outcomeBalances: [{ coin: "+2170", available: "4" }],
+    });
+    expect(res.json().guidance).toContain("spot-style balance");
+    expect(res.json().guidance).toContain("perp margin balance may not be spendable");
+  });
+
+  it("blocks build before signing when HIP-4 spot USDC is insufficient", async () => {
+    await app.close();
+    vi.restoreAllMocks();
+    mockOutcomeMeta({
+      spotState: { balances: [{ coin: "USDC", token: 0, hold: "0", total: "9.99", entryNtl: "0.0" }] },
+      perpState: { withdrawable: "500.00" },
+    });
+    app = await buildApp();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { user: TEST_USER, prediction, action: actionFor() },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().message).toContain("Insufficient HIP-4 prediction spot balance");
+    expect(res.json().guidance).toContain("perp margin balance may not be spendable");
+  });
+
+  it("does not build a signable payload when HIP-4 spot balance cannot be verified", async () => {
+    await app.close();
+    vi.restoreAllMocks();
+    mockOutcomeMeta({ spotState: new Error("spot balance unavailable") });
+    app = await buildApp();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { user: TEST_USER, prediction, action: actionFor() },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().message).toContain("Could not verify HIP-4 prediction spot balance");
   });
 
   it("rejects invalid question, outcome, side, asset, price, and contract inputs", async () => {
@@ -213,7 +300,7 @@ describe("prediction live exchange route", () => {
         method: "POST",
         url: "/prediction/exchange",
         headers: liveHeaders(),
-        payload: { prediction: item.prediction, action: item.action ?? actionFor() },
+        payload: { user: TEST_USER, prediction: item.prediction, action: item.action ?? actionFor() },
       });
       expect(res.statusCode, item.label).toBe(422);
     }
@@ -225,7 +312,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction: belowMin, action: actionFor(belowMin) },
+      payload: { user: TEST_USER, prediction: belowMin, action: actionFor(belowMin) },
     });
 
     expect(belowRes.statusCode).toBe(422);
@@ -236,7 +323,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction: atMin, action: actionFor(atMin) },
+      payload: { user: TEST_USER, prediction: atMin, action: actionFor(atMin) },
     });
 
     expect(atMinRes.statusCode, atMinRes.body).toBe(200);
@@ -248,7 +335,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction: precise, action: actionFor(precise) },
+      payload: { user: TEST_USER, prediction: precise, action: actionFor(precise) },
     });
 
     expect(res.statusCode, res.body).toBe(200);
@@ -263,7 +350,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction: lowProbability, action: actionFor(lowProbability, 100_002_170) },
+      payload: { user: TEST_USER, prediction: lowProbability, action: actionFor(lowProbability, 100_002_170) },
     });
 
     expect(res.statusCode, res.body).toBe(200);
@@ -278,7 +365,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction: sell, action: actionFor(sell) },
+      payload: { user: TEST_USER, prediction: sell, action: actionFor(sell) },
     });
 
     expect(res.statusCode).toBe(422);
@@ -290,7 +377,7 @@ describe("prediction live exchange route", () => {
       method: "POST",
       url: "/prediction/exchange",
       headers: liveHeaders(),
-      payload: { prediction, action: actionFor() },
+      payload: { user: TEST_USER, prediction, action: actionFor() },
     });
     expect(buildRes.statusCode).toBe(200);
     const built = buildRes.json() as BuildResponse;
@@ -304,12 +391,13 @@ describe("prediction live exchange route", () => {
       message: built.typedData.message,
     });
     const signature = splitHexSig(sigHex);
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      jsonRes({
+    vi.restoreAllMocks();
+    mockOutcomeMeta({
+      exchangeResponse: {
         status: "ok",
         response: { type: "order", data: { statuses: [{ error: "Order must have minimum value of $1." }] } },
-      }),
-    );
+      },
+    });
 
     const sendRes = await app.inject({
       method: "POST",

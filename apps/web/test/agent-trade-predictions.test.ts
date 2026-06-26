@@ -19,10 +19,12 @@ import {
   formatUsdc,
   formatPredictionLivePriceWire,
   getPredictionHip4MinOrderCostUsd,
+  hasSufficientPredictionSpotBalance,
   hasValidPredictionTopOfBook,
   isResolvingSoon,
   isPredictionLiveTradingEnabled,
   isPredictionWorldCupStreamEnabled,
+  loadPredictionBalance,
   loadPredictionDiscoveryOddsSummaries,
   mergePredictionL2BookUpdate,
   maxPayoutForContracts,
@@ -499,6 +501,36 @@ describe("Agent.trade prediction helpers", () => {
     })).toEqual({ status: "rejected", label: "Rejected", reason: "Bad order" });
   });
 
+  it("checks HIP-4 spot-style spendable balance before live review", async () => {
+    const balance = {
+      user: "0x0000000000000000000000000000000000000001" as const,
+      source: "spotClearinghouseState" as const,
+      spotUsdc: { coin: "USDC", token: 0, total: "11", hold: "1", available: "10", entryNtl: "0" },
+      spotUsdcAvailable: "10",
+      perpWithdrawable: "500",
+      balances: [],
+      outcomeBalances: [],
+      fetchedAt: 123,
+      guidance: "Prediction markets use Hyperliquid spot-style balance; perp margin balance may not be spendable here.",
+    };
+    expect(hasSufficientPredictionSpotBalance(balance, 9.99)).toBe(true);
+    expect(hasSufficientPredictionSpotBalance(balance, 10)).toBe(true);
+    expect(hasSufficientPredictionSpotBalance(balance, 10.01)).toBe(false);
+    expect(hasSufficientPredictionSpotBalance(undefined, 1)).toBe(false);
+
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      expect(url).toContain("/prediction/balance");
+      expect(url).toContain("user=0x0000000000000000000000000000000000000001");
+      return new Response(JSON.stringify(balance), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect(loadPredictionBalance("0x0000000000000000000000000000000000000001")).resolves.toMatchObject({
+      spotUsdcAvailable: "10",
+      perpWithdrawable: "500",
+    });
+  });
+
   it("keeps flag-off, restricted, and unknown users paper-only", () => {
     expect(getPredictionLiveAvailability({
       flagEnabled: false,
@@ -667,6 +699,10 @@ describe("prediction route smoke", () => {
     expect(source).toContain("Selected outcome odds are loading");
     expect(source).toContain("Live review requires a valid two-sided top of book");
     expect(source).toContain("hasValidPredictionTopOfBook");
+    expect(source).toContain("Prediction markets use Hyperliquid spot-style balance; perp margin balance may not be spendable here.");
+    expect(source).toContain("loadPredictionBalance");
+    expect(source).toContain("hasSufficientPredictionSpotBalance");
+    expect(source).toContain("Move USDC into Hyperliquid spot balance before signing");
   });
 
   it("gates World Cup selected-book streaming to question 32 with diagnostics", () => {

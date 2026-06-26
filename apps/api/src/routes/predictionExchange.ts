@@ -22,6 +22,10 @@ import { hip4PredictionTechnicalDetails } from "../helpers/predictionHip4.js";
 import { TtlCache, cachedAsync } from "../helpers/ttlCache.js";
 import { registerExchangeEndpoint } from "./exchange.js";
 import { fetchPredictionMeta, findQuestion, type PredictionMeta } from "./prediction.js";
+import {
+  assertPredictionSpotBalanceSufficient,
+  fetchPredictionBalanceState,
+} from "./predictionBalance.js";
 import type { ExchangeBody } from "../schemas.js";
 
 const ROUTE = "/prediction/exchange";
@@ -51,6 +55,23 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
     hooks: {
       beforeBuild: async ({ req, body, nonce }) => {
         const validated = await validate(req, body);
+        assertAgentTradeExchangeAllowed({
+          req,
+          cfg: app.config,
+          action: body.action,
+          user: body.user,
+          riskAckGuidance: PREDICTION_ACK_GUIDANCE,
+          minOrderNotionalUsd: app.config.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
+          minOrderMessage: predictionMinCostMessage(app.config),
+          minOrderGuidance: predictionMinCostGuidance(app.config),
+        });
+        await assertPredictionBalanceReady({
+          hl,
+          req,
+          user: body.user,
+          validated,
+          phase: "build",
+        });
         await recordExchangeSubmission({
           req,
           cfg: app.config,
@@ -71,16 +92,6 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
           route: ROUTE,
           eventType: "prediction.exchange.build_started",
           payload: validationPayload(validated),
-        });
-        assertAgentTradeExchangeAllowed({
-          req,
-          cfg: app.config,
-          action: body.action,
-          user: body.user,
-          riskAckGuidance: PREDICTION_ACK_GUIDANCE,
-          minOrderNotionalUsd: app.config.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
-          minOrderMessage: predictionMinCostMessage(app.config),
-          minOrderGuidance: predictionMinCostGuidance(app.config),
         });
       },
       afterBuild: async ({ req, body, response }) => {
@@ -119,6 +130,23 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
       },
       beforeSend: async ({ req, body, signer, builderFeeBps }) => {
         const validated = await validate(req, body);
+        assertAgentTradeExchangeAllowed({
+          req,
+          cfg: app.config,
+          action: body.action,
+          user: signer,
+          riskAckGuidance: PREDICTION_ACK_GUIDANCE,
+          minOrderNotionalUsd: app.config.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
+          minOrderMessage: predictionMinCostMessage(app.config),
+          minOrderGuidance: predictionMinCostGuidance(app.config),
+        });
+        await assertPredictionBalanceReady({
+          hl,
+          req,
+          user: signer,
+          validated,
+          phase: "send",
+        });
         await recordExchangeSubmission({
           req,
           cfg: app.config,
@@ -141,16 +169,6 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
           route: ROUTE,
           eventType: "prediction.exchange.send_started",
           payload: validationPayload(validated),
-        });
-        assertAgentTradeExchangeAllowed({
-          req,
-          cfg: app.config,
-          action: body.action,
-          user: signer,
-          riskAckGuidance: PREDICTION_ACK_GUIDANCE,
-          minOrderNotionalUsd: app.config.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD,
-          minOrderMessage: predictionMinCostMessage(app.config),
-          minOrderGuidance: predictionMinCostGuidance(app.config),
         });
       },
       afterSend: async ({ req, body, signer, exchangeResponse, latencyMs, builderFeeBps }) => {
@@ -248,6 +266,14 @@ export function validatePredictionLiveExchange(args: {
     );
   }
 
+  if (!args.body.signature && !args.body.user) {
+    throw new ApiException(
+      "INVALID_PARAMS",
+      "Live prediction order builds require the wallet address.",
+      "Send user=0x... so Agent.trade can verify HIP-4 spot-style spendable balance before wallet signing.",
+    );
+  }
+
   if (prediction.action !== "buy") {
     throw new ApiException(
       "INVALID_PARAMS",
@@ -319,7 +345,44 @@ export function validatePredictionLiveExchange(args: {
 
   assertActionMatchesPrediction(args.body, prediction, side, expectedPrice);
 
-  return { prediction, outcome, side };
+  return { prediction, outcome, side, wirePrice: expectedPrice, estimatedCost: roundUsd(costUsd) };
+}
+
+async function assertPredictionBalanceReady(args: {
+  hl: HlClient;
+  req: FastifyRequest;
+  user: `0x${string}` | undefined;
+  validated: PredictionValidation;
+  phase: "build" | "send";
+}): Promise<void> {
+  if (!args.user) {
+    return;
+  }
+  let balance;
+  try {
+    balance = await fetchPredictionBalanceState(args.hl, args.user);
+  } catch (err) {
+    args.req.log.warn(
+      { ...validationPayload(args.validated), user: args.user, err },
+      `prediction_exchange_${args.phase}_balance_unavailable`,
+    );
+    throw new ApiException(
+      "HL_EXCHANGE_REJECTED",
+      "Could not verify HIP-4 prediction spot balance.",
+      "Retry before signing. Agent.trade requires a readable Hyperliquid spot-style USDC balance for live prediction orders.",
+    );
+  }
+  const payload = {
+    ...validationPayload(args.validated),
+    user: args.user,
+    predictedSpendableBalance: balance.spotUsdcAvailable,
+    perpWithdrawable: balance.perpWithdrawable,
+  };
+  args.req.log.info(payload, `prediction_exchange_${args.phase}_preflight`);
+  assertPredictionSpotBalanceSufficient({
+    balance,
+    requiredCostUsd: args.validated.estimatedCost,
+  });
 }
 
 function assertActionMatchesPrediction(
@@ -423,6 +486,9 @@ function validationPayload(validated: PredictionValidation) {
     action: validated.prediction.action,
     contracts: validated.prediction.contracts,
     limitProbability: validated.prediction.limitProbability,
+    rawLimitProbability: validated.prediction.limitProbability,
+    wirePrice: validated.wirePrice,
+    estimatedCost: validated.estimatedCost,
     tif: validated.prediction.tif,
     assetId: validated.side.assetId,
     coin: validated.side.coin,
@@ -436,4 +502,10 @@ interface PredictionValidation {
   prediction: PredictionLiveOrderRequest;
   outcome: PredictionOutcome;
   side: PredictionOutcomeSide;
+  wirePrice: string;
+  estimatedCost: number;
+}
+
+function roundUsd(value: number): number {
+  return Number(value.toFixed(8));
 }
