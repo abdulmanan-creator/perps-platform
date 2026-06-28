@@ -183,6 +183,10 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
   async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
     await new Promise((resolve) => setTimeout(resolve, 700));
 
+    if (input.prediction) {
+      return this.predictionAnalysis(input);
+    }
+
     const snapshot = snapshotFromAgentInput(input);
     const scenario = this.toScenario(input);
     if ((scenario === "long" || scenario === "short") && !hasUsablePrice(snapshot)) {
@@ -255,6 +259,7 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
       riskNote: response.riskNote,
       whyWrong: response.whyWrong,
       orderDraft: responseType === "trade_proposal" ? response.orderDraft : undefined,
+      predictionDraft: responseType === "trade_proposal" ? response.predictionDraft : undefined,
       warnings: warnings.filter((warning): warning is string => Boolean(warning)),
       provider: {
         name: this.name,
@@ -277,6 +282,99 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
     return {
       ...response,
       riskNote: `${response.riskNote} ${nextWarnings.join(" ")}`,
+    };
+  }
+
+  private predictionAnalysis(input: AgentInput): AgentAnalysis {
+    const prediction = input.prediction;
+    if (!prediction) {
+      throw new Error("Prediction context missing.");
+    }
+    const prompt = input.requestedPrompt.toLowerCase();
+    const wantsDraft = /\b(draft|buy|order|ticket|marketable)\b/u.test(prompt);
+    const wantsWrong = /\b(wrong|risk|bear|against|could make)\b/u.test(prompt);
+    const selectedPrice = prediction.selectedSide.midpointProbability ?? Number(prediction.selectedSide.bestAsk ?? prediction.ticket.limitProbability);
+    const hasUsablePrice = Number.isFinite(selectedPrice) && selectedPrice > 0 && selectedPrice <= 1;
+    const paperOnly = input.eligibility.mode !== "live" || !input.eligibility.liveAllowed;
+    const receipts = [
+      { label: "Question", value: prediction.questionName, timestamp: input.timestamp },
+      { label: "Outcome", value: `${prediction.selectedOutcome.name} ${prediction.selectedSide.name}`, timestamp: input.timestamp },
+      { label: "Best bid/ask", value: `${prediction.selectedSide.bestBid ?? "--"} / ${prediction.selectedSide.bestAsk ?? "--"}`, timestamp: input.timestamp },
+      { label: "Spread", value: prediction.selectedSide.spread === null ? "--" : `${(prediction.selectedSide.spread * 100).toFixed(1)} pts`, timestamp: input.timestamp },
+      { label: "Book", value: `${prediction.selectedSide.bidDepth} bid / ${prediction.selectedSide.askDepth} ask contracts`, timestamp: input.timestamp },
+      { label: "Mode", value: paperOnly ? "Paper draft only" : "Live eligible; confirmation required", timestamp: input.timestamp },
+    ];
+    const riskNote =
+      `This is a HIP-4 binary event contract. You can lose the full premium paid, settlement depends on the listed criteria, and the ${prediction.stream.freshnessLabel.toLowerCase()} may differ by the time you confirm.`;
+    const whyWrong =
+      "The odds can be wrong if the market is thin, the selected side has stale depth, news changes team probabilities, or resolution criteria differ from the expected interpretation.";
+
+    if (wantsDraft && hasUsablePrice) {
+      const contracts = Math.max(1, Math.floor(prediction.ticket.contracts));
+      const limitProbability = Number(Math.min(1, Math.max(0.0001, prediction.ticket.limitProbability || selectedPrice)).toFixed(4));
+      return {
+        responseType: "trade_proposal",
+        summary: `${prediction.selectedOutcome.name} ${prediction.selectedSide.name} prediction draft prepared.`,
+        thesis:
+          `${prediction.selectedOutcome.name} ${prediction.selectedSide.name} is trading around ${(selectedPrice * 100).toFixed(1)}% with ` +
+          `${prediction.selectedSide.bidDepth + prediction.selectedSide.askDepth} visible contracts on the selected book side. ` +
+          `I can draft a ${paperOnly ? "paper" : "review-only"} buy ticket, but Agent.trade still requires confirmation.`,
+        side: "none",
+        confidence: prediction.selectedSide.emptyBook ? 0.35 : 0.58,
+        receipts,
+        riskNote,
+        whyWrong,
+        predictionDraft: {
+          kind: "prediction_order",
+          questionId: prediction.questionId,
+          questionName: prediction.questionName,
+          outcome: prediction.selectedOutcome.outcome,
+          outcomeName: prediction.selectedOutcome.name,
+          side: prediction.selectedSide.side,
+          sideName: prediction.selectedSide.name,
+          action: "buy",
+          contracts,
+          limitProbability,
+          tif: prediction.ticket.tif,
+          paperOnly,
+          fromAgent: true,
+        },
+        warnings: paperOnly ? ["Restricted or non-live mode: prediction draft is paper-only."] : [],
+        provider: {
+          name: this.name,
+          deterministic: true,
+          generatedAt: input.timestamp,
+        },
+        id: `prediction-${prediction.questionId}-${prediction.selectedOutcome.outcome}-${prediction.selectedSide.side}-draft`,
+        question: input.requestedPrompt,
+        annotations: [],
+        followUps: ["Explain this odds move", "What could make this wrong?"],
+      };
+    }
+
+    return {
+      responseType: wantsWrong ? "no_trade" : "market_read",
+      summary: `${prediction.selectedOutcome.name} ${prediction.selectedSide.name} market read.`,
+      thesis:
+        `${prediction.questionName}: ${prediction.selectedOutcome.name} ${prediction.selectedSide.name} has ` +
+        `best bid ${prediction.selectedSide.bestBid ?? "--"} and best ask ${prediction.selectedSide.bestAsk ?? "--"}. ` +
+        `The selected book shows ${prediction.selectedSide.bidDepth} bid contracts and ${prediction.selectedSide.askDepth} ask contracts. ` +
+        "No order is drafted unless you explicitly ask for a prediction ticket.",
+      side: "none",
+      confidence: prediction.selectedSide.emptyBook ? 0.42 : 0.66,
+      receipts,
+      riskNote,
+      whyWrong,
+      warnings: paperOnly ? ["Live prediction trading is unavailable here; paper mode remains available."] : [],
+      provider: {
+        name: this.name,
+        deterministic: true,
+        generatedAt: input.timestamp,
+      },
+      id: `prediction-${prediction.questionId}-${prediction.selectedOutcome.outcome}-${prediction.selectedSide.side}-read`,
+      question: input.requestedPrompt,
+      annotations: [],
+      followUps: wantsWrong ? ["Find the cleanest World Cup setup"] : ["Draft a marketable order", "What could make this wrong?"],
     };
   }
 

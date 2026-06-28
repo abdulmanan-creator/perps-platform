@@ -18,6 +18,7 @@ import type {
 } from "@alchemy-hl/shared";
 
 import { API_BASE_URL } from "../api";
+import type { AgentInput } from "./agent-provider";
 import { getPaperSessionId, paperSessionHeaders } from "./paper";
 
 export type PredictionFilterKey =
@@ -99,6 +100,30 @@ export interface PredictionWorldCupStreamCoins {
   activeSubscriptions: string[];
 }
 
+export interface PredictionAgentContextInput {
+  prompt: string;
+  question: PredictionQuestion;
+  selectedOutcome: PredictionOutcome;
+  selectedSide: PredictionSideOdds;
+  oppositeSide?: PredictionSideOdds;
+  streamStatus: PredictionStreamStatus;
+  streamLastBookAt?: number;
+  streamFreshnessLabel: string;
+  mode: "paper" | "live";
+  eligibilityState: AgentInput["eligibility"]["state"];
+  liveAllowed: boolean;
+  hip4Spendable?: string;
+  perpWithdrawable?: string;
+  balanceStatus: "idle" | "loading" | "ready" | "failed";
+  ticket: {
+    contracts: number;
+    limitProbability: number;
+    tif: "Ioc" | "Gtc";
+    criteriaAcknowledged: boolean;
+  };
+  now?: number;
+}
+
 export interface PredictionLiveOrderReadinessInput {
   mode: "paper" | "live";
   tif: "Ioc" | "Gtc";
@@ -171,6 +196,120 @@ export function predictionWorldCupStreamCoins(outcome: number): PredictionWorldC
 
 export function predictionHyperliquidWsUrl(): string {
   return process.env.NEXT_PUBLIC_HYPERLIQUID_WS_URL ?? "wss://api.hyperliquid.xyz/ws";
+}
+
+export function buildPredictionAgentInput(args: PredictionAgentContextInput): AgentInput {
+  const now = args.now ?? Date.now();
+  const price = args.selectedSide.midpointProbability ?? Number(args.selectedSide.bestAsk ?? args.ticket.limitProbability);
+  const markPrice = Number.isFinite(price) && price > 0 ? price : 0.5;
+  return {
+    requestedPrompt: args.prompt,
+    scenario: "prediction",
+    prediction: {
+      questionId: args.question.questionId,
+      questionName: args.question.name,
+      criteria: args.question.criteria || args.question.description || "Resolution criteria unavailable.",
+      settlementState: args.question.settlement.state,
+      selectedOutcome: {
+        outcome: args.selectedOutcome.outcome,
+        name: args.selectedOutcome.name,
+      },
+      selectedSide: predictionSideAgentSummary(args.selectedSide),
+      oppositeSide: args.oppositeSide ? predictionSideAgentSummary(args.oppositeSide) : undefined,
+      stream: {
+        status: args.streamStatus,
+        lastBookAt: args.streamLastBookAt,
+        freshnessLabel: args.streamFreshnessLabel,
+      },
+      balances: {
+        hip4Spendable: args.hip4Spendable,
+        perpWithdrawable: args.perpWithdrawable,
+        status: args.balanceStatus,
+      },
+      mode: args.mode,
+      ticket: args.ticket,
+    },
+    market: {
+      symbol: `HIP4-${args.question.questionId}`,
+      base: args.selectedOutcome.name,
+      venue: "Hyperliquid HIP-4",
+      assetIndex: args.selectedSide.assetId,
+      szDecimals: 0,
+      maxLeverage: 1,
+      markPrice,
+      oraclePrice: markPrice,
+      change24hPct: 0,
+      change24hAbs: 0,
+      fundingRatePct: 0,
+      openInterestUsd: args.selectedSide.depth.bidNotional + args.selectedSide.depth.askNotional,
+      openInterestChangePct: null,
+      volume24hUsd: 0,
+      liquidityUsd: args.selectedSide.depth.bidNotional + args.selectedSide.depth.askNotional,
+      nextFundingMinutes: 0,
+      dataAgeSeconds: args.streamLastBookAt ? Math.max(0, Math.round((now - args.streamLastBookAt) / 1000)) : 0,
+      source: "live-mainnet",
+    },
+    orderBook: {
+      bids: (args.selectedSide.topBidLevels ?? []).map((level) => ({ price: Number(level.px), size: Number(level.sz) })),
+      asks: (args.selectedSide.topAskLevels ?? []).map((level) => ({ price: Number(level.px), size: Number(level.sz) })),
+    },
+    recentTrades: [],
+    candleSummary: {
+      source: "unavailable",
+      isFallback: false,
+      count: 0,
+    },
+    account: {
+      address: "0x0000000000000000000000000000000000000000",
+      valueKind: "unavailable",
+      equityUsd: 0,
+      availableUsd: Number(args.hip4Spendable ?? 0),
+      marginUsedUsd: 0,
+      unrealizedPnlUsd: 0,
+      dailyLiveNotionalUsedUsd: 0,
+      simulatedBalanceUsd: 0,
+      positionCount: 0,
+      openOrderCount: 0,
+      fillCount: 0,
+      positions: [],
+    },
+    exposure: {
+      longNotionalUsd: 0,
+      shortNotionalUsd: 0,
+      netExposureUsd: 0,
+      grossExposureUsd: 0,
+      selectedMarketNotionalUsd: 0,
+    },
+    eligibility: {
+      state: args.eligibilityState,
+      mode: args.mode,
+      liveAllowed: args.liveAllowed,
+      paperAllowed: true,
+    },
+    freshness: {
+      now,
+      marketAsOf: args.streamLastBookAt ?? now,
+      marketAgeSeconds: args.streamLastBookAt ? Math.max(0, Math.round((now - args.streamLastBookAt) / 1000)) : 0,
+      marketWarning: args.streamStatus === "live" ? undefined : "Prediction book is using REST fallback or stale stream data.",
+    },
+    timestamp: now,
+  };
+}
+
+function predictionSideAgentSummary(side: PredictionSideOdds) {
+  return {
+    side: side.side,
+    name: side.name,
+    bestBid: side.bestBid,
+    bestAsk: side.bestAsk,
+    midpointProbability: side.midpointProbability,
+    spread: side.spread,
+    bidDepth: side.depth.bidSize,
+    askDepth: side.depth.askSize,
+    topBidLevels: side.topBidLevels ?? [],
+    topAskLevels: side.topAskLevels ?? [],
+    emptyBook: side.emptyBook,
+  };
 }
 
 export function predictionL2BookSubscription(coin: string) {

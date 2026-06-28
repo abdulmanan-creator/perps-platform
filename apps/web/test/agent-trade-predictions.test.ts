@@ -7,6 +7,7 @@ import {
   PREDICTION_RISK_COPY,
 } from "../components/agent-trade/PredictionDetailClient";
 import {
+  buildPredictionAgentInput,
   calculatePredictionTicketMath,
   buildPredictionUsdcTransfer,
   buildPredictionLiveOrderAction,
@@ -58,6 +59,8 @@ import {
   submitPredictionPaperOrder,
   type PredictionDiscoveryQuestion,
 } from "../lib/agent-trade/predictions";
+import { DeterministicAgentService } from "../lib/agent-trade/agent-service";
+import { parseAgentAnalysis } from "../lib/agent-trade/agent-validation";
 import type { PredictionBalanceState, PredictionPaperAccount, PredictionQuestionOdds } from "@alchemy-hl/shared";
 
 const baseQuestions: PredictionDiscoveryQuestion[] = [
@@ -915,6 +918,73 @@ describe("Agent.trade prediction helpers", () => {
     expect(result.account.positions).toHaveLength(1);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("builds prediction-specific agent context and deterministic draft output", async () => {
+    vi.useFakeTimers();
+    const side = questionOdds.outcomes[0]!.sides[0]!;
+    const input = buildPredictionAgentInput({
+      prompt: "Draft a marketable order",
+      question: baseQuestions[1]!,
+      selectedOutcome: baseQuestions[1]!.namedOutcomes[0]!,
+      selectedSide: side,
+      oppositeSide: questionOdds.outcomes[0]!.sides[1]!,
+      streamStatus: "live",
+      streamLastBookAt: 1000,
+      streamFreshnessLabel: "just now",
+      mode: "live",
+      eligibilityState: "liveEligible",
+      liveAllowed: true,
+      hip4Spendable: "25",
+      perpWithdrawable: "100",
+      balanceStatus: "ready",
+      ticket: { contracts: 12, limitProbability: 0.25, tif: "Ioc", criteriaAcknowledged: true },
+      now: 1200,
+    });
+    const promise = new DeterministicAgentService().analyzeMarket(input);
+    await vi.advanceTimersByTimeAsync(700);
+    const analysis = await promise;
+
+    expect(input.prediction?.questionName).toBe("World Cup Champion");
+    expect(input.prediction?.selectedSide.topBidLevels).toEqual([]);
+    expect(input.prediction?.oppositeSide?.name).toBe("No");
+    expect(parseAgentAnalysis(analysis)).toBeTruthy();
+    expect(analysis.responseType).toBe("trade_proposal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.predictionDraft).toMatchObject({
+      kind: "prediction_order",
+      action: "buy",
+      contracts: 12,
+      limitProbability: 0.25,
+      tif: "Ioc",
+      paperOnly: false,
+      fromAgent: true,
+    });
+  });
+
+  it("keeps restricted prediction agent drafts paper-only", async () => {
+    vi.useFakeTimers();
+    const side = questionOdds.outcomes[0]!.sides[0]!;
+    const promise = new DeterministicAgentService().analyzeMarket(buildPredictionAgentInput({
+      prompt: "Should I buy this outcome?",
+      question: baseQuestions[1]!,
+      selectedOutcome: baseQuestions[1]!.namedOutcomes[0]!,
+      selectedSide: side,
+      streamStatus: "rest_fallback",
+      streamFreshnessLabel: "REST fallback",
+      mode: "paper",
+      eligibilityState: "restricted",
+      liveAllowed: false,
+      balanceStatus: "idle",
+      ticket: { contracts: 5, limitProbability: 0.2, tif: "Gtc", criteriaAcknowledged: false },
+      now: 1200,
+    }));
+    await vi.advanceTimersByTimeAsync(700);
+    const analysis = await promise;
+
+    expect(analysis.predictionDraft?.paperOnly).toBe(true);
+    expect(analysis.warnings.join(" ")).toContain("paper-only");
+    expect(analysis.orderDraft).toBeUndefined();
+  });
 });
 
 describe("prediction route smoke", () => {
@@ -943,6 +1013,33 @@ describe("prediction route smoke", () => {
     expect(detailSource).toContain("Odds load progressively after the shell appears");
     expect(detailSource).toContain("loadPredictionQuestionOddsProgressive");
     expect(detailSource).toContain("Refresh odds");
+  });
+
+  it("renders an Ask Agent.trade panel on prediction detail with World Cup prompt chips", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    expect(source).toContain('data-testid="prediction-agent-panel"');
+    expect(source).toContain("Ask Agent.trade");
+    expect(source).toContain("Should I buy this outcome?");
+    expect(source).toContain("Find the cleanest World Cup setup");
+    expect(source).toContain("Explain this odds move");
+    expect(source).toContain("What could make this wrong?");
+    expect(source).toContain("Draft a marketable order");
+    expect(source).toContain("Agent drafts; you confirm.");
+  });
+
+  it("prefills the prediction ticket from agent draft without submitting exchange", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    const applySource = source.slice(
+      source.indexOf("function applyPredictionDraftToTicket"),
+      source.indexOf("function markManualTicketEdit"),
+    );
+    expect(applySource).toContain("setContracts(draft.contracts)");
+    expect(applySource).toContain("setLimitProbability(draft.limitProbability)");
+    expect(applySource).toContain("setTif(draft.tif)");
+    expect(applySource).toContain("setAgentDraftApplied(true)");
+    expect(applySource).not.toContain("predictionLiveExchangeEndpoint");
+    expect(source).toContain("Send to prediction ticket");
+    expect(source).toContain("fromAgent: agentDraftApplied");
   });
 
   it("keeps the World Cup detail route graceful when live data is unavailable", () => {

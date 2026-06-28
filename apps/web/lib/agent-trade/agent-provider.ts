@@ -112,10 +112,78 @@ export interface AgentFreshnessInput {
   accountWarning?: string;
 }
 
+export interface AgentPredictionDraft {
+  kind: "prediction_order";
+  questionId: number;
+  questionName: string;
+  outcome: number;
+  outcomeName: string;
+  side: 0 | 1;
+  sideName: string;
+  action: "buy";
+  contracts: number;
+  limitProbability: number;
+  tif: "Ioc" | "Gtc";
+  paperOnly: boolean;
+  fromAgent: true;
+}
+
+export interface AgentPredictionInput {
+  questionId: number;
+  questionName: string;
+  criteria: string;
+  settlementState: "open" | "partiallySettled" | "settled";
+  selectedOutcome: {
+    outcome: number;
+    name: string;
+  };
+  selectedSide: {
+    side: 0 | 1;
+    name: string;
+    bestBid: string | null;
+    bestAsk: string | null;
+    midpointProbability: number | null;
+    spread: number | null;
+    bidDepth: number;
+    askDepth: number;
+    topBidLevels: Array<{ px: string; sz: string }>;
+    topAskLevels: Array<{ px: string; sz: string }>;
+    emptyBook: boolean;
+  };
+  oppositeSide?: {
+    side: 0 | 1;
+    name: string;
+    bestBid: string | null;
+    bestAsk: string | null;
+    midpointProbability: number | null;
+    spread: number | null;
+    bidDepth: number;
+    askDepth: number;
+  };
+  stream: {
+    status: string;
+    lastBookAt?: number;
+    freshnessLabel: string;
+  };
+  balances: {
+    hip4Spendable?: string;
+    perpWithdrawable?: string;
+    status: "idle" | "loading" | "ready" | "failed";
+  };
+  mode: "paper" | "live";
+  ticket: {
+    contracts: number;
+    limitProbability: number;
+    tif: "Ioc" | "Gtc";
+    criteriaAcknowledged: boolean;
+  };
+}
+
 export interface AgentInput {
   requestedPrompt: string;
   scenario?: string;
   providerPreference?: AgentProviderSelection;
+  prediction?: AgentPredictionInput;
   market: AgentMarketInput;
   orderBook: SharedTradingSnapshot["orderBook"];
   recentTrades: RecentTrade[];
@@ -147,6 +215,7 @@ export interface AgentAnalysis {
   riskNote: string;
   whyWrong: string;
   orderDraft?: OrderDraft;
+  predictionDraft?: AgentPredictionDraft;
   warnings: string[];
   provider: AgentProviderMetadata;
   id?: string;

@@ -81,10 +81,14 @@ export function parseAgentAnalysis(output: unknown): AgentAnalysis | undefined {
   }
 
   const orderDraft = output.orderDraft === undefined ? undefined : parseOrderDraft(output.orderDraft);
-  if (output.responseType === "trade_proposal" && !orderDraft) {
+  const predictionDraft = output.predictionDraft === undefined ? undefined : parsePredictionDraft(output.predictionDraft);
+  if (output.responseType === "trade_proposal" && !orderDraft && !predictionDraft) {
     return undefined;
   }
-  if (output.responseType !== "trade_proposal" && output.orderDraft !== undefined) {
+  if (orderDraft && predictionDraft) {
+    return undefined;
+  }
+  if (output.responseType !== "trade_proposal" && (output.orderDraft !== undefined || output.predictionDraft !== undefined)) {
     return undefined;
   }
 
@@ -113,6 +117,7 @@ export function parseAgentAnalysis(output: unknown): AgentAnalysis | undefined {
     riskNote: output.riskNote,
     whyWrong: output.whyWrong,
     orderDraft,
+    predictionDraft,
     warnings: output.warnings.filter((warning): warning is string => typeof warning === "string"),
     provider: {
       name: providerName,
@@ -172,6 +177,7 @@ export function agentAnalysisToResponse(analysis: AgentAnalysis, input: AgentInp
     riskNote,
     whyWrong: analysis.whyWrong,
     orderDraft: analysis.responseType === "trade_proposal" ? analysis.orderDraft : undefined,
+    predictionDraft: analysis.responseType === "trade_proposal" ? analysis.predictionDraft : undefined,
     annotations: analysis.annotations ?? [],
     followUps: analysis.followUps,
     warnings: analysis.warnings,
@@ -239,6 +245,48 @@ function parseOrderDraft(input: unknown): OrderDraft | undefined {
     stopLoss,
     fromAgent: input.fromAgent,
     scenarioId: typeof input.scenarioId === "string" ? input.scenarioId : undefined,
+  };
+}
+
+function parsePredictionDraft(input: unknown): AgentAnalysis["predictionDraft"] | undefined {
+  if (!isRecord(input)) {
+    return undefined;
+  }
+  if (
+    input.kind !== "prediction_order" ||
+    !isFiniteNumber(input.questionId) ||
+    typeof input.questionName !== "string" ||
+    !isFiniteNumber(input.outcome) ||
+    typeof input.outcomeName !== "string" ||
+    (input.side !== 0 && input.side !== 1) ||
+    typeof input.sideName !== "string" ||
+    input.action !== "buy" ||
+    !isFiniteNumber(input.contracts) ||
+    input.contracts <= 0 ||
+    !Number.isInteger(input.contracts) ||
+    !isFiniteNumber(input.limitProbability) ||
+    input.limitProbability <= 0 ||
+    input.limitProbability > 1 ||
+    (input.tif !== "Ioc" && input.tif !== "Gtc") ||
+    typeof input.paperOnly !== "boolean" ||
+    input.fromAgent !== true
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "prediction_order",
+    questionId: input.questionId,
+    questionName: input.questionName,
+    outcome: input.outcome,
+    outcomeName: input.outcomeName,
+    side: input.side,
+    sideName: input.sideName,
+    action: "buy",
+    contracts: input.contracts,
+    limitProbability: input.limitProbability,
+    tif: input.tif,
+    paperOnly: input.paperOnly,
+    fromAgent: true,
   };
 }
 

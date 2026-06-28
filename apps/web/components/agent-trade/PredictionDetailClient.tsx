@@ -18,6 +18,7 @@ import type {
 
 import {
   calculatePredictionTicketMath,
+  buildPredictionAgentInput,
   buildPredictionUsdcTransfer,
   classifyPredictionLiveOrder,
   clearPredictionStreamOutcomeOdds,
@@ -70,15 +71,19 @@ import {
   summarizePredictionLiveExchangeResult,
   type PredictionStreamStatus,
 } from "@/lib/agent-trade/predictions";
+import { agentProviderDisplay } from "@/lib/agent-trade/agent-ux";
 import { API_BASE_URL } from "@/lib/api";
 import { DEFAULT_ELIGIBILITY_RESPONSE, normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
+import { DeterministicAgentService } from "@/lib/agent-trade/agent-service";
+import { invalidAgentOutputRefusal, parseAgentAnalysis } from "@/lib/agent-trade/agent-validation";
 import {
   normalizeHexSignature,
   withExplicitEip712Domain,
   type HyperliquidTypedData,
 } from "@/lib/agent-trade/terminal";
 import type { EligibilityResponse } from "@/lib/agent-trade/types";
+import type { AgentAnalysis, AgentInput, AgentPredictionDraft } from "@/lib/agent-trade/agent-provider";
 
 interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
@@ -367,6 +372,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
 
   const selectedOdds = selectedOutcomeId === undefined ? undefined : selectedOutcomeOdds(odds, selectedOutcomeId);
   const selectedSide = selectedOdds?.sides[selectedSideIndex];
+  const oppositeSide = selectedOdds?.sides.find((side) => side.side !== selectedSideIndex);
   const selectedOutcome = useMemo<PredictionOutcome | undefined>(
     () => {
       if (!question) return undefined;
@@ -486,7 +492,6 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
           <PredictionLiveActivityPanel />
           <div className="prediction-terminal-lower">
             <SettlementModule question={question} />
-            <PredictionAgentPreview />
           </div>
         </div>
         <aside className="prediction-terminal-right">
@@ -496,6 +501,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             selectedSideIndex={selectedSideIndex}
             selectedOutcome={selectedOutcome}
             selectedSide={selectedSide}
+            oppositeSide={oppositeSide}
             selectedSideStream={selectedSideStream}
             hip4LiveFlagEnabled={isPredictionLiveTradingEnabled()}
             eligibility={eligibility}
@@ -802,6 +808,7 @@ function PredictionPaperTicket(props: {
   selectedSideIndex: 0 | 1;
   selectedOutcome: PredictionOutcome | undefined;
   selectedSide: PredictionSideOdds | undefined;
+  oppositeSide: PredictionSideOdds | undefined;
   selectedSideStream: PredictionSideStreamState;
   hip4LiveFlagEnabled: boolean;
   eligibility: EligibilityResponse;
@@ -841,6 +848,10 @@ function PredictionPaperTicket(props: {
     "idle" | "building" | "signing" | "submitting" | "accepted" | "rejected" | "failed"
   >("idle");
   const [transferMessage, setTransferMessage] = useState<string | undefined>();
+  const [agentAnalysis, setAgentAnalysis] = useState<AgentAnalysis | undefined>();
+  const [agentQuestion, setAgentQuestion] = useState<string | undefined>();
+  const [agentThinking, setAgentThinking] = useState(false);
+  const [agentDraftApplied, setAgentDraftApplied] = useState(false);
 
   useEffect(() => {
     if (!liveAvailable.pathVisible && mode === "live") setMode("paper");
@@ -848,6 +859,7 @@ function PredictionPaperTicket(props: {
 
   useEffect(() => {
     setLimitProbability(probabilityFromSide(props.selectedSide) ?? 0.5);
+    setAgentDraftApplied(false);
   }, [props.selectedSide?.coin]);
 
   async function refreshPredictionBalanceForWallet(wallet: string, cancelled?: () => boolean) {
@@ -974,7 +986,7 @@ function PredictionPaperTicket(props: {
         currentProbability: probabilityFromSide(props.selectedSide),
         quoteToken,
         criteriaAcknowledged,
-        fromAgent: false,
+        fromAgent: agentDraftApplied,
       });
       props.onPaperAccount(result.account);
       setSubmitState("accepted");
@@ -1089,23 +1101,84 @@ function PredictionPaperTicket(props: {
     }
   }
 
+  async function runPredictionAgent(prompt: string) {
+    if (!props.selectedOutcome || !props.selectedSide || agentThinking) return;
+    setAgentQuestion(prompt);
+    setAgentThinking(true);
+    try {
+      const input = buildPredictionAgentInput({
+        prompt,
+        question: props.question,
+        selectedOutcome: props.selectedOutcome,
+        selectedSide: props.selectedSide,
+        oppositeSide: props.oppositeSide,
+        streamStatus: props.selectedSideStream.status,
+        streamLastBookAt: props.selectedSideStream.lastBookAt,
+        streamFreshnessLabel: formatBookUpdateAge(props.selectedSideStream.lastBookAt),
+        mode,
+        eligibilityState: props.eligibility.state,
+        liveAllowed: liveAvailable.allowed,
+        hip4Spendable: predictionBalance?.spotUsdcAvailable,
+        perpWithdrawable: predictionBalance?.perpWithdrawable ?? maxTransferableUsdc ?? undefined,
+        balanceStatus: predictionBalanceStatus,
+        ticket: {
+          contracts,
+          limitProbability,
+          tif,
+          criteriaAcknowledged,
+        },
+      });
+      setAgentAnalysis(await requestPredictionAgentAnalysis(input));
+    } finally {
+      setAgentThinking(false);
+    }
+  }
+
+  function applyPredictionDraftToTicket(draft: AgentPredictionDraft) {
+    props.onSelect(draft.outcome, draft.side);
+    setContracts(draft.contracts);
+    setLimitProbability(draft.limitProbability);
+    setTif(draft.tif);
+    if (draft.paperOnly) {
+      setMode("paper");
+    }
+    setAgentDraftApplied(true);
+  }
+
+  function markManualTicketEdit() {
+    setAgentDraftApplied(false);
+  }
+
   return (
-    <section className="panel prediction-ticket-preview" data-testid="prediction-ticket-preview">
-      <div className="panel-head">
-        <div>
-          <span>Prediction ticket</span>
-          <strong>{mode === "live" ? "Live Hyperliquid" : "Paper only"}</strong>
+    <>
+      <PredictionAgentPanel
+        analysis={agentAnalysis}
+        agentQuestion={agentQuestion}
+        isThinking={agentThinking}
+        mode={mode}
+        liveAllowed={liveAvailable.allowed}
+        selectedOutcome={props.selectedOutcome}
+        selectedSide={props.selectedSide}
+        onPrompt={runPredictionAgent}
+        onApplyDraft={applyPredictionDraftToTicket}
+      />
+      <section className="panel prediction-ticket-preview" data-testid="prediction-ticket-preview">
+        <div className="panel-head">
+          <div>
+            <span>Prediction ticket</span>
+            <strong>{mode === "live" ? "Live Hyperliquid" : "Paper only"}</strong>
+          </div>
+          {agentDraftApplied ? <span className="from-agent-badge">From Agent</span> : null}
         </div>
-      </div>
-      <div className="prediction-ticket-form">
+        <div className="prediction-ticket-form">
         <div className="prediction-ticket-side-picker">
           <span>Mode</span>
           <div>
-            <button className={mode === "paper" ? "active" : ""} onClick={() => setMode("paper")}>Paper</button>
+            <button className={mode === "paper" ? "active" : ""} onClick={() => { setMode("paper"); markManualTicketEdit(); }}>Paper</button>
             {liveAvailable.pathVisible ? (
               <button
                 className={mode === "live" ? "active" : ""}
-                onClick={() => setMode("live")}
+                onClick={() => { setMode("live"); markManualTicketEdit(); }}
               >
                 Live
               </button>
@@ -1117,7 +1190,10 @@ function PredictionPaperTicket(props: {
           <span>Outcome</span>
           <select
             value={props.selectedOutcomeId ?? ""}
-            onChange={(event) => props.onSelect(Number(event.target.value), props.selectedSideIndex)}
+            onChange={(event) => {
+              props.onSelect(Number(event.target.value), props.selectedSideIndex);
+              markManualTicketEdit();
+            }}
           >
             {props.question.namedOutcomes.map((outcome) => (
               <option key={outcome.outcome} value={outcome.outcome}>{outcome.name}</option>
@@ -1131,7 +1207,12 @@ function PredictionPaperTicket(props: {
               <button
                 key={side.side}
                 className={props.selectedSideIndex === side.side ? "active" : ""}
-                onClick={() => props.selectedOutcome && props.onSelect(props.selectedOutcome.outcome, side.side)}
+                onClick={() => {
+                  if (props.selectedOutcome) {
+                    props.onSelect(props.selectedOutcome.outcome, side.side);
+                    markManualTicketEdit();
+                  }
+                }}
               >
                 {side.name}
               </button>
@@ -1140,7 +1221,13 @@ function PredictionPaperTicket(props: {
         </div>
         <label>
           <span>Time in force</span>
-          <select value={tif} onChange={(event) => setTif(event.target.value === "Gtc" ? "Gtc" : "Ioc")}>
+          <select
+            value={tif}
+            onChange={(event) => {
+              setTif(event.target.value === "Gtc" ? "Gtc" : "Ioc");
+              markManualTicketEdit();
+            }}
+          >
             <option value="Ioc">IOC</option>
             <option value="Gtc">GTC</option>
           </select>
@@ -1152,7 +1239,10 @@ function PredictionPaperTicket(props: {
             step="1"
             type="number"
             value={contracts}
-            onChange={(event) => setContracts(Number(event.target.value))}
+            onChange={(event) => {
+              setContracts(Number(event.target.value));
+              markManualTicketEdit();
+            }}
           />
         </label>
         <label>
@@ -1163,7 +1253,10 @@ function PredictionPaperTicket(props: {
             step="0.001"
             type="number"
             value={limitProbability}
-            onChange={(event) => setLimitProbability(Number(event.target.value))}
+            onChange={(event) => {
+              setLimitProbability(Number(event.target.value));
+              markManualTicketEdit();
+            }}
           />
         </label>
         {mode === "live" ? (
@@ -1171,7 +1264,12 @@ function PredictionPaperTicket(props: {
             <button
               type="button"
               disabled={!props.selectedSide?.bestAsk}
-              onClick={() => props.selectedSide?.bestAsk && setLimitProbability(Number(props.selectedSide.bestAsk))}
+              onClick={() => {
+                if (props.selectedSide?.bestAsk) {
+                  setLimitProbability(Number(props.selectedSide.bestAsk));
+                  markManualTicketEdit();
+                }
+              }}
             >
               Use best ask
             </button>
@@ -1183,6 +1281,7 @@ function PredictionPaperTicket(props: {
                 if (marketable !== null) {
                   setTif("Ioc");
                   setLimitProbability(marketable);
+                  markManualTicketEdit();
                 }
               }}
             >
@@ -1351,7 +1450,7 @@ function PredictionPaperTicket(props: {
             {liveProofUrl ? <> <a href={liveProofUrl} target="_blank" rel="noreferrer">Hypurrscan account proof</a></> : null}
           </p>
         ) : null}
-      </div>
+        </div>
         {liveConfirmOpen && props.selectedOutcome && props.selectedSide && selectedTechnical ? (
         <div className="prediction-confirm-backdrop" role="dialog" aria-modal="true" aria-label="Confirm live prediction order">
           <div className="panel prediction-confirm-modal">
@@ -1396,8 +1495,155 @@ function PredictionPaperTicket(props: {
           </div>
         </div>
       ) : null}
+      </section>
+    </>
+  );
+}
+
+const PREDICTION_AGENT_PROMPTS = [
+  "Should I buy this outcome?",
+  "Find the cleanest World Cup setup",
+  "Explain this odds move",
+  "What could make this wrong?",
+  "Draft a marketable order",
+] as const;
+
+function PredictionAgentPanel(props: {
+  analysis: AgentAnalysis | undefined;
+  agentQuestion: string | undefined;
+  isThinking: boolean;
+  mode: "paper" | "live";
+  liveAllowed: boolean;
+  selectedOutcome: PredictionOutcome | undefined;
+  selectedSide: PredictionSideOdds | undefined;
+  onPrompt: (prompt: string) => void;
+  onApplyDraft: (draft: AgentPredictionDraft) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const provider = agentProviderDisplay(props.analysis);
+  const paperOnly = props.mode === "paper" || !props.liveAllowed;
+
+  return (
+    <section className="panel prediction-agent-panel" data-testid="prediction-agent-panel">
+      <div className="panel-head">
+        <div>
+          <span>Ask Agent.trade</span>
+          <strong>{props.selectedOutcome && props.selectedSide ? `${props.selectedOutcome.name} / ${props.selectedSide.name}` : "Select outcome"}</strong>
+        </div>
+        <button type="button" onClick={() => setCollapsed((value) => !value)}>
+          {collapsed ? "Show" : "Hide"}
+        </button>
+      </div>
+      {!collapsed ? (
+        <>
+          <div className="receipt-row" style={{ padding: "10px 12px 0" }}>
+            <span className="from-agent-badge">{provider.label}</span>
+            <span>{provider.detail}</span>
+            <span>Agent drafts; you confirm.</span>
+          </div>
+          {paperOnly ? (
+            <p className="paper-note">Paper draft only. Live prediction trading remains gated by Agent.trade eligibility and confirmation.</p>
+          ) : null}
+          <div className="prompt-chips">
+            {PREDICTION_AGENT_PROMPTS.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                disabled={!props.selectedOutcome || !props.selectedSide || props.isThinking}
+                onClick={() => props.onPrompt(prompt)}
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+          {props.agentQuestion ? (
+            <div className="agent-user-message">
+              <span>User</span>
+              <p>{props.agentQuestion}</p>
+            </div>
+          ) : null}
+          {props.isThinking ? (
+            <div className="thinking">Reading question criteria, selected outcome, Yes/No book, freshness, balances, and ticket context...</div>
+          ) : null}
+          {!props.isThinking && props.analysis ? (
+            <div className={`agent-answer ${props.analysis.responseType === "trade_proposal" ? "tradeProposal" : props.analysis.responseType === "no_trade" ? "noTrade" : props.analysis.responseType === "refusal" ? "staleRefusal" : "answered"}`}>
+              <p className="agent-question">Agent.trade response</p>
+              <h3>{props.analysis.responseType === "trade_proposal" ? "Prediction draft" : props.analysis.responseType === "no_trade" ? "No clean setup" : props.analysis.responseType === "refusal" ? "Refusing to draft" : "Market read"}</h3>
+              <div className="receipt-row">
+                <span>{provider.label}</span>
+                <span>Confidence {Math.round(props.analysis.confidence * 100)}%</span>
+                <span>{paperOnly ? "Paper mode" : "Live eligible"}</span>
+              </div>
+              <p>{props.analysis.thesis}</p>
+              <div className="receipt-row">
+                {props.analysis.receipts.map((item) => (
+                  <span key={`${item.label}-${item.timestamp}`}>{item.label}: {item.value}</span>
+                ))}
+              </div>
+              <div className="agent-risk">
+                <strong>Risk</strong>
+                <p>{props.analysis.riskNote}</p>
+                <strong>Why this could be wrong</strong>
+                <p>{props.analysis.whyWrong}</p>
+              </div>
+              {props.analysis.predictionDraft ? (
+                <div className="agent-risk">
+                  <p>Send to prediction ticket copies this draft only. Agent.trade cannot submit it directly.</p>
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    onClick={() => props.onApplyDraft(props.analysis?.predictionDraft as AgentPredictionDraft)}
+                  >
+                    Send to prediction ticket
+                  </button>
+                </div>
+              ) : null}
+              {props.analysis.followUps ? (
+                <div className="prompt-chips followups">
+                  {props.analysis.followUps.map((followUp) => (
+                    <button key={followUp} type="button" onClick={() => props.onPrompt(followUp)}>
+                      {followUp}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {!props.isThinking && !props.analysis ? (
+            <p className="agent-empty">Ask for a World Cup market read or a draft. The draft can prefill the ticket, but you still confirm normally.</p>
+          ) : null}
+        </>
+      ) : null}
     </section>
   );
+}
+
+async function requestPredictionAgentAnalysis(input: AgentInput): Promise<AgentAnalysis> {
+  try {
+    const response = await fetch("/api/agent-trade/agent-analysis", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input, provider: "auto" }),
+    });
+    if (!response.ok) {
+      return await fallbackPredictionAgentAnalysis(input, `Agent analysis route returned HTTP ${response.status}.`);
+    }
+    return parseAgentAnalysis(await response.json()) ?? invalidAgentOutputRefusal(input);
+  } catch {
+    return await fallbackPredictionAgentAnalysis(input, "Agent analysis route unavailable; using deterministic fallback.");
+  }
+}
+
+async function fallbackPredictionAgentAnalysis(input: AgentInput, reason: string): Promise<AgentAnalysis> {
+  const analysis = await new DeterministicAgentService().analyzeMarket(input);
+  return {
+    ...analysis,
+    warnings: [...analysis.warnings, reason],
+    provider: {
+      ...analysis.provider,
+      fallbackReason: reason,
+    },
+  };
 }
 
 function PredictionPaperPortfolio({ positions, fills }: { positions: PredictionPaperPosition[]; fills: PredictionPaperFill[] }) {
@@ -1671,23 +1917,6 @@ function PredictionRiskCopy() {
       <div className="prediction-risk-list">
         {PREDICTION_RISK_COPY.map((line) => <p key={line}>{line}</p>)}
       </div>
-    </section>
-  );
-}
-
-function PredictionAgentPreview() {
-  return (
-    <section className="panel prediction-agent-panel">
-      <div className="panel-head">
-        <div>
-          <span>Agent research</span>
-          <strong>Preview</strong>
-        </div>
-      </div>
-      <p className="prediction-panel-copy">
-        Prediction-market agent support is paper-only in this lane. It may help draft simulated orders from the listed
-        criteria and odds, but it will not submit live HIP-4 orders.
-      </p>
     </section>
   );
 }

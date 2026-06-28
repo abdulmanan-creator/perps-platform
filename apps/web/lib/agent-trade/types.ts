@@ -182,6 +182,7 @@ export interface AgentResponse {
   riskNote: string;
   whyWrong: string;
   orderDraft?: OrderDraft;
+  predictionDraft?: import("./agent-provider").AgentPredictionDraft;
   annotations: ChartAnnotation[];
   followUps?: string[];
   warnings?: string[];
