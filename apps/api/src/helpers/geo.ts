@@ -36,6 +36,7 @@ const GLOBAL_GEO_EXEMPT_PATHS = new Set([
   "/agent-trade/eligibility",
   "/agent-trade/paper-account",
   "/agent-trade/paper-orders",
+  "/agent-trade/tax/fills",
 ]);
 
 export function isGlobalGeoExemptPath(path: string): boolean {

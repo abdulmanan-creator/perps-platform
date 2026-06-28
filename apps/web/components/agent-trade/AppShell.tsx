@@ -11,6 +11,7 @@ const navItems = [
   { href: "/predictions", label: "Predictions", exact: true },
   { href: "/predictions/32", label: "World Cup", exact: true },
   { href: "/portfolio", label: "Portfolio" },
+  { href: "/tax", label: "Tax" },
   { href: "/connectors", label: "Connectors" },
   { href: "/rewards", label: "Rewards" },
   { href: "/settings", label: "Settings" },

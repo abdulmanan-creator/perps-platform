@@ -155,11 +155,17 @@ describe("onRequest guard (integration)", () => {
     const markets = await app.inject({ method: "GET", url: "/markets", headers });
     const eligibility = await app.inject({ method: "GET", url: "/agent-trade/eligibility", headers });
     const paper = await app.inject({ method: "POST", url: "/agent-trade/paper-orders", headers, payload: {} });
+    const tax = await app.inject({
+      method: "GET",
+      url: "/agent-trade/tax/fills?user=0xcccc000000000000000000000000000000000001&year=2026",
+      headers,
+    });
 
     expect(markets.statusCode).toBe(200);
     expect(eligibility.statusCode).toBe(200);
     expect(eligibility.json().state).toBe("restricted");
     expect(paper.statusCode).toBe(200);
+    expect(tax.statusCode).not.toBe(451);
   });
 
   it("keeps live exchange routes blocked for restricted users", async () => {

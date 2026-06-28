@@ -25,6 +25,7 @@ import { positionsRoute } from "./positions.js";
 import { agentTradeRoute } from "./agentTrade.js";
 import { agentTradeCandlesRoute } from "./agentTradeCandles.js";
 import { agentTradeDepositRoute } from "./agentTradeDeposit.js";
+import { taxRoute } from "./tax.js";
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(exchangeRoute);
@@ -52,4 +53,5 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await app.register(agentTradeRoute);
   await app.register(agentTradeCandlesRoute);
   await app.register(agentTradeDepositRoute);
+  await app.register(taxRoute);
 }

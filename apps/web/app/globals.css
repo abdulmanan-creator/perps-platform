@@ -21,6 +21,215 @@
   --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+.tax-center-page {
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  color: #eef4ff;
+}
+
+.tax-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.tax-hero h1 {
+  margin: 8px 0 10px;
+  max-width: 760px;
+  font-size: clamp(30px, 4vw, 58px);
+  line-height: 0.96;
+  letter-spacing: 0;
+}
+
+.tax-hero p,
+.tax-panel p,
+.tax-panel li {
+  color: rgba(226, 236, 255, 0.74);
+}
+
+.tax-wallet-card,
+.tax-panel {
+  border: 1px solid rgba(124, 139, 171, 0.24);
+  border-radius: 8px;
+  background: rgba(9, 14, 26, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.tax-wallet-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 18px;
+}
+
+.tax-wallet-card span,
+.tax-field span,
+.tax-source-pill {
+  color: rgba(226, 236, 255, 0.58);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tax-wallet-card strong {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 18px;
+}
+
+.tax-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: 18px;
+}
+
+.tax-panel {
+  padding: 18px;
+}
+
+.tax-panel-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.tax-panel h2 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.tax-source-pill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(124, 139, 171, 0.22);
+  border-radius: 999px;
+  background: rgba(39, 55, 90, 0.32);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.tax-field {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tax-field input,
+.tax-field select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(124, 139, 171, 0.28);
+  border-radius: 8px;
+  background: rgba(4, 8, 16, 0.84);
+  color: #f5f8ff;
+  padding: 12px 12px;
+  font: inherit;
+}
+
+.tax-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.tax-actions button,
+.tax-wallet-card button,
+.tax-actions .button-link {
+  min-height: 40px;
+  border: 1px solid rgba(115, 151, 255, 0.38);
+  border-radius: 8px;
+  background: #dbe7ff;
+  color: #07111f;
+  padding: 0 14px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.tax-actions button.secondary,
+.tax-wallet-card button.secondary,
+.tax-actions .button-link.secondary {
+  background: rgba(15, 23, 42, 0.74);
+  color: #e8efff;
+}
+
+.tax-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.tax-status {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.tax-status.success {
+  border: 1px solid rgba(52, 211, 153, 0.34);
+  background: rgba(6, 95, 70, 0.18);
+}
+
+.tax-status.error {
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  background: rgba(127, 29, 29, 0.2);
+}
+
+.tax-info-panel ul {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding-left: 18px;
+}
+
+.tax-disclaimer {
+  border-top: 1px solid rgba(124, 139, 171, 0.18);
+  padding-top: 12px;
+}
+
+.tax-preview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tax-preview span,
+.tax-empty {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  border: 1px solid rgba(124, 139, 171, 0.16);
+  border-radius: 8px;
+  background: rgba(4, 8, 16, 0.42);
+  color: rgba(226, 236, 255, 0.74);
+  padding: 10px;
+}
+
+@media (max-width: 860px) {
+  .tax-center-page {
+    padding: 18px;
+  }
+  .tax-hero,
+  .tax-grid,
+  .tax-preview {
+    grid-template-columns: 1fr;
+  }
+  .tax-panel-head {
+    flex-direction: column;
+  }
+  .tax-actions button,
+  .tax-actions .button-link {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
 body { font-family: var(--font-sans); font-size: 14px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
