@@ -232,6 +232,15 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(AGENT_PANEL_HEADING).toBe("Ask Agent.trade");
   });
 
+  it("passes the Privy access token getter only to agent-analysis POSTs", () => {
+    const source = readFileSync(new URL("../components/agent-trade/TerminalClient.tsx", import.meta.url), "utf8");
+    expect(source).toContain("const { getAccessToken } = usePrivy();");
+    expect(source).toContain("<TerminalExperience wallet={wallet} getAccessToken={getAccessToken} />");
+    expect(source).toContain("createAgentService({ getAccessToken })");
+    expect(source).toContain("method: \"GET\"");
+    expect(source).toContain("headers: { accept: \"application/json\" }");
+  });
+
   it("builds Hypurrscan address links only for valid wallets", () => {
     const address = "0x4da360ca0da696ba4d56d94c3ef2d4ba4f26cb43";
 

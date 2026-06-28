@@ -75,7 +75,11 @@ import { agentProviderDisplay } from "@/lib/agent-trade/agent-ux";
 import { API_BASE_URL } from "@/lib/api";
 import { DEFAULT_ELIGIBILITY_RESPONSE, normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
 import { hypurrscanAddressUrl } from "@/lib/agent-trade/hypurrscan";
-import { DeterministicAgentService } from "@/lib/agent-trade/agent-service";
+import {
+  DeterministicAgentService,
+  fetchAgentAnalysisRoute,
+  type AgentAccessTokenGetter,
+} from "@/lib/agent-trade/agent-service";
 import { invalidAgentOutputRefusal, parseAgentAnalysis } from "@/lib/agent-trade/agent-validation";
 import {
   normalizeHexSignature,
@@ -120,7 +124,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const [predictionStreamState, setPredictionStreamState] =
     useState<PredictionTwoSideStreamState>(INITIAL_PREDICTION_STREAM_STATE);
   const previousStreamOutcomeRef = useRef<number | undefined>();
-  const { ready: privyReady, authenticated, login } = usePrivy();
+  const { ready: privyReady, authenticated, login, getAccessToken } = usePrivy();
   const { wallets } = useWallets();
   const activeWallet = wallets[0];
 
@@ -503,6 +507,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             selectedSide={selectedSide}
             oppositeSide={oppositeSide}
             selectedSideStream={selectedSideStream}
+            getAccessToken={getAccessToken}
             hip4LiveFlagEnabled={isPredictionLiveTradingEnabled()}
             eligibility={eligibility}
             walletReady={privyReady}
@@ -810,6 +815,7 @@ function PredictionPaperTicket(props: {
   selectedSide: PredictionSideOdds | undefined;
   oppositeSide: PredictionSideOdds | undefined;
   selectedSideStream: PredictionSideStreamState;
+  getAccessToken?: AgentAccessTokenGetter;
   hip4LiveFlagEnabled: boolean;
   eligibility: EligibilityResponse;
   walletReady: boolean;
@@ -1128,7 +1134,7 @@ function PredictionPaperTicket(props: {
           criteriaAcknowledged,
         },
       });
-      setAgentAnalysis(await requestPredictionAgentAnalysis(input));
+      setAgentAnalysis(await requestPredictionAgentAnalysis(input, props.getAccessToken));
     } finally {
       setAgentThinking(false);
     }
@@ -1618,13 +1624,12 @@ function PredictionAgentPanel(props: {
   );
 }
 
-async function requestPredictionAgentAnalysis(input: AgentInput): Promise<AgentAnalysis> {
+async function requestPredictionAgentAnalysis(
+  input: AgentInput,
+  getAccessToken: AgentAccessTokenGetter | undefined,
+): Promise<AgentAnalysis> {
   try {
-    const response = await fetch("/api/agent-trade/agent-analysis", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ input, provider: "auto" }),
-    });
+    const response = await fetchAgentAnalysisRoute({ input, provider: "auto", getAccessToken });
     if (!response.ok) {
       return await fallbackPredictionAgentAnalysis(input, `Agent analysis route returned HTTP ${response.status}.`);
     }

@@ -1042,6 +1042,14 @@ describe("prediction route smoke", () => {
     expect(source).toContain("fromAgent: agentDraftApplied");
   });
 
+  it("uses the shared authenticated agent-analysis route helper for prediction AI", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    expect(source).toContain("getAccessToken } = usePrivy()");
+    expect(source).toContain("getAccessToken={getAccessToken}");
+    expect(source).toContain("fetchAgentAnalysisRoute({ input, provider: \"auto\", getAccessToken })");
+    expect(source).not.toContain("Authorization: Bearer");
+  });
+
   it("keeps the World Cup detail route graceful when live data is unavailable", () => {
     const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
     expect(source).toContain("Live prediction data unavailable");

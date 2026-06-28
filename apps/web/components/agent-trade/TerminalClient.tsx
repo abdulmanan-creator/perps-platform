@@ -19,7 +19,7 @@ import {
   agentProviderDisplay,
   ticketSourceDisplay,
 } from "@/lib/agent-trade/agent-ux";
-import { createAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
+import { createAgentService, type AgentAccessTokenGetter, type AgentScenario } from "@/lib/agent-trade/agent-service";
 import type { AgentProviderSelection } from "@/lib/agent-trade/agent-provider";
 import { parseConnectorDraftParam } from "@/lib/agent-trade/connector-draft";
 import {
@@ -156,7 +156,6 @@ interface ClosePositionIntent {
   entryPrice: number;
 }
 
-const agentService = createAgentService();
 const DEFAULT_AGENT_PROVIDER_OPTIONS: AgentProviderOption[] = [
   { name: "auto", label: "Auto", available: true, configured: false },
   { name: "openai", label: "OpenAI", available: false, configured: false },
@@ -245,8 +244,9 @@ export function TerminalClient() {
 }
 
 function PrivyTerminalClient() {
+  const { getAccessToken } = usePrivy();
   const wallet = useTerminalWalletSummary();
-  return <TerminalExperience wallet={wallet} />;
+  return <TerminalExperience wallet={wallet} getAccessToken={getAccessToken} />;
 }
 
 function useTerminalWalletSummary(): TerminalWalletReadiness {
@@ -306,7 +306,13 @@ function buildUnsupportedPromptMarketResponse(
   };
 }
 
-function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
+function TerminalExperience({
+  wallet,
+  getAccessToken,
+}: {
+  wallet: TerminalWalletReadiness;
+  getAccessToken?: AgentAccessTokenGetter;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const draftParam = searchParams.get("draft");
@@ -355,6 +361,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const importedConnectorDraftRef = useRef<string | undefined>();
   const [agentProviderPreference, setAgentProviderPreference] = useState<AgentProviderSelection>("auto");
   const [agentProviderOptions, setAgentProviderOptions] = useState<AgentProviderOption[]>(DEFAULT_AGENT_PROVIDER_OPTIONS);
+  const agentService = useMemo(() => createAgentService({ getAccessToken }), [getAccessToken]);
   const streamDebugRef = useRef<TerminalStreamDebug>({
     selectedMarket: MOCK_TRADING_SNAPSHOT.market.symbol,
     subscribedCoin: MOCK_TRADING_SNAPSHOT.market.base,

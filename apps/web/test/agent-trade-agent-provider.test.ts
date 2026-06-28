@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { handleAgentAnalysisGet, handleAgentAnalysisPost } from "../lib/agent-trade/agent-analysis-route";
+import { agentAnalysisRouteHeaders, fetchAgentAnalysisRoute } from "../lib/agent-trade/agent-service";
 import {
   createServerAgentProvider,
   resolveServerAgentProviderConfig,
@@ -312,6 +313,49 @@ describe("Agent.trade real agent provider wiring", () => {
     ]);
     expect(JSON.stringify(body)).not.toContain("sk-test");
     expect(JSON.stringify(body)).not.toContain("anthropic-test");
+  });
+
+  it("keeps provider availability GET public without a bearer token", async () => {
+    const response = await handleAgentAnalysisGet({ env: openAiEnabledEnv() });
+    const body = await response.json() as { providers: Array<{ name: string }> };
+
+    expect(response.status).toBe(200);
+    expect(body.providers.map((provider) => provider.name)).toContain("openai");
+  });
+
+  it("includes Privy bearer auth on live provider analysis POST when a token is available", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      const headers = init.headers as Record<string, string>;
+      const body = String(init.body);
+      expect(headers.authorization).toBe("Bearer privy-access-token");
+      expect(headers["content-type"]).toBe("application/json");
+      expect(body).not.toContain("privy-access-token");
+      return new Response(JSON.stringify(validModelAnalysis(input)), { status: 200 });
+    });
+
+    const response = await fetchAgentAnalysisRoute({
+      input,
+      provider: "openai",
+      getAccessToken: async () => "privy-access-token",
+      fetchImpl,
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledWith("/api/agent-trade/agent-analysis", expect.objectContaining({
+      method: "POST",
+    }));
+  });
+
+  it("omits bearer auth safely when the Privy token is missing or unavailable", async () => {
+    await expect(agentAnalysisRouteHeaders({
+      getAccessToken: async () => undefined,
+    })).resolves.toEqual({ "content-type": "application/json" });
+    await expect(agentAnalysisRouteHeaders({
+      getAccessToken: async () => {
+        throw new Error("Privy unavailable");
+      },
+    })).resolves.toEqual({ "content-type": "application/json" });
   });
 
   it("does not call OpenAI from the route when Privy auth is missing", async () => {

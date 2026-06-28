@@ -22,6 +22,11 @@ import type { AgentResponse, SharedTradingSnapshot } from "./types";
 import type { TerminalChartData, TerminalFreshness } from "./terminal";
 
 export type AgentScenario = "long" | "short" | "explain" | "noTrade" | "marketRead" | "capability";
+export type AgentAccessTokenGetter = () => Promise<string | null | undefined>;
+
+export interface AgentServiceOptions {
+  getAccessToken?: AgentAccessTokenGetter;
+}
 
 export interface AgentService {
   run(args: {
@@ -68,10 +73,10 @@ function fmtSnapshotMarketUsd(snapshot: SharedTradingSnapshot, price: number): s
   return fmtMarketUsd({ price, market: snapshot.market });
 }
 
-export function createAgentService(): AgentService {
+export function createAgentService(options: AgentServiceOptions = {}): AgentService {
   const provider = typeof window === "undefined"
     ? new DeterministicAgentService()
-    : new AgentAnalysisRouteProvider();
+    : new AgentAnalysisRouteProvider(options.getAccessToken);
   return new DeterministicAgentService(provider);
 }
 
@@ -770,15 +775,13 @@ class AgentAnalysisRouteProvider implements AgentProvider {
   readonly name = "deterministic" as const;
   private readonly deterministic = new DeterministicAgentService();
 
+  constructor(private readonly getAccessToken?: AgentAccessTokenGetter) {}
+
   async analyzeMarket(input: AgentInput): Promise<AgentAnalysis> {
     try {
-      const response = await fetch("/api/agent-trade/agent-analysis", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          input,
-          provider: input.providerPreference ?? "auto",
-        }),
+      const response = await fetchAgentAnalysisRoute({
+        input,
+        getAccessToken: this.getAccessToken,
       });
       if (!response.ok) {
         return await this.fallback(input, `Agent analysis route returned HTTP ${response.status}.`);
@@ -803,5 +806,47 @@ class AgentAnalysisRouteProvider implements AgentProvider {
         fallbackReason: reason,
       },
     };
+  }
+}
+
+export async function fetchAgentAnalysisRoute(args: {
+  input: AgentInput;
+  provider?: AgentProviderSelection;
+  getAccessToken?: AgentAccessTokenGetter;
+  fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
+}): Promise<Response> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  return await fetchImpl("/api/agent-trade/agent-analysis", {
+    method: "POST",
+    headers: await agentAnalysisRouteHeaders({ getAccessToken: args.getAccessToken }),
+    body: JSON.stringify({
+      input: args.input,
+      provider: args.provider ?? args.input.providerPreference ?? "auto",
+    }),
+  });
+}
+
+export async function agentAnalysisRouteHeaders(args: {
+  getAccessToken?: AgentAccessTokenGetter;
+} = {}): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const token = await readAgentAnalysisAccessToken(args.getAccessToken);
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+async function readAgentAnalysisAccessToken(
+  getAccessToken: AgentAccessTokenGetter | undefined,
+): Promise<string | undefined> {
+  if (!getAccessToken) {
+    return undefined;
+  }
+  try {
+    const token = await getAccessToken();
+    return typeof token === "string" && token.length > 0 ? token : undefined;
+  } catch {
+    return undefined;
   }
 }
