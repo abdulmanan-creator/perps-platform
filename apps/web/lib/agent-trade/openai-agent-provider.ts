@@ -1,6 +1,10 @@
 import { AGENT_ANALYSIS_JSON_SCHEMA, buildAgentPrompt } from "./agent-prompt";
 import type { AgentAnalysis, AgentInput, AgentProvider, AgentProviderName } from "./agent-provider";
-import { invalidAgentOutputRefusal, parseAgentAnalysis } from "./agent-validation";
+import {
+  invalidAgentOutputRefusal,
+  normalizeModelAgentAnalysisOutput,
+  parseAgentAnalysisWithDiagnostics,
+} from "./agent-validation";
 
 export const DEFAULT_OPENAI_AGENT_MODEL = "gpt-4.1-mini";
 export const DEFAULT_DEEPSEEK_AGENT_MODEL = "deepseek-chat";
@@ -106,21 +110,36 @@ export class ChatCompletionAgentProvider implements AgentProvider {
         return this.refusal(input, `${providerDisplayName(this.name)} provider returned no JSON content.`, startedAt);
       }
 
-      const decoded = parseJson(content);
-      const parsed = parseAgentAnalysis(decoded);
-      if (!parsed) {
-        safeLogProviderWarning({ providerName: this.name, input, message: `${providerDisplayName(this.name)} response failed AgentAnalysis validation` });
-        return this.refusal(input, `${providerDisplayName(this.name)} provider returned malformed AgentAnalysis JSON.`, startedAt);
+      const generatedAt = Date.now();
+      const normalized = normalizeModelAgentAnalysisOutput({
+        output: parseJson(content),
+        providerName: this.name,
+        model: this.model,
+        generatedAt,
+      });
+      const parsed = parseAgentAnalysisWithDiagnostics(normalized, { input });
+      if (!parsed.ok) {
+        safeLogProviderWarning({
+          providerName: this.name,
+          input,
+          message: `${providerDisplayName(this.name)} response failed AgentAnalysis validation`,
+          diagnostic: parsed.code,
+        });
+        return this.refusal(
+          input,
+          `${providerDisplayName(this.name)} provider returned malformed AgentAnalysis JSON (${parsed.code}).`,
+          startedAt,
+        );
       }
 
       return {
-        ...parsed,
+        ...parsed.analysis,
         provider: {
-          ...parsed.provider,
+          ...parsed.analysis.provider,
           name: this.name,
           model: this.model,
           deterministic: false,
-          generatedAt: Date.now(),
+          generatedAt,
           latencyMs: Date.now() - startedAt,
         },
       };
@@ -233,6 +252,7 @@ function safeLogProviderWarning(args: {
   providerName: Extract<AgentProviderName, "openai" | "deepseek" | "qwen">;
   input: AgentInput;
   message: string;
+  diagnostic?: string;
 }) {
   if (process.env.NODE_ENV === "test") {
     return;
@@ -242,6 +262,7 @@ function safeLogProviderWarning(args: {
     symbol: args.input.market.symbol,
     source: args.input.market.source,
     message: args.message,
+    diagnostic: args.diagnostic,
   });
 }
 

@@ -5,6 +5,43 @@ import type { AgentResponse, ChartAnnotation, OrderDraft, TradeSide } from "./ty
 const RESPONSE_TYPES: AgentResponseType[] = ["greeting", "market_read", "trade_proposal", "no_trade", "refusal"];
 const SIDES: Array<TradeSide | "none"> = ["long", "short", "none"];
 
+export type AgentAnalysisValidationCode =
+  | "not_object"
+  | "invalid_responseType_or_side"
+  | "missing_summary"
+  | "missing_provider"
+  | "invalid_provider_name"
+  | "missing_provider_generatedAt"
+  | "invalid_provider_deterministic"
+  | "missing_trade_draft"
+  | "both_drafts_present"
+  | "draft_present_for_non_trade"
+  | "missing_predictionDraft_for_prediction_market"
+  | "orderDraft_for_prediction_market"
+  | "predictionDraft_for_non_prediction_market"
+  | "invalid_predictionDraft_paperOnly"
+  | "invalid_receipts"
+  | "invalid_annotations"
+  | "invalid_followUps"
+  | "invalid_orderDraft"
+  | "invalid_predictionDraft"
+  | "invalid_predictionDraft_contracts"
+  | "invalid_predictionDraft_limitProbability"
+  | "invalid_predictionDraft_tif"
+  | "invalid_predictionDraft_action"
+  | "invalid_predictionDraft_fromAgent";
+
+export type AgentAnalysisValidationResult =
+  | { ok: true; analysis: AgentAnalysis }
+  | { ok: false; code: AgentAnalysisValidationCode };
+
+export interface ModelAgentAnalysisNormalizationInput {
+  output: unknown;
+  providerName: AgentProviderName;
+  model?: string;
+  generatedAt?: number;
+}
+
 export function parseAgentInput(input: unknown): AgentInput | undefined {
   if (!isRecord(input)) {
     return undefined;
@@ -53,12 +90,40 @@ export function parseAgentInput(input: unknown): AgentInput | undefined {
   return input as unknown as AgentInput;
 }
 
+export function normalizeModelAgentAnalysisOutput(args: ModelAgentAnalysisNormalizationInput): unknown {
+  if (!isRecord(args.output)) {
+    return args.output;
+  }
+  return {
+    ...args.output,
+    provider: {
+      name: args.providerName,
+      model: args.model,
+      deterministic: false,
+      generatedAt: args.generatedAt ?? Date.now(),
+    },
+  };
+}
+
 export function parseAgentAnalysis(output: unknown): AgentAnalysis | undefined {
+  const result = parseAgentAnalysisWithDiagnostics(output);
+  return result.ok ? result.analysis : undefined;
+}
+
+export function parseAgentAnalysisForInput(output: unknown, input: AgentInput): AgentAnalysis | undefined {
+  const result = parseAgentAnalysisWithDiagnostics(output, { input });
+  return result.ok ? result.analysis : undefined;
+}
+
+export function parseAgentAnalysisWithDiagnostics(
+  output: unknown,
+  options: { input?: AgentInput } = {},
+): AgentAnalysisValidationResult {
   if (!isRecord(output)) {
-    return undefined;
+    return { ok: false, code: "not_object" };
   }
   if (!isAgentResponseType(output.responseType) || !SIDES.includes(output.side as TradeSide | "none")) {
-    return undefined;
+    return { ok: false, code: "invalid_responseType_or_side" };
   }
   if (
     typeof output.summary !== "string" ||
@@ -69,68 +134,99 @@ export function parseAgentAnalysis(output: unknown): AgentAnalysis | undefined {
     output.confidence < 0 ||
     output.confidence > 1 ||
     !Array.isArray(output.receipts) ||
-    !Array.isArray(output.warnings) ||
-    !isRecord(output.provider) ||
-    !isAgentProviderMetadata(output.provider)
+    !Array.isArray(output.warnings)
   ) {
-    return undefined;
+    return { ok: false, code: "missing_summary" };
+  }
+  if (!isRecord(output.provider)) {
+    return { ok: false, code: "missing_provider" };
+  }
+  const providerDiagnostic = agentProviderMetadataDiagnostic(output.provider);
+  if (providerDiagnostic) {
+    return { ok: false, code: providerDiagnostic };
   }
   const providerName = parseProviderName(output.provider.name);
   if (!providerName) {
-    return undefined;
+    return { ok: false, code: "invalid_provider_name" };
   }
 
   const orderDraft = output.orderDraft === undefined ? undefined : parseOrderDraft(output.orderDraft);
-  const predictionDraft = output.predictionDraft === undefined ? undefined : parsePredictionDraft(output.predictionDraft);
+  if (output.orderDraft !== undefined && !orderDraft) {
+    return { ok: false, code: "invalid_orderDraft" };
+  }
+  const predictionDraftResult = output.predictionDraft === undefined
+    ? { ok: true as const, draft: undefined }
+    : parsePredictionDraftWithDiagnostics(output.predictionDraft);
+  if (!predictionDraftResult.ok) {
+    return { ok: false, code: predictionDraftResult.code };
+  }
+  const predictionDraft = predictionDraftResult.draft;
   if (output.responseType === "trade_proposal" && !orderDraft && !predictionDraft) {
-    return undefined;
+    return { ok: false, code: "missing_trade_draft" };
   }
   if (orderDraft && predictionDraft) {
-    return undefined;
+    return { ok: false, code: "both_drafts_present" };
   }
   if (output.responseType !== "trade_proposal" && (output.orderDraft !== undefined || output.predictionDraft !== undefined)) {
-    return undefined;
+    return { ok: false, code: "draft_present_for_non_trade" };
+  }
+  if (options.input?.prediction && output.responseType === "trade_proposal" && !predictionDraft) {
+    return { ok: false, code: orderDraft ? "orderDraft_for_prediction_market" : "missing_predictionDraft_for_prediction_market" };
+  }
+  if (options.input && !options.input.prediction && predictionDraft) {
+    return { ok: false, code: "predictionDraft_for_non_prediction_market" };
+  }
+  if (
+    options.input?.prediction &&
+    predictionDraft &&
+    (options.input.eligibility.mode !== "live" || !options.input.eligibility.liveAllowed) &&
+    !predictionDraft.paperOnly
+  ) {
+    return { ok: false, code: "invalid_predictionDraft_paperOnly" };
   }
 
   const receipts = output.receipts.filter(isAgentReceipt);
   if (receipts.length !== output.receipts.length) {
-    return undefined;
+    return { ok: false, code: "invalid_receipts" };
   }
 
   const annotations = output.annotations === undefined ? undefined : parseAnnotations(output.annotations);
   if (output.annotations !== undefined && annotations === undefined) {
-    return undefined;
+    return { ok: false, code: "invalid_annotations" };
   }
 
   const followUps = output.followUps === undefined ? undefined : parseStringArray(output.followUps);
   if (output.followUps !== undefined && followUps === undefined) {
-    return undefined;
+    return { ok: false, code: "invalid_followUps" };
   }
 
   return {
-    responseType: output.responseType,
-    summary: output.summary,
-    thesis: output.thesis,
-    side: output.side as TradeSide | "none",
-    confidence: output.confidence,
-    receipts,
-    riskNote: output.riskNote,
-    whyWrong: output.whyWrong,
-    orderDraft,
-    predictionDraft,
-    warnings: output.warnings.filter((warning): warning is string => typeof warning === "string"),
-    provider: {
-      name: providerName,
-      model: typeof output.provider.model === "string" ? output.provider.model : undefined,
-      deterministic: output.provider.deterministic === true,
-      generatedAt: Number(output.provider.generatedAt),
-      latencyMs: isFiniteNumber(output.provider.latencyMs) ? output.provider.latencyMs : undefined,
-      fallbackReason: typeof output.provider.fallbackReason === "string" ? output.provider.fallbackReason : undefined,
+    ok: true,
+    analysis: {
+      responseType: output.responseType,
+      summary: output.summary,
+      thesis: output.thesis,
+      side: output.side as TradeSide | "none",
+      confidence: output.confidence,
+      receipts,
+      riskNote: output.riskNote,
+      whyWrong: output.whyWrong,
+      orderDraft,
+      predictionDraft,
+      warnings: output.warnings.filter((warning): warning is string => typeof warning === "string"),
+      provider: {
+        name: providerName,
+        model: typeof output.provider.model === "string" ? output.provider.model : undefined,
+        deterministic: output.provider.deterministic === true,
+        generatedAt: Number(output.provider.generatedAt),
+        latencyMs: isFiniteNumber(output.provider.latencyMs) ? output.provider.latencyMs : undefined,
+        fallbackReason: typeof output.provider.fallbackReason === "string" ? output.provider.fallbackReason : undefined,
+      },
+      id: typeof output.id === "string" ? output.id : undefined,
+      question: typeof output.question === "string" ? output.question : undefined,
+      annotations,
+      followUps,
     },
-    id: typeof output.id === "string" ? output.id : undefined,
-    question: typeof output.question === "string" ? output.question : undefined,
-    annotations,
-    followUps,
   };
 }
 
@@ -248,9 +344,11 @@ function parseOrderDraft(input: unknown): OrderDraft | undefined {
   };
 }
 
-function parsePredictionDraft(input: unknown): AgentAnalysis["predictionDraft"] | undefined {
+function parsePredictionDraftWithDiagnostics(input: unknown):
+  | { ok: true; draft: AgentAnalysis["predictionDraft"] }
+  | { ok: false; code: AgentAnalysisValidationCode } {
   if (!isRecord(input)) {
-    return undefined;
+    return { ok: false, code: "invalid_predictionDraft" };
   }
   if (
     input.kind !== "prediction_order" ||
@@ -260,33 +358,42 @@ function parsePredictionDraft(input: unknown): AgentAnalysis["predictionDraft"] 
     typeof input.outcomeName !== "string" ||
     (input.side !== 0 && input.side !== 1) ||
     typeof input.sideName !== "string" ||
-    input.action !== "buy" ||
-    !isFiniteNumber(input.contracts) ||
-    input.contracts <= 0 ||
-    !Number.isInteger(input.contracts) ||
-    !isFiniteNumber(input.limitProbability) ||
-    input.limitProbability <= 0 ||
-    input.limitProbability > 1 ||
-    (input.tif !== "Ioc" && input.tif !== "Gtc") ||
-    typeof input.paperOnly !== "boolean" ||
-    input.fromAgent !== true
+    typeof input.paperOnly !== "boolean"
   ) {
-    return undefined;
+    return { ok: false, code: "invalid_predictionDraft" };
+  }
+  if (input.action !== "buy") {
+    return { ok: false, code: "invalid_predictionDraft_action" };
+  }
+  if (!isFiniteNumber(input.contracts) || input.contracts <= 0 || !Number.isInteger(input.contracts)) {
+    return { ok: false, code: "invalid_predictionDraft_contracts" };
+  }
+  if (!isFiniteNumber(input.limitProbability) || input.limitProbability <= 0 || input.limitProbability > 1) {
+    return { ok: false, code: "invalid_predictionDraft_limitProbability" };
+  }
+  if (input.tif !== "Ioc" && input.tif !== "Gtc") {
+    return { ok: false, code: "invalid_predictionDraft_tif" };
+  }
+  if (input.fromAgent !== true) {
+    return { ok: false, code: "invalid_predictionDraft_fromAgent" };
   }
   return {
-    kind: "prediction_order",
-    questionId: input.questionId,
-    questionName: input.questionName,
-    outcome: input.outcome,
-    outcomeName: input.outcomeName,
-    side: input.side,
-    sideName: input.sideName,
-    action: "buy",
-    contracts: input.contracts,
-    limitProbability: input.limitProbability,
-    tif: input.tif,
-    paperOnly: input.paperOnly,
-    fromAgent: true,
+    ok: true,
+    draft: {
+      kind: "prediction_order",
+      questionId: input.questionId,
+      questionName: input.questionName,
+      outcome: input.outcome,
+      outcomeName: input.outcomeName,
+      side: input.side,
+      sideName: input.sideName,
+      action: "buy",
+      contracts: input.contracts,
+      limitProbability: input.limitProbability,
+      tif: input.tif,
+      paperOnly: input.paperOnly,
+      fromAgent: true,
+    },
   };
 }
 
@@ -310,12 +417,17 @@ function isAgentResponseType(input: unknown): input is AgentResponseType {
   return typeof input === "string" && RESPONSE_TYPES.includes(input as AgentResponseType);
 }
 
-function isAgentProviderMetadata(input: Record<string, unknown>) {
-  return (
-    typeof input.name === "string" &&
-    typeof input.deterministic === "boolean" &&
-    Number.isFinite(input.generatedAt)
-  );
+function agentProviderMetadataDiagnostic(input: Record<string, unknown>): AgentAnalysisValidationCode | undefined {
+  if (typeof input.name !== "string") {
+    return "invalid_provider_name";
+  }
+  if (typeof input.deterministic !== "boolean") {
+    return "invalid_provider_deterministic";
+  }
+  if (!Number.isFinite(input.generatedAt)) {
+    return "missing_provider_generatedAt";
+  }
+  return undefined;
 }
 
 export function parseProviderName(input: unknown): AgentProviderName | undefined {

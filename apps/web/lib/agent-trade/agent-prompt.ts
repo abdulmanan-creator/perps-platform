@@ -13,7 +13,13 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
     "riskNote",
     "whyWrong",
     "warnings",
-    "provider",
+  ],
+  allOf: [
+    {
+      not: {
+        required: ["orderDraft", "predictionDraft"],
+      },
+    },
   ],
   properties: {
     responseType: {
@@ -28,6 +34,7 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
       type: "array",
       items: {
         type: "object",
+        additionalProperties: false,
         required: ["label", "value", "timestamp"],
         properties: {
           label: { type: "string" },
@@ -40,6 +47,7 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
     whyWrong: { type: "string" },
     orderDraft: {
       type: "object",
+      additionalProperties: false,
       required: ["symbol", "side", "orderType", "sizeBtc", "leverage", "marginMode", "reduceOnly", "fromAgent"],
       properties: {
         symbol: { type: "string" },
@@ -58,6 +66,7 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
     },
     predictionDraft: {
       type: "object",
+      additionalProperties: false,
       required: [
         "kind",
         "questionId",
@@ -82,7 +91,7 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
         side: { type: "number", enum: [0, 1] },
         sideName: { type: "string" },
         action: { type: "string", const: "buy" },
-        contracts: { type: "number", exclusiveMinimum: 0 },
+        contracts: { type: "integer", exclusiveMinimum: 0 },
         limitProbability: { type: "number", exclusiveMinimum: 0, maximum: 1 },
         tif: { type: "string", enum: ["Ioc", "Gtc"] },
         paperOnly: { type: "boolean" },
@@ -92,9 +101,10 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
     warnings: { type: "array", items: { type: "string" } },
     provider: {
       type: "object",
+      additionalProperties: false,
       required: ["name", "deterministic", "generatedAt"],
       properties: {
-        name: { type: "string" },
+        name: { type: "string", enum: ["deterministic", "openai", "anthropic", "deepseek", "qwen", "openrouter"] },
         model: { type: "string" },
         deterministic: { type: "boolean" },
         generatedAt: { type: "number" },
@@ -102,6 +112,24 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
         fallbackReason: { type: "string" },
       },
     },
+    id: { type: "string" },
+    question: { type: "string" },
+    annotations: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id", "kind", "price", "label", "tone"],
+        properties: {
+          id: { type: "string" },
+          kind: { type: "string", enum: ["liquidationCluster", "invalidation", "target", "support", "resistance"] },
+          price: { type: "number" },
+          label: { type: "string" },
+          tone: { type: "string", enum: ["green", "red", "amber", "blue"] },
+        },
+      },
+    },
+    followUps: { type: "array", items: { type: "string" } },
   },
 } as const;
 

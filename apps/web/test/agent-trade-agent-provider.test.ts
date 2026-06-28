@@ -6,13 +6,18 @@ import {
   createServerAgentProvider,
   resolveServerAgentProviderConfig,
 } from "../lib/agent-trade/agent-provider-factory";
-import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/agent-trade/agent-provider";
+import { buildAgentInput, type AgentAnalysis, type AgentInput, type AgentProvider } from "../lib/agent-trade/agent-provider";
 import type { AgentRouteAuthFailureReason, AgentRouteAuthResult } from "../lib/agent-trade/agent-route-auth";
 import type { AgentRouteRateLimitDecision } from "../lib/agent-trade/agent-route-rate-limit";
 import type { AgentRouteTelemetryEvent } from "../lib/agent-trade/agent-route-telemetry";
 import { AnthropicAgentProvider } from "../lib/agent-trade/anthropic-agent-provider";
 import { DeepSeekAgentProvider, OpenAIAgentProvider, QwenAgentProvider } from "../lib/agent-trade/openai-agent-provider";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
+import { buildPredictionAgentInput } from "../lib/agent-trade/predictions";
+import {
+  normalizeModelAgentAnalysisOutput,
+  parseAgentAnalysisWithDiagnostics,
+} from "../lib/agent-trade/agent-validation";
 
 describe("Agent.trade real agent provider wiring", () => {
   it("defaults to deterministic when provider env is not set", () => {
@@ -144,6 +149,203 @@ describe("Agent.trade real agent provider wiring", () => {
       deterministic: false,
     });
     expect(analysis.orderDraft).toBeUndefined();
+  });
+
+  it("accepts OpenAI model output without provider metadata after server provider injection", async () => {
+    const input = buildTestAgentInput();
+    const { provider: _modelProvider, ...modelAnalysis } = validModelAnalysis(input);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(modelAnalysis) } }],
+    }), { status: 200 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("market_read");
+    expect(analysis.provider).toMatchObject({
+      name: "openai",
+      model: "test-agent-model",
+      deterministic: false,
+    });
+    expect(JSON.stringify(modelAnalysis)).not.toContain("provider");
+  });
+
+  it("normalizes OpenAI model provider metadata even when generatedAt is an ISO string", async () => {
+    const input = buildTestAgentInput();
+    const modelAnalysis = {
+      ...validModelAnalysis(input),
+      provider: {
+        name: "openai",
+        model: "model-claimed-by-output",
+        deterministic: false,
+        generatedAt: "2026-06-28T00:00:00.000Z",
+      },
+    };
+    const rawParse = parseAgentAnalysisWithDiagnostics(modelAnalysis);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(modelAnalysis) } }],
+    }), { status: 200 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(rawParse).toEqual({ ok: false, code: "missing_provider_generatedAt" });
+    expect(analysis.provider).toMatchObject({
+      name: "openai",
+      model: "test-agent-model",
+      deterministic: false,
+    });
+  });
+
+  it("validates HIP4-32 OpenAI market_read output without model provider metadata", async () => {
+    const input = buildPredictionTestAgentInput("Explain this odds move");
+    const modelAnalysis = predictionMarketRead(input);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(modelAnalysis) } }],
+    }), { status: 200 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("market_read");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.predictionDraft).toBeUndefined();
+    expect(analysis.provider.name).toBe("openai");
+  });
+
+  it("validates HIP4-32 OpenAI trade_proposal output with a predictionDraft", async () => {
+    const input = buildPredictionTestAgentInput("Draft a marketable order", { mode: "live", liveAllowed: true });
+    const modelAnalysis = predictionTradeProposal(input);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(modelAnalysis) } }],
+    }), { status: 200 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("trade_proposal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.predictionDraft).toMatchObject({
+      kind: "prediction_order",
+      action: "buy",
+      contracts: 12,
+      limitProbability: 0.25,
+      paperOnly: false,
+      fromAgent: true,
+    });
+  });
+
+  it("rejects HIP4-32 OpenAI trade_proposal output with an orderDraft instead of predictionDraft", async () => {
+    const input = buildPredictionTestAgentInput("Draft a marketable order", { mode: "live", liveAllowed: true });
+    const modelAnalysis = {
+      ...predictionMarketRead(input),
+      responseType: "trade_proposal",
+      orderDraft: {
+        symbol: "BTC-USD",
+        side: "long",
+        orderType: "market",
+        sizeBtc: 0.01,
+        leverage: 2,
+        marginMode: "isolated",
+        reduceOnly: false,
+        fromAgent: true,
+      },
+    };
+    const normalized = normalizeModelAgentAnalysisOutput({
+      output: modelAnalysis,
+      providerName: "openai",
+      model: "test-agent-model",
+      generatedAt: input.timestamp,
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(modelAnalysis) } }],
+    }), { status: 200 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(parseAgentAnalysisWithDiagnostics(normalized, { input })).toEqual({
+      ok: false,
+      code: "orderDraft_for_prediction_market",
+    });
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.predictionDraft).toBeUndefined();
+    expect(analysis.provider.fallbackReason).toContain("orderDraft_for_prediction_market");
+  });
+
+  it("rejects OpenAI output with both orderDraft and predictionDraft", async () => {
+    const input = buildPredictionTestAgentInput("Draft a marketable order", { mode: "live", liveAllowed: true });
+    const modelAnalysis = {
+      ...predictionTradeProposal(input),
+      orderDraft: {
+        symbol: "BTC-USD",
+        side: "long",
+        orderType: "market",
+        sizeBtc: 0.01,
+        leverage: 2,
+        marginMode: "isolated",
+        reduceOnly: false,
+        fromAgent: true,
+      },
+    };
+    const normalized = normalizeModelAgentAnalysisOutput({
+      output: modelAnalysis,
+      providerName: "openai",
+      model: "test-agent-model",
+      generatedAt: input.timestamp,
+    });
+
+    expect(parseAgentAnalysisWithDiagnostics(normalized, { input })).toEqual({
+      ok: false,
+      code: "both_drafts_present",
+    });
+  });
+
+  it("rejects invalid predictionDraft output without prefilling a ticket", async () => {
+    const input = buildPredictionTestAgentInput("Draft a marketable order");
+    const modelAnalysis = {
+      ...predictionTradeProposal(input),
+      predictionDraft: {
+        ...predictionTradeProposal(input).predictionDraft,
+        contracts: 1.5,
+      },
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(modelAnalysis) } }],
+    }), { status: 200 }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-test",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.predictionDraft).toBeUndefined();
+    expect(analysis.provider.fallbackReason).toContain("invalid_predictionDraft_contracts");
   });
 
   it("returns validated Anthropic model output with provider metadata", async () => {
@@ -501,7 +703,7 @@ describe("Agent.trade real agent provider wiring", () => {
     expect(analysis.orderDraft).toBeUndefined();
     expect(telemetry[0]).toMatchObject({
       invalidOutput: true,
-      fallbackReason: "Provider returned invalid analysis.",
+      fallbackReason: "Provider returned invalid analysis (missing_trade_draft).",
     });
   });
 
@@ -544,7 +746,7 @@ function buildTestAgentInput() {
 }
 
 function validModelAnalysis(
-  input: ReturnType<typeof buildTestAgentInput>,
+  input: AgentInput,
   providerName: AgentAnalysis["provider"]["name"] = "openai",
 ): AgentAnalysis {
   return {
@@ -569,6 +771,116 @@ function validModelAnalysis(
     id: "btc-openai-market-read",
     question: input.requestedPrompt,
     annotations: [],
+  };
+}
+
+function buildPredictionTestAgentInput(
+  prompt: string,
+  options: { mode?: "paper" | "live"; liveAllowed?: boolean } = {},
+): AgentInput {
+  return buildPredictionAgentInput({
+    prompt,
+    question: {
+      questionId: 32,
+      name: "World Cup Champion",
+      description: "World Cup winner.",
+      criteria: "Settles to the official FIFA World Cup winner.",
+      metadata: { category: "sports", subCategory: "football", raw: "category:sports|subCategory:football" },
+      quoteToken: "USDC",
+      quoteTokens: ["USDC"],
+      fallbackOutcome: null,
+      namedOutcomes: [
+        {
+          outcome: 189,
+          name: "France",
+          description: "",
+          quoteToken: "USDC",
+          sides: [
+            { side: 0, name: "Yes", encoding: 1890, coin: "#1890", assetId: 100_001_890 },
+            { side: 1, name: "No", encoding: 1891, coin: "#1891", assetId: 100_001_891 },
+          ],
+        },
+      ],
+      settlement: { state: "open", settledNamedOutcomeIds: [] },
+    },
+    selectedOutcome: {
+      outcome: 189,
+      name: "France",
+      description: "",
+      quoteToken: "USDC",
+      sides: [
+        { side: 0, name: "Yes", encoding: 1890, coin: "#1890", assetId: 100_001_890 },
+        { side: 1, name: "No", encoding: 1891, coin: "#1891", assetId: 100_001_891 },
+      ],
+    },
+    selectedSide: {
+      side: 0,
+      name: "Yes",
+      encoding: 1890,
+      coin: "#1890",
+      assetId: 100_001_890,
+      bestBid: "0.20",
+      bestAsk: "0.25",
+      midpointProbability: 0.225,
+      spread: 0.05,
+      depth: { bidLevels: 1, askLevels: 1, bidSize: 30, askSize: 20, bidNotional: 6, askNotional: 5 },
+      emptyBook: false,
+      fetchedAt: 1_710_000_000_000,
+      topBidLevels: [{ px: "0.20", sz: "30" }],
+      topAskLevels: [{ px: "0.25", sz: "20" }],
+    },
+    streamStatus: "live",
+    streamLastBookAt: 1_710_000_000_000,
+    streamFreshnessLabel: "just now",
+    mode: options.mode ?? "paper",
+    eligibilityState: options.liveAllowed ? "liveEligible" : "restricted",
+    liveAllowed: options.liveAllowed ?? false,
+    hip4Spendable: "100",
+    perpWithdrawable: "100",
+    balanceStatus: "ready",
+    ticket: { contracts: 12, limitProbability: 0.25, tif: "Ioc", criteriaAcknowledged: true },
+    now: 1_710_000_000_500,
+  });
+}
+
+function predictionMarketRead(input: AgentInput): Omit<AgentAnalysis, "provider"> {
+  return {
+    responseType: "market_read",
+    summary: "France Yes market read.",
+    thesis: "France Yes has usable HIP-4 book context and no draft is needed for this read.",
+    side: "none",
+    confidence: 0.58,
+    receipts: [
+      { label: "Question", value: "World Cup Champion", timestamp: input.timestamp },
+      { label: "Best bid/ask", value: "0.20 / 0.25", timestamp: input.timestamp },
+    ],
+    riskNote: "Prediction markets can lose the full premium paid.",
+    whyWrong: "The market can move or resolution criteria can differ from expectations.",
+    warnings: [],
+    annotations: [],
+  };
+}
+
+function predictionTradeProposal(input: AgentInput): Omit<AgentAnalysis, "provider"> {
+  return {
+    ...predictionMarketRead(input),
+    responseType: "trade_proposal",
+    summary: "France Yes prediction draft.",
+    predictionDraft: {
+      kind: "prediction_order",
+      questionId: 32,
+      questionName: "World Cup Champion",
+      outcome: 189,
+      outcomeName: "France",
+      side: 0,
+      sideName: "Yes",
+      action: "buy",
+      contracts: 12,
+      limitProbability: 0.25,
+      tif: "Ioc",
+      paperOnly: input.eligibility.mode !== "live" || !input.eligibility.liveAllowed,
+      fromAgent: true,
+    },
   };
 }
 

@@ -28,6 +28,7 @@ import {
   invalidAgentOutputRefusal,
   parseProviderName,
   parseAgentAnalysis,
+  parseAgentAnalysisWithDiagnostics,
   parseAgentInput,
 } from "./agent-validation";
 import type { AgentFetch } from "./openai-agent-provider";
@@ -128,10 +129,12 @@ export async function handleAgentAnalysisPost(
   } catch {
     rawAnalysis = invalidAgentOutputRefusal(input, "Agent provider failed before returning validated output.");
   }
-  const parsedAnalysis = parseAgentAnalysis(rawAnalysis);
-  const analysis = parsedAnalysis ?? invalidAgentOutputRefusal(input);
+  const parsedAnalysis = parseAgentAnalysisWithDiagnostics(rawAnalysis, { input });
+  const analysis = parsedAnalysis.ok
+    ? parsedAnalysis.analysis
+    : invalidAgentOutputRefusal(input, `Provider returned invalid analysis (${parsedAnalysis.code}).`);
   analysis.provider.latencyMs = now() - startedAt;
-  const invalidOutput = !parsedAnalysis;
+  const invalidOutput = !parsedAnalysis.ok;
   telemetry({
     route: "agent_analysis",
     provider: analysis.provider.name,

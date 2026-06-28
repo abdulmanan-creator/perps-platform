@@ -1,6 +1,10 @@
 import { AGENT_ANALYSIS_JSON_SCHEMA, buildAgentPrompt } from "./agent-prompt";
 import type { AgentAnalysis, AgentInput, AgentProvider } from "./agent-provider";
-import { invalidAgentOutputRefusal, parseAgentAnalysis } from "./agent-validation";
+import {
+  invalidAgentOutputRefusal,
+  normalizeModelAgentAnalysisOutput,
+  parseAgentAnalysisWithDiagnostics,
+} from "./agent-validation";
 
 export const DEFAULT_ANTHROPIC_AGENT_MODEL = "claude-3-5-haiku-latest";
 
@@ -70,20 +74,26 @@ export class AnthropicAgentProvider implements AgentProvider {
         return this.refusal(input, "Anthropic provider returned no JSON content.", startedAt);
       }
 
-      const parsed = parseAgentAnalysis(parseJson(content));
-      if (!parsed) {
-        safeLogProviderWarning(input, "Anthropic response failed AgentAnalysis validation");
-        return this.refusal(input, "Anthropic provider returned malformed AgentAnalysis JSON.", startedAt);
+      const generatedAt = Date.now();
+      const parsed = parseAgentAnalysisWithDiagnostics(normalizeModelAgentAnalysisOutput({
+        output: parseJson(content),
+        providerName: "anthropic",
+        model: this.model,
+        generatedAt,
+      }), { input });
+      if (!parsed.ok) {
+        safeLogProviderWarning(input, "Anthropic response failed AgentAnalysis validation", parsed.code);
+        return this.refusal(input, `Anthropic provider returned malformed AgentAnalysis JSON (${parsed.code}).`, startedAt);
       }
 
       return {
-        ...parsed,
+        ...parsed.analysis,
         provider: {
-          ...parsed.provider,
+          ...parsed.analysis.provider,
           name: "anthropic",
           model: this.model,
           deterministic: false,
-          generatedAt: Date.now(),
+          generatedAt,
           latencyMs: Date.now() - startedAt,
         },
       };
@@ -132,7 +142,7 @@ function parseJson(input: string): unknown {
   }
 }
 
-function safeLogProviderWarning(input: AgentInput, message: string) {
+function safeLogProviderWarning(input: AgentInput, message: string, diagnostic?: string) {
   if (process.env.NODE_ENV === "test") {
     return;
   }
@@ -141,6 +151,7 @@ function safeLogProviderWarning(input: AgentInput, message: string) {
     symbol: input.market.symbol,
     source: input.market.source,
     message,
+    diagnostic,
   });
 }
 
