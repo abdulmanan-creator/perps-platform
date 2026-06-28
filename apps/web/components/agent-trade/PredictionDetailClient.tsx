@@ -27,6 +27,7 @@ import {
   formatPredictionLivePriceWire,
   formatSpread,
   formatUsdc,
+  formatUsdcExact,
   buildPredictionLiveOrderAction,
   getPredictionHip4EffectiveMinOrderCostUsd,
   getPredictionHip4MinOrderCostUsd,
@@ -42,6 +43,7 @@ import {
   mergePredictionL2BookUpdate,
   mergePredictionOutcomeOdds,
   minimumPredictionContractsForCost,
+  maxTransferablePredictionUsdc,
   normalizePredictionL2BookMessage,
   predictionPaperFillsForQuestion,
   predictionHip4Coin,
@@ -53,10 +55,12 @@ import {
   predictionLiveExchangeEndpoint,
   predictionCategoryLabel,
   predictionStatusLabel,
+  predictionUsdcTransferValidationMessage,
   selectedOutcomeOdds,
   sendPredictionUsdcTransfer,
   shouldShowPredictionUsdcTransferCard,
   suggestPredictionUsdcTransferAmount,
+  isPredictionUsdcTransferAmountValid,
   submitPredictionPaperOrder,
   summarizePredictionPortfolioExposure,
   summarizePredictionLiveExchangeResult,
@@ -779,10 +783,11 @@ function PredictionPaperTicket(props: {
   const selectedTopOfBookReady = hasValidPredictionTopOfBook(props.selectedSide);
   const liveRequiredCostUsd = mode === "live" ? Math.max(math.estimatedCost, hip4EffectiveMinOrderCostUsd) : math.estimatedCost;
   const predictionBalanceSufficient = hasSufficientPredictionSpotBalance(predictionBalance, liveRequiredCostUsd);
+  const maxTransferableUsdc = maxTransferablePredictionUsdc(predictionBalance);
   const transferSuggestion = suggestPredictionUsdcTransferAmount({
     requiredCostUsd: liveRequiredCostUsd,
-    spotUsdcAvailable: Number(predictionBalance?.spotUsdcAvailable ?? 0),
-    perpWithdrawable: Number(predictionBalance?.perpWithdrawable ?? 0),
+    spotUsdcAvailable: predictionBalance?.spotUsdcAvailable ?? "0",
+    maxTransferableUsdc,
   });
   const showTransferCard = shouldShowPredictionUsdcTransferCard({
     mode,
@@ -790,11 +795,15 @@ function PredictionPaperTicket(props: {
     balance: predictionBalance,
     requiredCostUsd: liveRequiredCostUsd,
   });
-  const transferAmountNumber = Number(transferAmount || transferSuggestion || 0);
-  const transferAmountValid =
-    Number.isFinite(transferAmountNumber) &&
-    transferAmountNumber > 0 &&
-    transferAmountNumber <= Number(predictionBalance?.perpWithdrawable ?? 0);
+  const transferAmountToSubmit = transferAmount || transferSuggestion;
+  const transferAmountValid = isPredictionUsdcTransferAmountValid({
+    amount: transferAmountToSubmit,
+    maxTransferableUsdc,
+  });
+  const transferValidationMessage = predictionUsdcTransferValidationMessage({
+    amount: transferAmountToSubmit,
+    maxTransferableUsdc,
+  });
   const canSubmitLive =
     canSubmit &&
     liveAvailable.allowed &&
@@ -915,7 +924,7 @@ function PredictionPaperTicket(props: {
 
   async function submitPredictionBalanceTransfer() {
     if (!props.activeWallet?.address || !showTransferCard || !transferAmountValid) return;
-    const amount = transferAmount || transferSuggestion;
+    const amount = transferAmountToSubmit;
     setTransferState("building");
     setTransferMessage(undefined);
     try {
@@ -1045,11 +1054,11 @@ function PredictionPaperTicket(props: {
             <div className="prediction-ticket-body prediction-ticket-technical">
               <MetricCell
                 label="HIP-4 spendable"
-                value={predictionBalanceStatus === "ready" ? formatUsdc(Number(predictionBalance?.spotUsdcAvailable ?? 0)) : "--"}
+                value={predictionBalanceStatus === "ready" ? formatUsdcExact(predictionBalance?.spotUsdcAvailable) : "--"}
               />
               <MetricCell
                 label="Perp withdrawable"
-                value={predictionBalanceStatus === "ready" ? formatUsdc(Number(predictionBalance?.perpWithdrawable ?? 0)) : "--"}
+                value={predictionBalanceStatus === "ready" ? formatUsdcExact(maxTransferableUsdc) : "--"}
               />
             </div>
             <p className="market-notice">
@@ -1073,23 +1082,32 @@ function PredictionPaperTicket(props: {
                   Prediction markets use Hyperliquid spot-style USDC. This moves USDC from perp margin to prediction balance.
                 </p>
                 <div className="prediction-ticket-body prediction-ticket-technical">
-                  <MetricCell label="HIP-4 spendable" value={formatUsdc(Number(predictionBalance?.spotUsdcAvailable ?? 0))} />
-                  <MetricCell label="Perp withdrawable" value={formatUsdc(Number(predictionBalance?.perpWithdrawable ?? 0))} />
-                  <MetricCell label="Suggested transfer" value={formatUsdc(Number(transferSuggestion || 0))} />
+                  <MetricCell label="HIP-4 spendable" value={formatUsdcExact(predictionBalance?.spotUsdcAvailable)} />
+                  <MetricCell label="Available transfer" value={formatUsdcExact(maxTransferableUsdc)} />
+                  <MetricCell label="Suggested transfer" value={formatUsdcExact(transferSuggestion)} />
                 </div>
                 <label>
                   <span>Transfer amount</span>
-                  <input
-                    min="0"
-                    max={predictionBalance?.perpWithdrawable ?? undefined}
-                    step="0.01"
-                    type="number"
-                    value={transferAmount}
-                    onChange={(event) => setTransferAmount(event.target.value)}
-                  />
+                  <div className="prediction-transfer-input-row">
+                    <input
+                      min="0"
+                      max={maxTransferableUsdc ?? undefined}
+                      step="0.000001"
+                      type="number"
+                      value={transferAmount}
+                      onChange={(event) => setTransferAmount(event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      disabled={!maxTransferableUsdc}
+                      onClick={() => setTransferAmount(maxTransferableUsdc ?? "")}
+                    >
+                      Max
+                    </button>
+                  </div>
                 </label>
-                {!transferAmountValid ? (
-                  <p className="market-notice">Enter an amount above 0 and at or below perp withdrawable.</p>
+                {transferValidationMessage ? (
+                  <p className="market-notice">{transferValidationMessage}</p>
                 ) : null}
                 <button
                   type="button"

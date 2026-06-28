@@ -579,23 +579,62 @@ export function shouldShowPredictionUsdcTransferCard(input: {
 }): boolean {
   if (input.mode !== "live" || !input.liveAllowed || !input.balance) return false;
   if (hasSufficientPredictionSpotBalance(input.balance, input.requiredCostUsd)) return false;
-  const perpWithdrawable = Number(input.balance.perpWithdrawable ?? 0);
+  const perpWithdrawable = Number(maxTransferablePredictionUsdc(input.balance) ?? 0);
   return Number.isFinite(perpWithdrawable) && perpWithdrawable > 0;
 }
 
 export function suggestPredictionUsdcTransferAmount(input: {
   requiredCostUsd: number;
-  spotUsdcAvailable: number;
-  perpWithdrawable: number;
+  spotUsdcAvailable: number | string;
+  perpWithdrawable?: number | string | null;
+  maxTransferableUsdc?: number | string | null;
 }): string {
   const required = Number.isFinite(input.requiredCostUsd) ? input.requiredCostUsd : 0;
-  const spot = Number.isFinite(input.spotUsdcAvailable) ? input.spotUsdcAvailable : 0;
-  const perp = Number.isFinite(input.perpWithdrawable) ? input.perpWithdrawable : 0;
+  const spot = Number(input.spotUsdcAvailable);
+  const max = normalizePredictionUsdcAmount(input.maxTransferableUsdc ?? input.perpWithdrawable ?? null);
+  const perp = Number(max ?? 0);
   const shortfall = Math.max(0, required - spot);
   if (shortfall <= 0 || perp <= 0) return "";
   const buffer = Math.min(1, Math.max(0.25, required * 0.02));
   const suggested = Math.min(perp, shortfall + buffer);
-  return formatTransferAmount(Math.ceil(suggested * 100) / 100);
+  const rounded = formatTransferAmount(Math.ceil(suggested * 100) / 100);
+  return comparePredictionUsdcAmounts(rounded, max) === 1 ? max ?? "" : rounded;
+}
+
+export function maxTransferablePredictionUsdc(balance: PredictionBalanceState | undefined): string | null {
+  if (!balance) return null;
+  return normalizePredictionUsdcAmount(balance.maxTransferableUsdc ?? balance.perpWithdrawable ?? null);
+}
+
+export function formatUsdcExact(value: string | number | null | undefined): string {
+  const normalized = normalizePredictionUsdcAmount(value);
+  return normalized ? `${normalized} USDC` : "--";
+}
+
+export function isPredictionUsdcTransferAmountValid(input: {
+  amount: string;
+  maxTransferableUsdc: string | null;
+}): boolean {
+  const amount = normalizePredictionUsdcAmount(input.amount);
+  const max = normalizePredictionUsdcAmount(input.maxTransferableUsdc);
+  if (!amount || !max) return false;
+  const amountUnits = parsePredictionUsdcUnits(amount);
+  const maxUnits = parsePredictionUsdcUnits(max);
+  return amountUnits !== undefined && amountUnits > 0n && maxUnits !== undefined && amountUnits <= maxUnits;
+}
+
+export function predictionUsdcTransferValidationMessage(input: {
+  amount: string;
+  maxTransferableUsdc: string | null;
+}): string | undefined {
+  const max = normalizePredictionUsdcAmount(input.maxTransferableUsdc);
+  const amount = normalizePredictionUsdcAmount(input.amount);
+  if (!amount) return "Enter an amount above 0 with up to 6 decimals.";
+  if (!max || parsePredictionUsdcUnits(max) === 0n) return "No perp withdrawable USDC is available to move.";
+  if (comparePredictionUsdcAmounts(amount, max) === 1) {
+    return `Available transfer amount is ${max} USDC. Use max.`;
+  }
+  return undefined;
 }
 
 export function filterAndSortPredictionQuestions(args: {
@@ -805,6 +844,37 @@ async function predictionApiErrorMessage(response: Response, fallback: string): 
 function formatTransferAmount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "";
   return value.toFixed(6).replace(/0+$/u, "").replace(/\.$/u, "");
+}
+
+function normalizePredictionUsdcAmount(input: string | number | null | undefined): string | null {
+  if (input === null || input === undefined) return null;
+  const units = parsePredictionUsdcUnits(String(input));
+  return units === undefined ? null : formatPredictionUsdcUnits(units);
+}
+
+function comparePredictionUsdcAmounts(
+  left: string | number | null | undefined,
+  right: string | number | null | undefined,
+): -1 | 0 | 1 | undefined {
+  const leftUnits = parsePredictionUsdcUnits(String(left ?? ""));
+  const rightUnits = parsePredictionUsdcUnits(String(right ?? ""));
+  if (leftUnits === undefined || rightUnits === undefined) return undefined;
+  if (leftUnits < rightUnits) return -1;
+  if (leftUnits > rightUnits) return 1;
+  return 0;
+}
+
+function parsePredictionUsdcUnits(input: string): bigint | undefined {
+  const trimmed = input.trim();
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u.test(trimmed)) return undefined;
+  const [whole, fraction = ""] = trimmed.split(".");
+  return BigInt(whole ?? "0") * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+}
+
+function formatPredictionUsdcUnits(units: bigint): string {
+  const whole = units / 1_000_000n;
+  const fraction = (units % 1_000_000n).toString().padStart(6, "0").replace(/0+$/u, "");
+  return fraction ? `${whole}.${fraction}` : whole.toString();
 }
 
 async function mapWithConcurrency<T, R>(

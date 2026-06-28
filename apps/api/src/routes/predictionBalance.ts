@@ -46,12 +46,14 @@ export async function fetchPredictionBalanceState(
   ]);
   const balances = (spotState?.balances ?? []).map(normalizeSpotBalance);
   const spotUsdc = balances.find((balance) => balance.coin === "USDC") ?? emptySpotUsdcBalance();
+  const perpWithdrawable = perpState?.withdrawable === undefined ? null : String(perpState.withdrawable);
   return {
     user,
     source: "spotClearinghouseState",
     spotUsdc,
     spotUsdcAvailable: spotUsdc.available,
-    perpWithdrawable: perpState?.withdrawable === undefined ? null : String(perpState.withdrawable),
+    perpWithdrawable,
+    maxTransferableUsdc: normalizeTransferableUsdc(perpWithdrawable),
     balances,
     outcomeBalances: balances.filter(isOutcomeBalance),
     fetchedAt: Date.now(),
@@ -108,6 +110,17 @@ function numericString(value: string | number | undefined): string {
 
 function formatBalance(value: number): string {
   return value.toFixed(8).replace(/0+$/u, "").replace(/\.$/u, "");
+}
+
+function normalizeTransferableUsdc(value: string | null): string | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u.test(trimmed)) return null;
+  const [whole, fraction = ""] = trimmed.split(".");
+  const units = BigInt(whole ?? "0") * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+  const normalizedWhole = units / 1_000_000n;
+  const normalizedFraction = (units % 1_000_000n).toString().padStart(6, "0").replace(/0+$/u, "");
+  return normalizedFraction ? `${normalizedWhole}.${normalizedFraction}` : normalizedWhole.toString();
 }
 
 function formatUsdc(value: number): string {

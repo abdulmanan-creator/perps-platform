@@ -18,6 +18,7 @@ import {
   formatProbabilityPrice,
   formatSpread,
   formatUsdc,
+  formatUsdcExact,
   formatPredictionLivePriceWire,
   getPredictionHip4EffectiveMinOrderCostUsd,
   getPredictionHip4MinOrderCostUsd,
@@ -30,6 +31,7 @@ import {
   loadPredictionDiscoveryOddsSummaries,
   mergePredictionL2BookUpdate,
   minimumPredictionContractsForCost,
+  maxTransferablePredictionUsdc,
   maxPayoutForContracts,
   normalizePredictionL2BookMessage,
   premiumForContracts,
@@ -43,6 +45,8 @@ import {
   sendPredictionUsdcTransfer,
   shouldShowPredictionUsdcTransferCard,
   suggestPredictionUsdcTransferAmount,
+  isPredictionUsdcTransferAmountValid,
+  predictionUsdcTransferValidationMessage,
   summarizePredictionLiveExchangeResult,
   summarizePredictionPortfolioExposure,
   summarizeQuestionOdds,
@@ -522,6 +526,7 @@ describe("Agent.trade prediction helpers", () => {
       spotUsdc: { coin: "USDC", token: 0, total: "11", hold: "1", available: "10", entryNtl: "0" },
       spotUsdcAvailable: "10",
       perpWithdrawable: "500",
+      maxTransferableUsdc: "500",
       balances: [],
       outcomeBalances: [],
       fetchedAt: 123,
@@ -542,6 +547,7 @@ describe("Agent.trade prediction helpers", () => {
     await expect(loadPredictionBalance("0x0000000000000000000000000000000000000001")).resolves.toMatchObject({
       spotUsdcAvailable: "10",
       perpWithdrawable: "500",
+      maxTransferableUsdc: "500",
     });
   });
 
@@ -552,6 +558,7 @@ describe("Agent.trade prediction helpers", () => {
       spotUsdc: { coin: "USDC", token: 0, total: "0", hold: "0", available: "0", entryNtl: "0" },
       spotUsdcAvailable: "0",
       perpWithdrawable: "11.588513",
+      maxTransferableUsdc: "11.588513",
       balances: [],
       outcomeBalances: [],
       fetchedAt: 123,
@@ -588,6 +595,41 @@ describe("Agent.trade prediction helpers", () => {
       spotUsdcAvailable: 0,
       perpWithdrawable: 11.588513,
     })).toBe("10.26");
+  });
+
+  it("validates prediction USDC transfer amounts against exact micro-USDC max", () => {
+    const balance: PredictionBalanceState = {
+      user: "0x0000000000000000000000000000000000000001",
+      source: "spotClearinghouseState",
+      spotUsdc: { coin: "USDC", token: 0, total: "0", hold: "0", available: "0", entryNtl: "0" },
+      spotUsdcAvailable: "0",
+      perpWithdrawable: "1.549555",
+      maxTransferableUsdc: "1.549555",
+      balances: [],
+      outcomeBalances: [],
+      fetchedAt: 123,
+      guidance: "Prediction markets use Hyperliquid spot-style balance; perp margin balance may not be spendable here.",
+    };
+
+    expect(maxTransferablePredictionUsdc(balance)).toBe("1.549555");
+    expect(formatUsdcExact(maxTransferablePredictionUsdc(balance))).toBe("1.549555 USDC");
+    expect(isPredictionUsdcTransferAmountValid({ amount: "1.549555", maxTransferableUsdc: "1.549555" })).toBe(true);
+    expect(isPredictionUsdcTransferAmountValid({ amount: "1.55", maxTransferableUsdc: "1.549555" })).toBe(false);
+    expect(predictionUsdcTransferValidationMessage({
+      amount: "1.55",
+      maxTransferableUsdc: "1.549555",
+    })).toBe("Available transfer amount is 1.549555 USDC. Use max.");
+    expect(suggestPredictionUsdcTransferAmount({
+      requiredCostUsd: 10,
+      spotUsdcAvailable: "0",
+      maxTransferableUsdc: "1.549555",
+    })).toBe("1.549555");
+  });
+
+  it("does not false-reject common decimal transfer amounts", () => {
+    expect(isPredictionUsdcTransferAmountValid({ amount: "1.55", maxTransferableUsdc: "1.55" })).toBe(true);
+    expect(isPredictionUsdcTransferAmountValid({ amount: "0.3", maxTransferableUsdc: "0.3" })).toBe(true);
+    expect(isPredictionUsdcTransferAmountValid({ amount: "0.100001", maxTransferableUsdc: "0.100001" })).toBe(true);
   });
 
   it("builds and sends prediction USDC transfers through the prediction endpoint", async () => {
@@ -841,6 +883,8 @@ describe("prediction route smoke", () => {
     expect(source).toContain("sendPredictionUsdcTransfer");
     expect(source).toContain("refreshPredictionBalanceForWallet");
     expect(source).toContain("await refreshPredictionBalanceForWallet(props.activeWallet.address)");
+    expect(source).toContain("setTransferAmount(maxTransferableUsdc");
+    expect(source).toContain("Available transfer");
   });
 
   it("gates World Cup selected-book streaming to question 32 with diagnostics", () => {

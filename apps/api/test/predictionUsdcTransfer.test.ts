@@ -128,6 +128,47 @@ describe("prediction USDC transfer route", () => {
     expect(res.json().state).toBe("insufficient_perp_balance");
   });
 
+  it("accepts transfer amount equal to exact max transferable USDC", async () => {
+    await app.close();
+    vi.restoreAllMocks();
+    mockHyperliquid({ perpState: { withdrawable: "1.55" } });
+    app = await buildApp();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/prediction/usdc-transfer",
+      headers: liveHeaders(),
+      payload: { user: TEST_USER, amount: "1.55" },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as PredictionUsdcTransferBuildResponse;
+    expect(body.amount).toBe("1.55");
+    expect(body.action.amount).toBe("1.55");
+    expect(body.balance.maxTransferableUsdc).toBe("1.55");
+  });
+
+  it("rejects transfer amount above exact max by one micro-USDC", async () => {
+    await app.close();
+    vi.restoreAllMocks();
+    mockHyperliquid({ perpState: { withdrawable: "1.549555" } });
+    app = await buildApp();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/prediction/usdc-transfer",
+      headers: liveHeaders(),
+      payload: { user: TEST_USER, amount: "1.549556" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toMatchObject({
+      state: "insufficient_perp_balance",
+      message: "Insufficient perp withdrawable balance for prediction USDC transfer.",
+    });
+    expect(res.json().guidance).toBe("Available transfer amount is 1.549555 USDC. Use max.");
+  });
+
   it("fails closed when perp withdrawable balance is unavailable", async () => {
     await app.close();
     vi.restoreAllMocks();

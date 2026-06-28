@@ -561,6 +561,19 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   outline: none;
 }
 .prediction-ticket-form input:focus, .prediction-ticket-form select:focus { border-color: var(--blue); }
+.prediction-transfer-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.prediction-transfer-input-row button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #121a2c;
+  color: var(--text);
+  padding: 0 12px;
+  font-weight: 600;
+}
 .prediction-ticket-side-picker {
   display: grid;
   gap: 7px;

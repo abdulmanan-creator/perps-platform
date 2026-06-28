@@ -186,6 +186,7 @@ export interface PredictionBalanceState {
   spotUsdc: PredictionSpotBalance;
   spotUsdcAvailable: string;
   perpWithdrawable: string | null;
+  maxTransferableUsdc: string | null;
   balances: PredictionSpotBalance[];
   outcomeBalances: PredictionSpotBalance[];
   fetchedAt: number;

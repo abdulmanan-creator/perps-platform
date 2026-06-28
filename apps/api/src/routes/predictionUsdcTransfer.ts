@@ -118,14 +118,20 @@ async function buildTransfer(args: {
   assertPredictionTransferAllowed(args.req, args.app.config);
   const amount = normalizeUsdcAmount(args.amount);
   const balance = await fetchTransferBalance(args.hl, args.user);
-  assertPerpWithdrawableSufficient({ balance, amount });
+  const preflight = predictionTransferPreflight({
+    requestedAmount: args.amount,
+    normalizedAmount: amount,
+    balance,
+  });
+  args.req.log.info({ user: args.user, ...preflight }, "prediction_usdc_transfer_preflight");
+  assertPerpWithdrawableSufficient(preflight);
 
   const { typedData, action, nonce } = buildUsdClassTransferTypedData(
     { type: "usdClassTransfer", amount, toPerp: false },
     { isTestnet: args.app.config.isTestnet, nonce: args.nonce },
   );
   const hash = hashTypedDataDigest(typedData);
-  const payload = transferLogPayload({ user: args.user, action, balance });
+  const payload = transferLogPayload({ user: args.user, action, balance, preflight });
   args.req.log.info(payload, "prediction_usdc_transfer_build");
   await recordExchangeSubmission({
     req: args.req,
@@ -184,7 +190,13 @@ async function sendTransfer(args: {
   }
   const amount = normalizeUsdcAmount(action.amount);
   const balance = await fetchTransferBalance(args.hl, signer);
-  assertPerpWithdrawableSufficient({ balance, amount });
+  const preflight = predictionTransferPreflight({
+    requestedAmount: action.amount,
+    normalizedAmount: amount,
+    balance,
+  });
+  args.req.log.info({ user: signer, ...preflight }, "prediction_usdc_transfer_preflight");
+  assertPerpWithdrawableSufficient(preflight);
 
   const replayKey = `${args.body.signature.r}:${args.body.signature.s}:${args.body.signature.v}:${args.body.nonce}`;
   if (!args.seenSignatures.addIfAbsent(replayKey, true)) {
@@ -195,7 +207,7 @@ async function sendTransfer(args: {
     );
   }
 
-  const payload = transferLogPayload({ user: signer, action, balance });
+  const payload = transferLogPayload({ user: signer, action, balance, preflight });
   args.req.log.info(payload, "prediction_usdc_transfer_send");
   await recordExchangeSubmission({
     req: args.req,
@@ -257,7 +269,12 @@ async function sendTransfer(args: {
       latencyMs: Date.now() - startedAt,
     });
     if (err instanceof ApiException && err.code === "HL_EXCHANGE_REJECTED") {
-      throw new PredictionTransferException(err.code, err.message, err.guidance, "rejected");
+      throw new PredictionTransferException(
+        err.code,
+        err.message,
+        `${err.guidance} If Hyperliquid rejects an exact full-balance transfer, retry with the displayed max only after refreshing; try max-minus-dust only if the refreshed exact max is still rejected.`,
+        "rejected",
+      );
     }
     throw err;
   }
@@ -368,11 +385,55 @@ async function fetchTransferBalance(hl: HlClient, user: `0x${string}`) {
   }
 }
 
-function assertPerpWithdrawableSufficient(args: {
+interface PredictionTransferPreflight {
+  requestedAmount: string;
+  normalizedAmount: string;
+  perpWithdrawableRaw: string | null;
+  maxTransferableUsdc: string | null;
+  comparisonResult: "amount_lte_max" | "amount_gt_max" | "balance_unavailable";
+}
+
+function predictionTransferPreflight(args: {
+  requestedAmount: string;
+  normalizedAmount: string;
   balance: Awaited<ReturnType<typeof fetchPredictionBalanceState>>;
-  amount: string;
-}): void {
+}): PredictionTransferPreflight {
   if (args.balance.perpWithdrawable === null) {
+    return {
+      requestedAmount: args.requestedAmount,
+      normalizedAmount: args.normalizedAmount,
+      perpWithdrawableRaw: null,
+      maxTransferableUsdc: null,
+      comparisonResult: "balance_unavailable",
+    };
+  }
+
+  let maxTransferableUsdc: string;
+  try {
+    maxTransferableUsdc = normalizeNonNegativeUsdcAmount(args.balance.perpWithdrawable);
+  } catch {
+    return {
+      requestedAmount: args.requestedAmount,
+      normalizedAmount: args.normalizedAmount,
+      perpWithdrawableRaw: args.balance.perpWithdrawable,
+      maxTransferableUsdc: null,
+      comparisonResult: "balance_unavailable",
+    };
+  }
+
+  const amountUnits = parseUsdcUnits(args.normalizedAmount);
+  const maxUnits = parseUsdcUnits(maxTransferableUsdc);
+  return {
+    requestedAmount: args.requestedAmount,
+    normalizedAmount: args.normalizedAmount,
+    perpWithdrawableRaw: args.balance.perpWithdrawable,
+    maxTransferableUsdc,
+    comparisonResult: amountUnits > maxUnits ? "amount_gt_max" : "amount_lte_max",
+  };
+}
+
+function assertPerpWithdrawableSufficient(preflight: PredictionTransferPreflight): void {
+  if (preflight.comparisonResult === "balance_unavailable") {
     throw new PredictionTransferException(
       "INVALID_PARAMS",
       "Perp withdrawable balance is unavailable.",
@@ -380,13 +441,12 @@ function assertPerpWithdrawableSufficient(args: {
       "balance_unavailable",
     );
   }
-  const amountUnits = parseUsdcUnits(args.amount);
-  const withdrawableUnits = parseUsdcUnits(args.balance.perpWithdrawable);
-  if (amountUnits > withdrawableUnits) {
+  if (preflight.comparisonResult === "amount_gt_max") {
+    const max = preflight.maxTransferableUsdc ?? "0";
     throw new PredictionTransferException(
       "INVALID_PARAMS",
       "Insufficient perp withdrawable balance for prediction USDC transfer.",
-      `Available perp withdrawable is ${args.balance.perpWithdrawable} USDC. Enter an amount at or below that value.`,
+      `Available transfer amount is ${max} USDC. Use max.`,
       "insufficient_perp_balance",
     );
   }
@@ -464,6 +524,10 @@ export function normalizeUsdcAmount(input: string): string {
   return formatUsdcUnits(units);
 }
 
+function normalizeNonNegativeUsdcAmount(input: string): string {
+  return formatUsdcUnits(parseUsdcUnits(input));
+}
+
 function parseUsdcUnits(input: string): bigint {
   const trimmed = input.trim();
   if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u.test(trimmed)) {
@@ -503,6 +567,7 @@ function transferLogPayload(args: {
   user: `0x${string}`;
   action: PredictionUsdcTransferAction;
   balance: Awaited<ReturnType<typeof fetchPredictionBalanceState>>;
+  preflight: PredictionTransferPreflight;
 }) {
   return {
     user: args.user,
@@ -512,6 +577,11 @@ function transferLogPayload(args: {
     nonce: args.action.nonce,
     hip4SpendableBalance: args.balance.spotUsdcAvailable,
     perpWithdrawable: args.balance.perpWithdrawable,
+    requestedAmount: args.preflight.requestedAmount,
+    normalizedAmount: args.preflight.normalizedAmount,
+    perpWithdrawableRaw: args.preflight.perpWithdrawableRaw,
+    maxTransferableUsdc: args.preflight.maxTransferableUsdc,
+    comparisonResult: args.preflight.comparisonResult,
   };
 }
 
