@@ -6,7 +6,7 @@ export function authRequiredAgentRefusal(input: AgentInput, reason: string): Age
     id: "agent-analysis-auth-required",
     summary: "Live model analysis is unavailable.",
     thesis:
-      "OpenAI-backed analysis requires a verified Privy session. I did not call the model, and no order ticket was drafted.",
+      "Live model analysis requires a verified Privy session. I did not call the model, and no order ticket was drafted.",
     riskNote: "Agent.trade can draft only after validated market data and provider output. You still review and confirm any future ticket.",
     whyWrong: "A deterministic local read may still be available, but the live model path cannot run without server-side session verification.",
     reason,

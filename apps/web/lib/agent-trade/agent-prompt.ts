@@ -65,6 +65,7 @@ export const AGENT_ANALYSIS_JSON_SCHEMA = {
         model: { type: "string" },
         deterministic: { type: "boolean" },
         generatedAt: { type: "number" },
+        latencyMs: { type: "number" },
         fallbackReason: { type: "string" },
       },
     },

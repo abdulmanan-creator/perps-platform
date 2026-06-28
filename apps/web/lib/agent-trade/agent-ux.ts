@@ -18,8 +18,11 @@ export interface AgentDataReadItem {
 export const PHASE_4B_AGENT_VALIDATION_CHECKLIST = [
   "deterministic mode",
   "OpenAI disabled mode",
+  "Anthropic disabled mode",
+  "DeepSeek disabled mode",
+  "Qwen disabled mode",
   "OpenAI enabled with mock/fake key failure",
-  "OpenAI enabled with valid key if available",
+  "live provider enabled with valid key if available",
   "malformed model output",
   "timeout/provider error",
   "no usable price",
@@ -45,11 +48,13 @@ export function agentProviderDisplay(agent?: Pick<AgentResponse, "provider">): A
     };
   }
 
-  if (provider.name === "openai") {
+  if (!provider.deterministic) {
     return {
       state: "liveModel",
-      label: provider.model ? `OpenAI ${provider.model}` : "OpenAI model",
-      detail: "Validated model response",
+      label: provider.model ? `${providerLabel(provider.name)} ${provider.model}` : `${providerLabel(provider.name)} model`,
+      detail: provider.latencyMs != null
+        ? `Validated model response · ${Math.round(provider.latencyMs)}ms`
+        : "Validated model response",
     };
   }
 
@@ -58,6 +63,25 @@ export function agentProviderDisplay(agent?: Pick<AgentResponse, "provider">): A
     label: "Deterministic",
     detail: "Local deterministic analysis",
   };
+}
+
+function providerLabel(providerName: NonNullable<AgentResponse["provider"]>["name"]): string {
+  if (providerName === "openai") {
+    return "OpenAI";
+  }
+  if (providerName === "anthropic") {
+    return "Anthropic";
+  }
+  if (providerName === "deepseek") {
+    return "DeepSeek";
+  }
+  if (providerName === "qwen") {
+    return "Qwen";
+  }
+  if (providerName === "openrouter") {
+    return "OpenRouter";
+  }
+  return "Deterministic";
 }
 
 export function agentDataReadSummary(args: {

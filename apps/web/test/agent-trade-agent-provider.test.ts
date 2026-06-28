@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { handleAgentAnalysisPost } from "../lib/agent-trade/agent-analysis-route";
+import { handleAgentAnalysisGet, handleAgentAnalysisPost } from "../lib/agent-trade/agent-analysis-route";
 import {
   createServerAgentProvider,
   resolveServerAgentProviderConfig,
@@ -9,7 +9,8 @@ import { buildAgentInput, type AgentAnalysis, type AgentProvider } from "../lib/
 import type { AgentRouteAuthFailureReason, AgentRouteAuthResult } from "../lib/agent-trade/agent-route-auth";
 import type { AgentRouteRateLimitDecision } from "../lib/agent-trade/agent-route-rate-limit";
 import type { AgentRouteTelemetryEvent } from "../lib/agent-trade/agent-route-telemetry";
-import { OpenAIAgentProvider } from "../lib/agent-trade/openai-agent-provider";
+import { AnthropicAgentProvider } from "../lib/agent-trade/anthropic-agent-provider";
+import { DeepSeekAgentProvider, OpenAIAgentProvider, QwenAgentProvider } from "../lib/agent-trade/openai-agent-provider";
 import { MOCK_TRADING_SNAPSHOT } from "../lib/agent-trade/mock-data";
 
 describe("Agent.trade real agent provider wiring", () => {
@@ -55,6 +56,7 @@ describe("Agent.trade real agent provider wiring", () => {
   it("documents deterministic default and server-only OpenAI env gates", () => {
     expect(resolveServerAgentProviderConfig({})).toMatchObject({
       requested: "deterministic",
+      resolved: "deterministic",
       isLiveModelEnabled: false,
     });
     expect(resolveServerAgentProviderConfig({
@@ -64,8 +66,56 @@ describe("Agent.trade real agent provider wiring", () => {
       AGENT_TRADE_AGENT_MODEL: "test-agent-model",
     })).toMatchObject({
       requested: "openai",
+      resolved: "openai",
       isLiveModelEnabled: true,
       model: "test-agent-model",
+    });
+  });
+
+  it("selects Anthropic, DeepSeek, and Qwen only when live calls and keys are configured", () => {
+    expect(createServerAgentProvider({
+      env: {
+        AGENT_TRADE_AGENT_PROVIDER: "anthropic",
+        AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+        ANTHROPIC_API_KEY: "anthropic-test",
+      },
+      fetchImpl: vi.fn(),
+    }).name).toBe("anthropic");
+    expect(createServerAgentProvider({
+      env: {
+        AGENT_TRADE_AGENT_PROVIDER: "deepseek",
+        AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+        DEEPSEEK_API_KEY: "deepseek-test",
+      },
+      fetchImpl: vi.fn(),
+    }).name).toBe("deepseek");
+    expect(createServerAgentProvider({
+      env: {
+        AGENT_TRADE_AGENT_PROVIDER: "qwen",
+        AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+        QWEN_API_KEY: "qwen-test",
+      },
+      fetchImpl: vi.fn(),
+    }).name).toBe("qwen");
+  });
+
+  it("auto selects the first configured live provider and otherwise stays deterministic", () => {
+    expect(resolveServerAgentProviderConfig({
+      AGENT_TRADE_AGENT_PROVIDER: "auto",
+      AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+      DEEPSEEK_API_KEY: "deepseek-test",
+    })).toMatchObject({
+      requested: "auto",
+      resolved: "deepseek",
+      isLiveModelEnabled: true,
+    });
+    expect(resolveServerAgentProviderConfig({
+      AGENT_TRADE_AGENT_PROVIDER: "auto",
+      AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+    })).toMatchObject({
+      requested: "auto",
+      resolved: "deterministic",
+      isLiveModelEnabled: false,
     });
   });
 
@@ -93,6 +143,62 @@ describe("Agent.trade real agent provider wiring", () => {
       deterministic: false,
     });
     expect(analysis.orderDraft).toBeUndefined();
+  });
+
+  it("returns validated Anthropic model output with provider metadata", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      content: [{ type: "text", text: JSON.stringify(validModelAnalysis(input, "anthropic")) }],
+    }), { status: 200 }));
+    const provider = new AnthropicAgentProvider({
+      apiKey: "anthropic-test",
+      model: "claude-test",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(fetchImpl).toHaveBeenCalledWith("https://api.anthropic.com/v1/messages", expect.objectContaining({
+      method: "POST",
+    }));
+    expect(analysis.provider).toMatchObject({
+      name: "anthropic",
+      model: "claude-test",
+      deterministic: false,
+    });
+    expect(analysis.orderDraft).toBeUndefined();
+  });
+
+  it("returns validated DeepSeek and Qwen model output through provider-specific OpenAI-compatible config", async () => {
+    const input = buildTestAgentInput();
+    const deepSeekFetch = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(validModelAnalysis(input, "deepseek")) } }],
+    }), { status: 200 }));
+    const qwenFetch = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(validModelAnalysis(input, "qwen")) } }],
+    }), { status: 200 }));
+
+    const deepSeek = await new DeepSeekAgentProvider({
+      apiKey: "deepseek-test",
+      model: "deepseek-test-model",
+      fetchImpl: deepSeekFetch,
+    }).analyzeMarket(input);
+    const qwen = await new QwenAgentProvider({
+      apiKey: "qwen-test",
+      model: "qwen-test-model",
+      fetchImpl: qwenFetch,
+    }).analyzeMarket(input);
+
+    expect(deepSeekFetch).toHaveBeenCalledWith("https://api.deepseek.com/chat/completions", expect.objectContaining({
+      method: "POST",
+    }));
+    expect(qwenFetch).toHaveBeenCalledWith("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", expect.objectContaining({
+      method: "POST",
+    }));
+    expect(deepSeek.provider).toMatchObject({ name: "deepseek", model: "deepseek-test-model" });
+    expect(qwen.provider).toMatchObject({ name: "qwen", model: "qwen-test-model" });
+    expect(deepSeek.orderDraft).toBeUndefined();
+    expect(qwen.orderDraft).toBeUndefined();
   });
 
   it("rejects malformed OpenAI model output without a draft", async () => {
@@ -173,6 +279,41 @@ describe("Agent.trade real agent provider wiring", () => {
     expect(analysis.provider.fallbackReason).toContain("timed out");
   });
 
+  it("exposes provider availability without exposing server API keys", async () => {
+    const response = await handleAgentAnalysisGet({
+      env: {
+        AGENT_TRADE_AGENT_PROVIDER: "auto",
+        AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+        OPENAI_API_KEY: "sk-test",
+        ANTHROPIC_API_KEY: "anthropic-test",
+        DEEPSEEK_API_KEY: "deepseek-test",
+        QWEN_API_KEY: "qwen-test",
+      },
+    });
+    const body = await response.json() as {
+      providers: Array<{ name: string; available: boolean; model?: string; apiKey?: string }>;
+    };
+
+    expect(body.providers.map((provider) => provider.name)).toEqual([
+      "auto",
+      "openai",
+      "anthropic",
+      "deepseek",
+      "qwen",
+      "deterministic",
+    ]);
+    expect(body.providers.filter((provider) => provider.available).map((provider) => provider.name)).toEqual([
+      "auto",
+      "openai",
+      "anthropic",
+      "deepseek",
+      "qwen",
+      "deterministic",
+    ]);
+    expect(JSON.stringify(body)).not.toContain("sk-test");
+    expect(JSON.stringify(body)).not.toContain("anthropic-test");
+  });
+
   it("does not call OpenAI from the route when Privy auth is missing", async () => {
     const input = buildTestAgentInput();
     const fetchImpl = vi.fn();
@@ -197,6 +338,58 @@ describe("Agent.trade real agent provider wiring", () => {
       provider: "deterministic",
       authRejected: true,
       fallbackReason: "missing_auth",
+    });
+  });
+
+  it("uses selected provider metadata from the POST envelope", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(validModelAnalysis(input, "deepseek")) } }],
+    }), { status: 200 }));
+
+    const response = await handleAgentAnalysisPost(agentRequest(input, "deepseek"), {
+      env: {
+        AGENT_TRADE_AGENT_PROVIDER: "deterministic",
+        AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+        DEEPSEEK_API_KEY: "deepseek-test",
+        AGENT_TRADE_DEEPSEEK_MODEL: "deepseek-selected",
+      },
+      fetchImpl,
+      authVerifier: async () => authenticated(),
+      rateLimiter: allowAllLimiter(),
+      now: () => 1_710_000_000_000,
+    });
+    const analysis = await response.json() as AgentAnalysis;
+
+    expect(analysis.provider).toMatchObject({
+      name: "deepseek",
+      model: "deepseek-selected",
+      deterministic: false,
+    });
+    expect(analysis.orderDraft).toBeUndefined();
+  });
+
+  it("falls back deterministically when selected provider is missing an API key", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn();
+
+    const response = await handleAgentAnalysisPost(agentRequest(input, "qwen"), {
+      env: {
+        AGENT_TRADE_AGENT_PROVIDER: "deterministic",
+        AGENT_TRADE_ENABLE_LIVE_LLM: "true",
+      },
+      fetchImpl,
+      authVerifier: async () => authenticated(),
+      rateLimiter: allowAllLimiter(),
+      now: () => 1_710_000_000_000,
+    });
+    const analysis = await response.json() as AgentAnalysis;
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(analysis.provider).toMatchObject({
+      name: "deterministic",
+      deterministic: true,
+      fallbackReason: "Qwen provider requested without QWEN_API_KEY; using deterministic fallback.",
     });
   });
 
@@ -306,7 +499,10 @@ function buildTestAgentInput() {
   });
 }
 
-function validModelAnalysis(input: ReturnType<typeof buildTestAgentInput>): AgentAnalysis {
+function validModelAnalysis(
+  input: ReturnType<typeof buildTestAgentInput>,
+  providerName: AgentAnalysis["provider"]["name"] = "openai",
+): AgentAnalysis {
   return {
     responseType: "market_read",
     summary: "BTC is in a monitored market-read state.",
@@ -321,7 +517,7 @@ function validModelAnalysis(input: ReturnType<typeof buildTestAgentInput>): Agen
     whyWrong: "The read could miss news, hidden liquidity, or flow not present in the terminal snapshot.",
     warnings: [],
     provider: {
-      name: "openai",
+      name: providerName,
       model: "test-agent-model",
       deterministic: false,
       generatedAt: input.timestamp,
@@ -341,14 +537,14 @@ function openAiEnabledEnv() {
   };
 }
 
-function agentRequest(input: ReturnType<typeof buildTestAgentInput>): Request {
+function agentRequest(input: ReturnType<typeof buildTestAgentInput>, provider?: string): Request {
   return new Request("http://localhost/api/agent-trade/agent-analysis", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-forwarded-for": "203.0.113.10",
     },
-    body: JSON.stringify(input),
+    body: JSON.stringify(provider ? { input, provider } : input),
   });
 }
 

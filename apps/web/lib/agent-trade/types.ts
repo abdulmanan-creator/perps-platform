@@ -186,10 +186,11 @@ export interface AgentResponse {
   followUps?: string[];
   warnings?: string[];
   provider?: {
-    name: "deterministic" | "openai" | "anthropic" | "openrouter";
+    name: "deterministic" | "openai" | "anthropic" | "deepseek" | "qwen" | "openrouter";
     model?: string;
     deterministic: boolean;
     generatedAt: number;
+    latencyMs?: number;
     fallbackReason?: string;
   };
 }

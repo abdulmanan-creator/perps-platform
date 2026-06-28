@@ -119,6 +119,7 @@ export function parseAgentAnalysis(output: unknown): AgentAnalysis | undefined {
       model: typeof output.provider.model === "string" ? output.provider.model : undefined,
       deterministic: output.provider.deterministic === true,
       generatedAt: Number(output.provider.generatedAt),
+      latencyMs: isFiniteNumber(output.provider.latencyMs) ? output.provider.latencyMs : undefined,
       fallbackReason: typeof output.provider.fallbackReason === "string" ? output.provider.fallbackReason : undefined,
     },
     id: typeof output.id === "string" ? output.id : undefined,
@@ -269,8 +270,15 @@ function isAgentProviderMetadata(input: Record<string, unknown>) {
   );
 }
 
-function parseProviderName(input: unknown): AgentProviderName | undefined {
-  if (input === "deterministic" || input === "openai" || input === "anthropic" || input === "openrouter") {
+export function parseProviderName(input: unknown): AgentProviderName | undefined {
+  if (
+    input === "deterministic" ||
+    input === "openai" ||
+    input === "anthropic" ||
+    input === "deepseek" ||
+    input === "qwen" ||
+    input === "openrouter"
+  ) {
     return input;
   }
   return undefined;

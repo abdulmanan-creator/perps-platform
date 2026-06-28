@@ -10,6 +10,7 @@ import {
   type AgentAnalysis,
   type AgentInput,
   type AgentProvider,
+  type AgentProviderSelection,
   type AgentResponseType,
 } from "./agent-provider";
 import {
@@ -38,6 +39,7 @@ export interface AgentService {
     mainnetExecutionEnabled?: boolean;
     killSwitchEnabled?: boolean;
     executionVenue?: string;
+    providerPreference?: AgentProviderSelection;
   }): Promise<AgentResponse>;
   runPrompt(args: {
     prompt: string;
@@ -54,6 +56,7 @@ export interface AgentService {
     mainnetExecutionEnabled?: boolean;
     killSwitchEnabled?: boolean;
     executionVenue?: string;
+    providerPreference?: AgentProviderSelection;
   }): Promise<AgentResponse>;
 }
 
@@ -117,6 +120,7 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
     mainnetExecutionEnabled?: boolean;
     killSwitchEnabled?: boolean;
     executionVenue?: string;
+    providerPreference?: AgentProviderSelection;
   }): Promise<AgentResponse> {
     const input = buildAgentInput({
       prompt: scenarioPrompt(args.scenario, args.snapshot),
@@ -133,6 +137,7 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
       mainnetExecutionEnabled: args.mainnetExecutionEnabled,
       killSwitchEnabled: args.killSwitchEnabled,
       executionVenue: args.executionVenue,
+      providerPreference: args.providerPreference,
     });
     return await this.runProvider(input);
   }
@@ -152,6 +157,7 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
     mainnetExecutionEnabled?: boolean;
     killSwitchEnabled?: boolean;
     executionVenue?: string;
+    providerPreference?: AgentProviderSelection;
   }): Promise<AgentResponse> {
     const scenario = this.classifyPrompt(args.prompt);
     const input = buildAgentInput({
@@ -169,6 +175,7 @@ export class DeterministicAgentService implements AgentService, AgentProvider {
       mainnetExecutionEnabled: args.mainnetExecutionEnabled,
       killSwitchEnabled: args.killSwitchEnabled,
       executionVenue: args.executionVenue,
+      providerPreference: args.providerPreference,
     });
     return await this.runProvider(input);
   }
@@ -670,7 +677,10 @@ class AgentAnalysisRouteProvider implements AgentProvider {
       const response = await fetch("/api/agent-trade/agent-analysis", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
+        body: JSON.stringify({
+          input,
+          provider: input.providerPreference ?? "auto",
+        }),
       });
       if (!response.ok) {
         return await this.fallback(input, `Agent analysis route returned HTTP ${response.status}.`);

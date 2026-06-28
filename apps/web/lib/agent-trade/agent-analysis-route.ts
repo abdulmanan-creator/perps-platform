@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import type { AgentProvider } from "./agent-provider";
 import {
   createServerAgentProvider,
+  readAgentProviderEnv,
   resolveServerAgentProviderConfig,
   type AgentProviderEnv,
 } from "./agent-provider-factory";
+import type { AgentProviderSelection } from "./agent-provider";
 import {
   ipRateLimitKey,
   verifyAgentRoutePrivyAuth,
@@ -24,6 +26,7 @@ import {
 } from "./agent-route-telemetry";
 import {
   invalidAgentOutputRefusal,
+  parseProviderName,
   parseAgentAnalysis,
   parseAgentInput,
 } from "./agent-validation";
@@ -49,8 +52,6 @@ export async function handleAgentAnalysisPost(
   const startedAt = now();
   const telemetry = options.telemetry ?? logAgentRouteTelemetry;
   const env = options.env ?? readAgentAnalysisRouteEnv();
-  const providerConfig = resolveServerAgentProviderConfig(env);
-
   let body: unknown;
   try {
     body = await request.json();
@@ -58,7 +59,9 @@ export async function handleAgentAnalysisPost(
     return NextResponse.json({ message: "Invalid JSON body." }, { status: 400 });
   }
 
-  const input = parseAgentInput(body);
+  const envelope = parseAgentAnalysisRequest(body);
+  const providerConfig = resolveServerAgentProviderConfig(env, envelope.provider);
+  const input = parseAgentInput(envelope.input);
   if (!input) {
     return NextResponse.json({ message: "Invalid AgentInput body." }, { status: 400 });
   }
@@ -114,7 +117,11 @@ export async function handleAgentAnalysisPost(
     });
   }
 
-  const provider = options.provider ?? createServerAgentProvider({ env, fetchImpl: options.fetchImpl });
+  const provider = options.provider ?? createServerAgentProvider({
+    env,
+    fetchImpl: options.fetchImpl,
+    requestedProvider: providerConfig.requested,
+  });
   let rawAnalysis: unknown;
   try {
     rawAnalysis = await provider.analyzeMarket(input);
@@ -123,6 +130,7 @@ export async function handleAgentAnalysisPost(
   }
   const parsedAnalysis = parseAgentAnalysis(rawAnalysis);
   const analysis = parsedAnalysis ?? invalidAgentOutputRefusal(input);
+  analysis.provider.latencyMs = now() - startedAt;
   const invalidOutput = !parsedAnalysis;
   telemetry({
     route: "agent_analysis",
@@ -141,6 +149,38 @@ export async function handleAgentAnalysisPost(
   });
 }
 
+export async function handleAgentAnalysisGet(options: Pick<AgentAnalysisRouteOptions, "env"> = {}) {
+  const env = options.env ?? readAgentAnalysisRouteEnv();
+  const providerConfig = resolveServerAgentProviderConfig(env);
+  return NextResponse.json(
+    {
+      requested: providerConfig.requested,
+      resolved: providerConfig.resolved,
+      liveCallsEnabled: providerConfig.liveCallsEnabled,
+      providers: providerConfig.providers,
+    },
+    {
+      headers: jsonHeaders(),
+    },
+  );
+}
+
+function parseAgentAnalysisRequest(body: unknown): {
+  input: unknown;
+  provider?: AgentProviderSelection;
+} {
+  if (isRecord(body) && "input" in body) {
+    return {
+      input: body.input,
+      provider: parseProviderSelection(body.provider),
+    };
+  }
+  return {
+    input: body,
+    provider: isRecord(body) ? parseProviderSelection(body.providerPreference) : undefined,
+  };
+}
+
 function jsonHeaders(): Record<string, string> {
   return {
     "cache-control": "no-store",
@@ -149,13 +189,35 @@ function jsonHeaders(): Record<string, string> {
 
 function readAgentAnalysisRouteEnv(): AgentAnalysisRouteEnv {
   return {
-    AGENT_TRADE_AGENT_PROVIDER: process.env.AGENT_TRADE_AGENT_PROVIDER,
-    AGENT_TRADE_ENABLE_LIVE_LLM: process.env.AGENT_TRADE_ENABLE_LIVE_LLM,
-    AGENT_TRADE_AGENT_MODEL: process.env.AGENT_TRADE_AGENT_MODEL,
+    ...readAgentProviderEnv(),
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+    QWEN_API_KEY: process.env.QWEN_API_KEY,
     PRIVY_APP_ID: process.env.PRIVY_APP_ID,
     PRIVY_APP_SECRET: process.env.PRIVY_APP_SECRET,
     AGENT_TRADE_AGENT_RATE_LIMIT_MAX: process.env.AGENT_TRADE_AGENT_RATE_LIMIT_MAX,
     AGENT_TRADE_AGENT_RATE_LIMIT_WINDOW_MS: process.env.AGENT_TRADE_AGENT_RATE_LIMIT_WINDOW_MS,
   };
+}
+
+function parseProviderSelection(input: unknown): AgentProviderSelection | undefined {
+  if (input === "auto") {
+    return "auto";
+  }
+  const providerName = parseProviderName(input);
+  if (
+    providerName === "deterministic" ||
+    providerName === "openai" ||
+    providerName === "anthropic" ||
+    providerName === "deepseek" ||
+    providerName === "qwen"
+  ) {
+    return providerName;
+  }
+  return undefined;
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return Boolean(input) && typeof input === "object" && !Array.isArray(input);
 }

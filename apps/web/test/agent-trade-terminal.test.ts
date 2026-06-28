@@ -1680,14 +1680,16 @@ describe("Agent.trade terminal product-loop helpers", () => {
     });
     expect(agentProviderDisplay({
       provider: {
-        name: "openai",
-        model: "gpt-test",
+        name: "deepseek",
+        model: "deepseek-test",
         deterministic: false,
         generatedAt: Date.now(),
+        latencyMs: 422,
       },
     })).toMatchObject({
       state: "liveModel",
-      label: "OpenAI gpt-test",
+      label: "DeepSeek deepseek-test",
+      detail: "Validated model response · 422ms",
     });
     expect(agentProviderDisplay({
       provider: {
@@ -1736,8 +1738,11 @@ describe("Agent.trade terminal product-loop helpers", () => {
     expect(PHASE_4B_AGENT_VALIDATION_CHECKLIST).toEqual(expect.arrayContaining([
       "deterministic mode",
       "OpenAI disabled mode",
+      "Anthropic disabled mode",
+      "DeepSeek disabled mode",
+      "Qwen disabled mode",
       "OpenAI enabled with mock/fake key failure",
-      "OpenAI enabled with valid key if available",
+      "live provider enabled with valid key if available",
       "malformed model output",
       "timeout/provider error",
       "no usable price",

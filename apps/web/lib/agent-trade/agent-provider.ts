@@ -16,7 +16,11 @@ export type AgentProviderName =
   | "deterministic"
   | "openai"
   | "anthropic"
+  | "deepseek"
+  | "qwen"
   | "openrouter";
+
+export type AgentProviderSelection = Exclude<AgentProviderName, "openrouter"> | "auto";
 
 export type AgentResponseType =
   | "greeting"
@@ -111,6 +115,7 @@ export interface AgentFreshnessInput {
 export interface AgentInput {
   requestedPrompt: string;
   scenario?: string;
+  providerPreference?: AgentProviderSelection;
   market: AgentMarketInput;
   orderBook: SharedTradingSnapshot["orderBook"];
   recentTrades: RecentTrade[];
@@ -128,6 +133,7 @@ export interface AgentProviderMetadata {
   model?: string;
   deterministic: boolean;
   generatedAt: number;
+  latencyMs?: number;
   fallbackReason?: string;
 }
 
@@ -164,6 +170,7 @@ export function buildAgentInput(args: {
   mainnetExecutionEnabled?: boolean;
   killSwitchEnabled?: boolean;
   executionVenue?: string;
+  providerPreference?: AgentProviderSelection;
   now?: number;
 }): AgentInput {
   const now = args.now ?? Date.now();
@@ -184,6 +191,7 @@ export function buildAgentInput(args: {
   return {
     requestedPrompt: args.prompt,
     scenario: args.scenario,
+    providerPreference: args.providerPreference,
     market: { ...args.snapshot.market },
     orderBook: {
       bids: args.snapshot.orderBook.bids.slice(0, 10),

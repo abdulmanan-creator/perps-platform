@@ -20,6 +20,7 @@ import {
   ticketSourceDisplay,
 } from "@/lib/agent-trade/agent-ux";
 import { createAgentService, type AgentScenario } from "@/lib/agent-trade/agent-service";
+import type { AgentProviderSelection } from "@/lib/agent-trade/agent-provider";
 import { parseConnectorDraftParam } from "@/lib/agent-trade/connector-draft";
 import {
   fmtAdaptiveUsd,
@@ -132,6 +133,15 @@ interface TerminalStreamDebug {
   streamStatus: TerminalStreamStatus;
 }
 
+interface AgentProviderOption {
+  name: AgentProviderSelection;
+  label: string;
+  available: boolean;
+  configured: boolean;
+  model?: string;
+  reason?: string;
+}
+
 interface ClosePositionIntent {
   position: Position;
   draft: OrderDraft;
@@ -147,6 +157,14 @@ interface ClosePositionIntent {
 }
 
 const agentService = createAgentService();
+const DEFAULT_AGENT_PROVIDER_OPTIONS: AgentProviderOption[] = [
+  { name: "auto", label: "Auto", available: true, configured: false },
+  { name: "openai", label: "OpenAI", available: false, configured: false },
+  { name: "anthropic", label: "Anthropic", available: false, configured: false },
+  { name: "deepseek", label: "DeepSeek", available: false, configured: false },
+  { name: "qwen", label: "Qwen", available: false, configured: false },
+  { name: "deterministic", label: "Deterministic", available: true, configured: true },
+];
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
 const LOCAL_DEV_WALLET: TerminalWalletReadiness = { status: "local-dev", authStatus: "not-configured" };
 
@@ -335,6 +353,8 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   const [isLoadingCandles, setIsLoadingCandles] = useState(false);
   const [streamStatus, setStreamStatus] = useState<TerminalStreamStatus>("disconnected");
   const importedConnectorDraftRef = useRef<string | undefined>();
+  const [agentProviderPreference, setAgentProviderPreference] = useState<AgentProviderSelection>("auto");
+  const [agentProviderOptions, setAgentProviderOptions] = useState<AgentProviderOption[]>(DEFAULT_AGENT_PROVIDER_OPTIONS);
   const streamDebugRef = useRef<TerminalStreamDebug>({
     selectedMarket: MOCK_TRADING_SNAPSHOT.market.symbol,
     subscribedCoin: MOCK_TRADING_SNAPSHOT.market.base,
@@ -344,6 +364,38 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 5_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProviderOptions() {
+      try {
+        const response = await fetch("/api/agent-trade/agent-analysis", {
+          method: "GET",
+          headers: { accept: "application/json" },
+        });
+        if (!response.ok) {
+          return;
+        }
+        const options = parseAgentProviderOptions(await response.json());
+        if (!cancelled && options.length > 0) {
+          setAgentProviderOptions(options);
+          setAgentProviderPreference((current) =>
+            options.some((option) => option.name === current && option.available)
+              ? current
+              : "auto",
+          );
+        }
+      } catch {
+        // Keep deterministic-safe defaults if provider availability cannot load.
+      }
+    }
+
+    void loadProviderOptions();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -951,6 +1003,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
       killSwitchEnabled: eligibility.killSwitchEnabled,
       executionVenue: eligibility.executionVenue,
+      providerPreference: agentProviderPreference,
     });
     setAgent(response);
     setAgentQuestion(response.question);
@@ -1051,6 +1104,7 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
       mainnetExecutionEnabled: eligibility.mainnetExecutionEnabled,
       killSwitchEnabled: eligibility.killSwitchEnabled,
       executionVenue: eligibility.executionVenue,
+      providerPreference: agentProviderPreference,
     });
     setAgent(response);
     setAnnotations(response.annotations);
@@ -1455,6 +1509,9 @@ function TerminalExperience({ wallet }: { wallet: TerminalWalletReadiness }) {
               snapshot={snapshot}
               eligibility={eligibility.state}
               mode={mode}
+              providerPreference={agentProviderPreference}
+              providerOptions={agentProviderOptions}
+              setProviderPreference={setAgentProviderPreference}
             />
           </div>
         </section>
@@ -2425,6 +2482,9 @@ function AgentPanel(props: {
   snapshot: SharedTradingSnapshot;
   eligibility: EligibilityMode;
   mode: "paper" | "live";
+  providerPreference: AgentProviderSelection;
+  providerOptions: AgentProviderOption[];
+  setProviderPreference: (provider: AgentProviderSelection) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const provider = agentProviderDisplay(props.agent);
@@ -2456,6 +2516,21 @@ function AgentPanel(props: {
       <div className="receipt-row" style={{ padding: "10px 12px 0" }}>
         <span>{provider.detail}</span>
         <span>Agent drafts; you confirm.</span>
+      </div>
+      <div className="agent-provider-row">
+        <label htmlFor="agent-provider-select">Model</label>
+        <select
+          id="agent-provider-select"
+          value={props.providerPreference}
+          onChange={(event) => props.setProviderPreference(event.target.value as AgentProviderSelection)}
+          aria-label="Agent model provider"
+        >
+          {props.providerOptions.map((option) => (
+            <option key={option.name} value={option.name} disabled={!option.available}>
+              {option.model ? `${option.label} · ${option.model}` : option.label}
+            </option>
+          ))}
+        </select>
       </div>
       {isRestricted ? (
         <p className="paper-note">Paper draft only. Live trading is unavailable until eligibility is confirmed.</p>
@@ -2536,6 +2611,50 @@ function AgentPanel(props: {
       ) : null}
     </div>
   );
+}
+
+function parseAgentProviderOptions(input: unknown): AgentProviderOption[] {
+  if (!isRecord(input) || !Array.isArray(input.providers)) {
+    return [];
+  }
+  const parsed = input.providers
+    .map(parseAgentProviderOption)
+    .filter((option): option is AgentProviderOption => Boolean(option));
+  return parsed.length > 0 ? parsed : [];
+}
+
+function parseAgentProviderOption(input: unknown): AgentProviderOption | undefined {
+  if (!isRecord(input) || !isAgentProviderSelection(input.name)) {
+    return undefined;
+  }
+  if (
+    typeof input.label !== "string" ||
+    typeof input.available !== "boolean" ||
+    typeof input.configured !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    name: input.name,
+    label: input.label,
+    available: input.available,
+    configured: input.configured,
+    model: typeof input.model === "string" ? input.model : undefined,
+    reason: typeof input.reason === "string" ? input.reason : undefined,
+  };
+}
+
+function isAgentProviderSelection(input: unknown): input is AgentProviderSelection {
+  return input === "auto" ||
+    input === "openai" ||
+    input === "anthropic" ||
+    input === "deepseek" ||
+    input === "qwen" ||
+    input === "deterministic";
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return Boolean(input) && typeof input === "object" && !Array.isArray(input);
 }
 
 function BottomPanel(props: {
