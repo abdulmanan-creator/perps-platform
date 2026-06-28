@@ -19,6 +19,7 @@ import {
   formatSpread,
   formatUsdc,
   formatPredictionLivePriceWire,
+  getPredictionHip4EffectiveMinOrderCostUsd,
   getPredictionHip4MinOrderCostUsd,
   hasSufficientPredictionSpotBalance,
   hasValidPredictionTopOfBook,
@@ -28,6 +29,7 @@ import {
   loadPredictionBalance,
   loadPredictionDiscoveryOddsSummaries,
   mergePredictionL2BookUpdate,
+  minimumPredictionContractsForCost,
   maxPayoutForContracts,
   normalizePredictionL2BookMessage,
   premiumForContracts,
@@ -491,13 +493,20 @@ describe("Agent.trade prediction helpers", () => {
     expect(action.orders[0]).toMatchObject({ a: 100_002_170, p: "0.0375", s: "53" });
   });
 
-  it("keeps HIP-4 live trading default-off, uses a $10 HIP-4 min, and summarizes nested exchange statuses", () => {
+  it("keeps HIP-4 live trading default-off, uses an $11 effective HIP-4 min, and summarizes nested exchange statuses", () => {
     expect(isPredictionLiveTradingEnabled(undefined)).toBe(false);
     expect(isPredictionLiveTradingEnabled("false")).toBe(false);
     expect(isPredictionLiveTradingEnabled("true")).toBe(true);
     expect(getPredictionHip4MinOrderCostUsd(undefined)).toBe(10);
     expect(getPredictionHip4MinOrderCostUsd("2.5")).toBe(2.5);
     expect(getPredictionHip4MinOrderCostUsd("bad")).toBe(10);
+    expect(getPredictionHip4EffectiveMinOrderCostUsd(undefined, 10)).toBe(11);
+    expect(getPredictionHip4EffectiveMinOrderCostUsd("12", 10)).toBe(12);
+    expect(getPredictionHip4EffectiveMinOrderCostUsd("9", 10)).toBe(10);
+    expect(getPredictionHip4EffectiveMinOrderCostUsd("bad", 10)).toBe(11);
+    expect(minimumPredictionContractsForCost(0.243, 11)).toBe(46);
+    expect(calculatePredictionTicketMath(42, 0.243).estimatedCost).toBe(10.206);
+    expect(calculatePredictionTicketMath(46, 0.243).estimatedCost).toBe(11.178);
     expect(summarizePredictionLiveExchangeResult({
       exchangeResponse: { status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 99 } }] } } },
     })).toEqual({ status: "resting", label: "Resting open order", oid: 99 });
@@ -786,8 +795,10 @@ describe("prediction route smoke", () => {
     const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
     expect(source).toContain("Live prediction data unavailable");
     expect(source).toContain("Back to predictions");
-    expect(source).toContain("HIP-4 min cost");
-    expect(source).toContain("getPredictionHip4MinOrderCostUsd");
+    expect(source).toContain("HIP-4 min target");
+    expect(source).toContain("getPredictionHip4EffectiveMinOrderCostUsd");
+    expect(source).toContain("Live review is locked until");
+    expect(source).toContain("Wire price");
   });
 
   it("keeps prediction paper helpers away from exchange submission", () => {
@@ -849,8 +860,10 @@ describe("prediction route smoke", () => {
       "Side",
       "Buy/sell",
       "Contracts",
-      "Limit probability",
+      "Wire price",
       "Max cost",
+      "Effective minimum",
+      "HIP-4 spendable",
       "Asset id",
       "Coin",
       "Acknowledgement",

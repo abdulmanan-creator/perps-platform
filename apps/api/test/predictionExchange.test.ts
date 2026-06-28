@@ -63,7 +63,7 @@ const prediction: PredictionLiveOrderRequest = {
   outcome: 189,
   side: 0,
   action: "buy",
-  contracts: 53,
+  contracts: 59,
   limitProbability: 0.1888,
   tif: "Ioc",
   criteriaAcknowledged: true,
@@ -220,7 +220,7 @@ describe("prediction live exchange route", () => {
     expect(body.action).toMatchObject({
       type: "order",
       grouping: "na",
-      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "53", r: false, t: { limit: { tif: "Ioc" } } }],
+      orders: [{ a: 100_001_890, b: true, p: "0.1888", s: "59", r: false, t: { limit: { tif: "Ioc" } } }],
     });
     expect(body.action.type === "order" ? body.action.orders[0]!.a : null).toBe(100_001_890);
     expect(hip4PredictionEncoding(189, 0)).toBe(1_890);
@@ -291,7 +291,7 @@ describe("prediction live exchange route", () => {
       { label: "asset", prediction, action: actionFor(prediction, 100_001_891) },
       { label: "price", prediction: { ...prediction, limitProbability: 1 }, action: actionFor({ ...prediction, limitProbability: 1 }) },
       { label: "contracts", prediction: { ...prediction, contracts: 0 }, action: actionFor({ ...prediction, contracts: 0 }) },
-      { label: "cost", prediction: { ...prediction, contracts: 52, limitProbability: 0.1888 }, action: actionFor({ ...prediction, contracts: 52, limitProbability: 0.1888 }) },
+      { label: "cost", prediction: { ...prediction, contracts: 58, limitProbability: 0.1888 }, action: actionFor({ ...prediction, contracts: 58, limitProbability: 0.1888 }) },
       { label: "wire price", prediction, action: actionFor(prediction, 100_001_890, "0.18879") },
     ];
 
@@ -306,8 +306,8 @@ describe("prediction live exchange route", () => {
     }
   });
 
-  it("blocks HIP-4 prediction orders below $10 and allows $10 or more", async () => {
-    const belowMin = { ...prediction, contracts: 52, limitProbability: 0.1888 };
+  it("blocks HIP-4 prediction orders below the $11 effective minimum and allows $11+ orders", async () => {
+    const belowMin = { ...prediction, contracts: 53, limitProbability: 0.1888 };
     const belowRes = await app.inject({
       method: "POST",
       url: "/prediction/exchange",
@@ -316,9 +316,10 @@ describe("prediction live exchange route", () => {
     });
 
     expect(belowRes.statusCode).toBe(422);
-    expect(belowRes.json().message).toBe("HIP-4 prediction orders must be at least $10.");
+    expect(belowRes.json().message).toBe("HIP-4 prediction orders must target at least $11.");
+    expect(belowRes.json().guidance).toContain("Agent.trade requires an effective minimum of 11 USDC");
 
-    const atMin = { ...prediction, contracts: 53, limitProbability: 0.1888 };
+    const atMin = { ...prediction, contracts: 59, limitProbability: 0.1888 };
     const atMinRes = await app.inject({
       method: "POST",
       url: "/prediction/exchange",
@@ -327,6 +328,32 @@ describe("prediction live exchange route", () => {
     });
 
     expect(atMinRes.statusCode, atMinRes.body).toBe(200);
+  });
+
+  it("blocks the observed 42 France Yes order locally and allows the buffered 46-contract order", async () => {
+    const observedRejection = { ...prediction, contracts: 42, limitProbability: 0.243 };
+    const observedRes = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { user: TEST_USER, prediction: observedRejection, action: actionFor(observedRejection, 100_001_890, "0.243") },
+    });
+
+    expect(observedRes.statusCode).toBe(422);
+    expect(observedRes.json().message).toContain("at least $11");
+
+    const retry = { ...prediction, contracts: 46, limitProbability: 0.243 };
+    const retryRes = await app.inject({
+      method: "POST",
+      url: "/prediction/exchange",
+      headers: liveHeaders(),
+      payload: { user: TEST_USER, prediction: retry, action: actionFor(retry, 100_001_890, "0.243") },
+    });
+
+    expect(retryRes.statusCode, retryRes.body).toBe(200);
+    expect((retryRes.json() as BuildResponse).action).toMatchObject({
+      orders: [{ a: 100_001_890, p: "0.243", s: "46" }],
+    });
   });
 
   it("accepts normalized HIP-4 wire prices for too-precise requested probabilities", async () => {
@@ -340,12 +367,12 @@ describe("prediction live exchange route", () => {
 
     expect(res.statusCode, res.body).toBe(200);
     expect((res.json() as BuildResponse).action).toMatchObject({
-      orders: [{ p: "0.1888", s: "53" }],
+      orders: [{ p: "0.1888", s: "59" }],
     });
   });
 
   it("normalizes low-probability HIP-4 prices to the 0.0001 outcome tick", async () => {
-    const lowProbability = { ...prediction, outcome: 217, contracts: 250, limitProbability: 0.04002 };
+    const lowProbability = { ...prediction, outcome: 217, contracts: 276, limitProbability: 0.04002 };
     const res = await app.inject({
       method: "POST",
       url: "/prediction/exchange",
@@ -355,7 +382,7 @@ describe("prediction live exchange route", () => {
 
     expect(res.statusCode, res.body).toBe(200);
     expect((res.json() as BuildResponse).action).toMatchObject({
-      orders: [{ a: 100_002_170, p: "0.04", s: "250" }],
+      orders: [{ a: 100_002_170, p: "0.04", s: "276" }],
     });
   });
 

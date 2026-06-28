@@ -118,6 +118,15 @@ export function getPredictionHip4MinOrderCostUsd(
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
 }
 
+export function getPredictionHip4EffectiveMinOrderCostUsd(
+  value = process.env.NEXT_PUBLIC_AGENT_TRADE_HIP4_EFFECTIVE_MIN_ORDER_COST_USD,
+  minCostUsd = getPredictionHip4MinOrderCostUsd(),
+): number {
+  const parsed = Number(value ?? "11");
+  const effectiveMin = Number.isFinite(parsed) && parsed > 0 ? parsed : 11;
+  return Math.max(minCostUsd, effectiveMin);
+}
+
 export function isPredictionWorldCupStreamEnabled(questionId: number): boolean {
   return questionId === WORLD_CUP_QUESTION_ID;
 }
@@ -692,6 +701,16 @@ export function calculatePredictionTicketMath(contracts: number, probability: nu
     maxLoss: estimatedCost,
     breakEvenProbability: normalizedProbability,
   };
+}
+
+export function minimumPredictionContractsForCost(probability: number, minCostUsd: number): number {
+  const wirePrice = Number(formatPredictionLivePriceWire(probability));
+  if (!Number.isFinite(wirePrice) || wirePrice <= 0 || !Number.isFinite(minCostUsd) || minCostUsd <= 0) {
+    return 0;
+  }
+  const minimum = Math.max(1, Math.ceil(minCostUsd / wirePrice));
+  const cost = round(minimum * wirePrice);
+  return cost <= minCostUsd + 1e-9 ? minimum + 1 : minimum;
 }
 
 export function enrichPredictionPaperPositions(

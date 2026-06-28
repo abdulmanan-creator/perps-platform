@@ -147,6 +147,14 @@ export async function predictionExchangeRoute(app: FastifyInstance): Promise<voi
           validated,
           phase: "send",
         });
+        req.log.info(
+          {
+            route: ROUTE,
+            order: sanitizedPredictionOrder(body.action),
+            prediction: body.prediction ?? null,
+          },
+          "prediction_exchange_send_order",
+        );
         await recordExchangeSubmission({
           req,
           cfg: app.config,
@@ -335,7 +343,8 @@ export function validatePredictionLiveExchange(args: {
 
   const expectedPrice = predictionLimitPriceWire(prediction.limitProbability);
   const costUsd = Number(expectedPrice) * prediction.contracts;
-  if (costUsd < args.cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD) {
+  const effectiveMinCostUsd = predictionEffectiveMinCostUsd(args.cfg);
+  if (costUsd < effectiveMinCostUsd) {
     throw new ApiException(
       "INVALID_PARAMS",
       predictionMinCostMessage(args.cfg),
@@ -345,7 +354,14 @@ export function validatePredictionLiveExchange(args: {
 
   assertActionMatchesPrediction(args.body, prediction, side, expectedPrice);
 
-  return { prediction, outcome, side, wirePrice: expectedPrice, estimatedCost: roundUsd(costUsd) };
+  return {
+    prediction,
+    outcome,
+    side,
+    wirePrice: expectedPrice,
+    estimatedCost: roundUsd(costUsd),
+    effectiveMinCost: effectiveMinCostUsd,
+  };
 }
 
 async function assertPredictionBalanceReady(args: {
@@ -467,11 +483,15 @@ function formatHip4PredictionPrice(price: string | number): string {
 }
 
 function predictionMinCostMessage(cfg: Config): string {
-  return `HIP-4 prediction orders must be at least $${formatUsd(cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD)}.`;
+  return `HIP-4 prediction orders must target at least $${formatUsd(predictionEffectiveMinCostUsd(cfg))}.`;
 }
 
 function predictionMinCostGuidance(cfg: Config): string {
-  return `Increase contracts or limit probability so cost is at least ${formatUsd(cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD)} USDC.`;
+  return `Hyperliquid enforces a ${formatUsd(cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD)} USDC minimum for HIP-4 orders; Agent.trade requires an effective minimum of ${formatUsd(predictionEffectiveMinCostUsd(cfg))} USDC for venue-side checks. Increase contracts or limit probability so cost is at least ${formatUsd(predictionEffectiveMinCostUsd(cfg))} USDC.`;
+}
+
+function predictionEffectiveMinCostUsd(cfg: Config): number {
+  return Math.max(cfg.AGENT_TRADE_HIP4_MIN_ORDER_COST_USD, cfg.AGENT_TRADE_HIP4_EFFECTIVE_MIN_ORDER_COST_USD);
 }
 
 function formatUsd(value: number): string {
@@ -489,6 +509,7 @@ function validationPayload(validated: PredictionValidation) {
     rawLimitProbability: validated.prediction.limitProbability,
     wirePrice: validated.wirePrice,
     estimatedCost: validated.estimatedCost,
+    effectiveMinCost: validated.effectiveMinCost,
     tif: validated.prediction.tif,
     assetId: validated.side.assetId,
     coin: validated.side.coin,
@@ -504,8 +525,22 @@ interface PredictionValidation {
   side: PredictionOutcomeSide;
   wirePrice: string;
   estimatedCost: number;
+  effectiveMinCost: number;
 }
 
 function roundUsd(value: number): number {
   return Number(value.toFixed(8));
+}
+
+function sanitizedPredictionOrder(action: ExchangeBody["action"]) {
+  if (action.type !== "order") return { type: action.type };
+  const order = action.orders[0];
+  return {
+    type: action.type,
+    grouping: action.grouping,
+    a: order?.a,
+    p: order?.p,
+    s: order?.s,
+    tif: order && "limit" in order.t ? order.t.limit.tif : undefined,
+  };
 }

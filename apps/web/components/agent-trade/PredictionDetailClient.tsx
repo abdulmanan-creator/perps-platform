@@ -24,9 +24,11 @@ import {
   formatEmptyBook,
   formatProbability,
   formatProbabilityPrice,
+  formatPredictionLivePriceWire,
   formatSpread,
   formatUsdc,
   buildPredictionLiveOrderAction,
+  getPredictionHip4EffectiveMinOrderCostUsd,
   getPredictionHip4MinOrderCostUsd,
   hasSufficientPredictionSpotBalance,
   hasValidPredictionTopOfBook,
@@ -39,6 +41,7 @@ import {
   loadPredictionBalance,
   mergePredictionL2BookUpdate,
   mergePredictionOutcomeOdds,
+  minimumPredictionContractsForCost,
   normalizePredictionL2BookMessage,
   predictionPaperFillsForQuestion,
   predictionHip4Coin,
@@ -765,14 +768,19 @@ function PredictionPaperTicket(props: {
 
   const math = calculatePredictionTicketMath(contracts, limitProbability);
   const hip4MinOrderCostUsd = getPredictionHip4MinOrderCostUsd();
+  const hip4EffectiveMinOrderCostUsd = getPredictionHip4EffectiveMinOrderCostUsd(undefined, hip4MinOrderCostUsd);
+  const minimumLiveContracts = minimumPredictionContractsForCost(limitProbability, hip4EffectiveMinOrderCostUsd);
+  const minimumLiveCost = calculatePredictionTicketMath(minimumLiveContracts, limitProbability).estimatedCost;
+  const liveWirePrice = formatPredictionLivePriceWire(math.probability);
   const quoteToken = props.selectedOutcome?.quoteToken ?? props.question.quoteToken ?? props.question.quoteTokens[0] ?? "USDC";
   const liquidityWarning = paperLiquidityWarning(props.selectedSide);
   const selectedTechnical = props.selectedOutcome?.sides[props.selectedSideIndex];
   const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
   const selectedTopOfBookReady = hasValidPredictionTopOfBook(props.selectedSide);
-  const predictionBalanceSufficient = hasSufficientPredictionSpotBalance(predictionBalance, math.estimatedCost);
+  const liveRequiredCostUsd = mode === "live" ? Math.max(math.estimatedCost, hip4EffectiveMinOrderCostUsd) : math.estimatedCost;
+  const predictionBalanceSufficient = hasSufficientPredictionSpotBalance(predictionBalance, liveRequiredCostUsd);
   const transferSuggestion = suggestPredictionUsdcTransferAmount({
-    requiredCostUsd: math.estimatedCost,
+    requiredCostUsd: liveRequiredCostUsd,
     spotUsdcAvailable: Number(predictionBalance?.spotUsdcAvailable ?? 0),
     perpWithdrawable: Number(predictionBalance?.perpWithdrawable ?? 0),
   });
@@ -780,7 +788,7 @@ function PredictionPaperTicket(props: {
     mode,
     liveAllowed: liveAvailable.allowed,
     balance: predictionBalance,
-    requiredCostUsd: math.estimatedCost,
+    requiredCostUsd: liveRequiredCostUsd,
   });
   const transferAmountNumber = Number(transferAmount || transferSuggestion || 0);
   const transferAmountValid =
@@ -792,9 +800,23 @@ function PredictionPaperTicket(props: {
     liveAvailable.allowed &&
     Boolean(selectedTechnical) &&
     selectedTopOfBookReady &&
-    math.estimatedCost >= hip4MinOrderCostUsd &&
+    math.estimatedCost >= hip4EffectiveMinOrderCostUsd &&
     predictionBalanceStatus === "ready" &&
     predictionBalanceSufficient;
+  const liveDisabledReasons = liveReviewDisabledReasons({
+    mode,
+    walletConnected: Boolean(props.activeWallet?.address),
+    liveAvailable,
+    selectedSideLoading: props.selectedSideLoading,
+    selectedTechnical: Boolean(selectedTechnical),
+    selectedTopOfBookReady,
+    criteriaAcknowledged,
+    contracts: math.contracts,
+    estimatedCost: math.estimatedCost,
+    effectiveMinCost: hip4EffectiveMinOrderCostUsd,
+    predictionBalanceStatus,
+    predictionBalanceSufficient,
+  });
 
   useEffect(() => {
     if (showTransferCard && !transferAmount && transferSuggestion) {
@@ -1015,7 +1037,7 @@ function PredictionPaperTicket(props: {
           <div className="prediction-ticket-body prediction-ticket-technical">
             <MetricCell label="Asset id" value={String(selectedTechnical.assetId)} />
             <MetricCell label="Coin" value={selectedTechnical.coin} />
-            <MetricCell label="HIP-4 min cost" value={formatUsdc(hip4MinOrderCostUsd)} />
+            <MetricCell label="HIP-4 min target" value={formatUsdc(hip4EffectiveMinOrderCostUsd)} />
           </div>
         ) : null}
         {mode === "live" ? (
@@ -1099,8 +1121,17 @@ function PredictionPaperTicket(props: {
         {mode === "live" && props.selectedSide && !selectedTopOfBookReady ? (
           <p className="market-notice">Live review requires a valid two-sided top of book for the selected outcome side.</p>
         ) : null}
-        {mode === "live" && math.estimatedCost < hip4MinOrderCostUsd ? (
-          <p className="market-notice">Live HIP-4 cost must be at least {formatUsdc(hip4MinOrderCostUsd)}.</p>
+        {mode === "live" && math.estimatedCost < hip4EffectiveMinOrderCostUsd ? (
+          <div className="market-notice prediction-min-order-notice">
+            <span>
+              Live HIP-4 cost must target at least {formatUsdc(hip4EffectiveMinOrderCostUsd)} so Hyperliquid&apos;s 10 USDC minimum clears venue-side checks.
+            </span>
+            {minimumLiveContracts > math.contracts ? (
+              <button type="button" onClick={() => setContracts(minimumLiveContracts)}>
+                Use {minimumLiveContracts} contracts ({formatUsdc(minimumLiveCost)})
+              </button>
+            ) : null}
+          </div>
         ) : null}
         <label className="prediction-ack-row">
           <input
@@ -1119,6 +1150,16 @@ function PredictionPaperTicket(props: {
             {liveState === "building" || liveState === "signing" || liveState === "submitting" ? "Submitting live order..." : "Review live order"}
           </button>
         )}
+        {mode === "live" && !canSubmitLive && liveState !== "building" && liveState !== "signing" && liveState !== "submitting" ? (
+          <div className="market-notice prediction-live-disabled-reasons">
+            <span>Live review is locked until:</span>
+            <ul>
+              {liveDisabledReasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {liveAvailable.pathVisible && !props.authenticated && props.walletReady ? (
           <button type="button" onClick={props.onLogin}>Connect wallet for live</button>
         ) : null}
@@ -1146,8 +1187,9 @@ function PredictionPaperTicket(props: {
               <MetricCell label="Side" value={props.selectedSide.name} />
               <MetricCell label="Buy/sell" value="Buy" />
               <MetricCell label="Contracts" value={math.contracts.toFixed(0)} />
-              <MetricCell label="Limit probability" value={formatProbability(math.probability)} />
+              <MetricCell label="Wire price" value={liveWirePrice} />
               <MetricCell label="Max cost" value={formatUsdc(math.estimatedCost)} />
+              <MetricCell label="Effective minimum" value={formatUsdc(hip4EffectiveMinOrderCostUsd)} />
               <MetricCell label="HIP-4 spendable" value={formatUsdc(Number(predictionBalance?.spotUsdcAvailable ?? 0))} />
               <MetricCell label="Asset id" value={String(selectedTechnical.assetId)} />
               <MetricCell label="Coin" value={selectedTechnical.coin} />
@@ -1317,6 +1359,40 @@ export function getPredictionLiveAvailability(input: {
     };
   }
   return { allowed: true, pathVisible: true, reason: "Live prediction trading is available for this eligible wallet." };
+}
+
+function liveReviewDisabledReasons(input: {
+  mode: "paper" | "live";
+  walletConnected: boolean;
+  liveAvailable: { allowed: boolean; reason: string };
+  selectedSideLoading: boolean;
+  selectedTechnical: boolean;
+  selectedTopOfBookReady: boolean;
+  criteriaAcknowledged: boolean;
+  contracts: number;
+  estimatedCost: number;
+  effectiveMinCost: number;
+  predictionBalanceStatus: "idle" | "loading" | "ready" | "failed";
+  predictionBalanceSufficient: boolean;
+}): string[] {
+  if (input.mode !== "live") return [];
+  const reasons: string[] = [];
+  if (!input.walletConnected) reasons.push("Connect an eligible wallet.");
+  if (!input.liveAvailable.allowed) reasons.push(input.liveAvailable.reason);
+  if (input.selectedSideLoading) reasons.push("Selected odds finish loading.");
+  if (!input.selectedTechnical) reasons.push("Selected outcome technical details are available.");
+  if (!input.selectedTopOfBookReady) reasons.push("Selected outcome has a valid two-sided top of book.");
+  if (!input.criteriaAcknowledged) reasons.push("Resolution criteria are acknowledged.");
+  if (input.contracts <= 0) reasons.push("Contracts are a positive whole number.");
+  if (input.estimatedCost < input.effectiveMinCost) {
+    reasons.push(`Max cost reaches the ${formatUsdc(input.effectiveMinCost)} HIP-4 effective minimum.`);
+  }
+  if (input.predictionBalanceStatus === "loading") reasons.push("HIP-4 spendable balance check completes.");
+  if (input.predictionBalanceStatus === "failed") reasons.push("HIP-4 spendable balance can be verified.");
+  if (input.predictionBalanceStatus === "ready" && !input.predictionBalanceSufficient) {
+    reasons.push("HIP-4 spendable balance covers the live order max cost and effective minimum.");
+  }
+  return reasons.length > 0 ? reasons : ["Live ticket readiness checks pass."];
 }
 
 async function readPredictionLiveError(

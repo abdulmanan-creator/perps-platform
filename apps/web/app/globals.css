@@ -171,6 +171,23 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .mode-control button.active { background: var(--blue); color: white; box-shadow: 0 0 18px rgba(91,99,255,0.18); }
 .mode-control span { color: var(--dim); font-size: 12px; padding: 0 6px; }
 .market-notice { margin: 10px 0 0; color: var(--amber); font-size: 13px; }
+.prediction-min-order-notice,
+.prediction-live-disabled-reasons {
+  display: grid;
+  gap: 8px;
+}
+.prediction-min-order-notice button {
+  justify-self: start;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.08);
+  color: var(--amber);
+}
+.prediction-live-disabled-reasons ul {
+  margin: 0;
+  padding-left: 18px;
+}
 
 .markets-page { padding: 18px; }
 .markets-head {
