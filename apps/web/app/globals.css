@@ -2037,6 +2037,26 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   padding: 0 14px 14px;
 }
 .compact-button { width: auto; margin: 0; }
+.login-method-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+.login-method-panel button {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 11px;
+  background: rgba(255,255,255,0.035);
+  color: var(--text);
+  font-weight: 700;
+}
+.login-method-panel p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
 .funding-status {
   margin: 14px 14px 0;
   padding: 12px;
@@ -2065,11 +2085,34 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   color: var(--muted);
 }
 .funding-status .card-actions { padding: 0; }
+.funding-tabs {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+.funding-method-group {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.018);
+  overflow: hidden;
+}
+.funding-method-group-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.funding-method-group-head strong { color: var(--text); }
+.funding-method-group-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
 .funding-methods {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  padding: 14px;
+  padding: 10px;
 }
 .funding-method {
   min-height: 156px;
@@ -2124,6 +2167,20 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .gasless-deposit-body .form-error {
   color: var(--red);
+}
+.builder-technical-details {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.025);
+}
+.builder-technical-details summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--text);
+  font-weight: 700;
+}
+.builder-technical-details .readiness-list {
+  padding-top: 0;
 }
 .risk-copy-list p { margin: 0; color: var(--muted); }
 .onboarding-next { overflow: hidden; }

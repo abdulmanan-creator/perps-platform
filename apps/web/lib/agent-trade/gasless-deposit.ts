@@ -290,7 +290,7 @@ export function getGaslessDepositReadiness(input: GaslessDepositReadinessInput):
   if (input.hlAccountValueUsd >= MIN_AGENT_TRADE_ORDER_NOTIONAL_USD) {
     return {
       action: "open_ticket",
-      primaryLabel: "Open mainnet ticket",
+      primaryLabel: "Start trading",
       summary: "Hyperliquid trading balance is funded for Agent.trade's $10 minimum order notional.",
       ctaEnabled: true,
       depositNeeded: false,

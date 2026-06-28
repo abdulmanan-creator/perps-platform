@@ -16,7 +16,11 @@ import {
 } from "@/lib/agent-trade/account-readiness";
 import { loadTradingSnapshot } from "@/lib/agent-trade/data";
 import { normalizeEligibilityResponse } from "@/lib/agent-trade/eligibility";
-import { getFundingDisplay, getFundingMethodDisplays } from "@/lib/agent-trade/funding";
+import {
+  getFundingDisplay,
+  getFundingMethodGroups,
+  type FundingMethodDisplay,
+} from "@/lib/agent-trade/funding";
 import {
   ARBITRUM_CHAIN_ID,
   HL_BRIDGE_ARBITRUM,
@@ -58,12 +62,18 @@ interface WalletSummary {
   address?: string;
   walletType?: string;
   walletKind?: "embedded" | "external" | "unknown";
-  login?: () => void;
+  login?: (options?: AgentTradeLoginOptions) => void;
   logout?: () => void;
 }
 
 interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+}
+
+type AgentTradeLoginMethod = "email" | "google" | "wallet" | "apple";
+
+interface AgentTradeLoginOptions {
+  loginMethods?: AgentTradeLoginMethod[];
 }
 
 type WalletAddressCopyState = "idle" | "copied" | "manual";
@@ -141,12 +151,26 @@ export function getLegacyDepositPathUi(input: {
 }
 
 const HAS_PRIVY = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
-const PRIVY_FUNDING_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING === "true";
+const PRIVY_FIAT_ONRAMP_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FIAT_ONRAMP === "true" ||
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING === "true";
+const PRIVY_BANK_DEPOSIT_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_BANK_DEPOSIT === "true";
+const PRIVY_CRYPTO_DEPOSIT_ADDRESS_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_CRYPTO_DEPOSIT_ADDRESS === "true";
+const PRIVY_APPLE_LOGIN_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_APPLE_LOGIN === "true";
 const HL_BRIDGE_DEPOSIT_ENABLED = process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT === "true";
 const GASLESS_HL_DEPOSIT_ENABLED =
   process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_GASLESS_HL_DEPOSIT === "true";
-const DASHBOARD_PROVIDER_CONFIGURED = true;
-const DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED = true;
+const BRIDGE_BANK_DEPOSIT_CONFIGURED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_BRIDGE_BANK_DEPOSIT_CONFIGURED === "true";
+const DASHBOARD_PROVIDER_CONFIGURED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_PRIVY_FIAT_ONRAMP_CONFIGURED === "true";
+const DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_PRIVY_DEPOSIT_ADDRESS_CONFIGURED === "true";
+const PRIVY_FIAT_ONRAMP_EXPOSED =
+  PRIVY_FIAT_ONRAMP_ENABLED && DASHBOARD_PROVIDER_CONFIGURED;
 
 export function OnboardingClient({ surface = "onboarding" }: { surface?: "onboarding" | "settings" }) {
   const [eligibility, setEligibility] = useState<EligibilityResponse>({
@@ -285,7 +309,7 @@ function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse
   const { fundWallet } = useFundWallet();
   const [opening, setOpening] = useState(false);
   const [providerError, setProviderError] = useState<string | null>(null);
-  const providerAvailable = PRIVY_FUNDING_ENABLED && typeof fundWallet === "function";
+  const providerAvailable = PRIVY_FIAT_ONRAMP_EXPOSED && typeof fundWallet === "function";
   const address = wallet.status === "connected" && wallet.address
     ? wallet.address as `0x${string}`
     : undefined;
@@ -314,7 +338,7 @@ function PrivyOnboardingPath({ eligibility }: { eligibility: EligibilityResponse
       setBuilderApproval(await res.json() as BuilderApprovalState);
     } catch (err) {
       setBuilderApproval(undefined);
-      setBuilderApprovalError(err instanceof Error ? err.message : "Builder approval status unavailable.");
+      setBuilderApprovalError(err instanceof Error ? err.message : "Trading permission status unavailable.");
     } finally {
       setBuilderApprovalLoading(false);
     }
@@ -380,10 +404,14 @@ function OnboardingPath(props: {
     eligibilityState: props.eligibility.state,
     hasPrivyEnv: HAS_PRIVY,
     walletConnected: props.wallet.status === "connected",
-    providerEnabled: PRIVY_FUNDING_ENABLED,
+    providerEnabled: PRIVY_FIAT_ONRAMP_EXPOSED,
     providerAvailable: props.providerAvailable,
     providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
     depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+    fiatOnrampEnabled: PRIVY_FIAT_ONRAMP_EXPOSED,
+    bankDepositEnabled: PRIVY_BANK_DEPOSIT_ENABLED,
+    bankDepositConfigured: BRIDGE_BANK_DEPOSIT_CONFIGURED,
+    cryptoDepositAddressEnabled: PRIVY_CRYPTO_DEPOSIT_ADDRESS_ENABLED,
     providerOpening: props.providerOpening,
     providerError: props.providerError,
   });
@@ -471,7 +499,7 @@ function OnboardingPath(props: {
     </button>
   ) : gaslessReadiness.action === "open_ticket" && !builderReadiness.approved ? (
     <button className="path-choice active" disabled title={builderReadiness.ctaDisabledReason ?? builderReadiness.summary}>
-      <strong>Complete builder approval</strong>
+      <strong>Enable Agent.trade execution</strong>
       <span>{builderReadiness.ctaDisabledReason ?? builderReadiness.summary}</span>
     </button>
   ) : gaslessReadiness.action === "open_ticket" ? (
@@ -496,7 +524,7 @@ function OnboardingPath(props: {
       <div className="panel-head">
         <div>
           <span>Start path</span>
-          <strong>Sign in to wallet to eligibility to funding</strong>
+          <strong>Log in to fund to enable trading</strong>
         </div>
         <span className={`readiness-pill ${funding.liveFundingEnabled ? "green" : "amber"}`}>
           {funding.liveFundingEnabled ? "Funding action ready" : "Funding gated"}
@@ -506,7 +534,7 @@ function OnboardingPath(props: {
         <PathStep
           step="1"
           title={HAS_PRIVY ? "Sign in" : "Local dev"}
-          body={HAS_PRIVY ? "Use configured email, Google, or existing-wallet sign-in." : "Privy is not configured here; paper mode remains available."}
+          body={HAS_PRIVY ? "Continue with email, Google, or wallet. Apple stays hidden unless explicitly configured." : "Privy is not configured here; paper mode remains available."}
           status={HAS_PRIVY ? "Ready" : "Privy env missing"}
           tone={HAS_PRIVY ? "green" : "amber"}
         />
@@ -551,13 +579,13 @@ function OnboardingPath(props: {
                 <span>{gaslessReadiness.depositNeeded ? gaslessReadiness.summary : "Hyperliquid trading balance is funded."}</span>
               </div>
               <div>
-                <strong>3. Open mainnet ticket</strong>
+                <strong>3. Start trading</strong>
                 <span>
                   {gaslessReadiness.readyToTrade
                     ? builderReadiness.approved
-                      ? "Hyperliquid account is funded and builder fee is approved; live orders still require confirmation."
-                      : "Approve Agent.trade builder fee before opening a live mainnet ticket."
-                    : "Open a mainnet ticket after Hyperliquid trading balance reaches Agent.trade's $10 minimum."}
+                      ? "Hyperliquid account is funded and trading is enabled; you confirm orders in Agent.trade."
+                      : "Enable Agent.trade execution with a one-time Hyperliquid permission before opening a live mainnet ticket."
+                    : "Start trading after Hyperliquid trading balance reaches Agent.trade's $10 minimum."}
                 </span>
               </div>
             </div>
@@ -661,7 +689,7 @@ function PrivyReadinessOverviewCard({ eligibility }: { eligibility: EligibilityR
     <ReadinessOverviewCard
       eligibility={eligibility}
       wallet={wallet}
-      providerAvailable={PRIVY_FUNDING_ENABLED && typeof fundWallet === "function"}
+      providerAvailable={PRIVY_FIAT_ONRAMP_EXPOSED && typeof fundWallet === "function"}
     />
   );
 }
@@ -679,10 +707,14 @@ function ReadinessOverviewCard({
     eligibilityState: eligibility.state,
     hasPrivyEnv: HAS_PRIVY,
     walletConnected: wallet.status === "connected",
-    providerEnabled: PRIVY_FUNDING_ENABLED,
+    providerEnabled: PRIVY_FIAT_ONRAMP_EXPOSED,
     providerAvailable,
     providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
     depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+    fiatOnrampEnabled: PRIVY_FIAT_ONRAMP_EXPOSED,
+    bankDepositEnabled: PRIVY_BANK_DEPOSIT_ENABLED,
+    bankDepositConfigured: BRIDGE_BANK_DEPOSIT_CONFIGURED,
+    cryptoDepositAddressEnabled: PRIVY_CRYPTO_DEPOSIT_ADDRESS_ENABLED,
   });
   const overview = getOnboardingReadiness({
     hasPrivyEnv: HAS_PRIVY,
@@ -709,6 +741,7 @@ function ReadinessOverviewCard({
         <ReadinessItemRow item={overview.eligibility} />
         <ReadinessItemRow item={overview.tradingMode} />
         <ReadinessItemRow item={overview.funding} />
+        <ReadinessItemRow item={overview.oneTapTrading} />
       </div>
       <p className="onboarding-note">{overview.summary}</p>
     </div>
@@ -808,14 +841,41 @@ function WalletCard({ wallet }: { wallet: WalletSummary }) {
         requirement. The agent researches, explains, and drafts; every live
         order returns to Agent.trade for explicit confirmation.
       </p>
+      {wallet.login ? <LoginMethodPanel onLogin={wallet.login} /> : null}
       {wallet.status === "local-dev" ? (
         <p className="local-dev-note">Set NEXT_PUBLIC_PRIVY_APP_ID to enable the Privy sign-in modal. Paper exploration works without it.</p>
       ) : null}
       <div className="card-actions">
-        {wallet.login ? <button className="primary-action compact-button" onClick={wallet.login}>Connect wallet</button> : null}
+        {wallet.login ? (
+          <button className="primary-action compact-button" onClick={() => wallet.login?.()}>
+            Connect wallet
+          </button>
+        ) : null}
         {wallet.logout ? <button className="secondary-action compact-button" onClick={wallet.logout}>Disconnect</button> : null}
         <Link className="secondary-action compact-button" href="/terminal">Skip to paper</Link>
       </div>
+    </div>
+  );
+}
+
+function LoginMethodPanel({ onLogin }: { onLogin: (options?: AgentTradeLoginOptions) => void }) {
+  return (
+    <div className="login-method-panel" aria-label="Sign-in methods">
+      <button type="button" onClick={() => onLogin({ loginMethods: ["email"] })}>
+        Continue with email
+      </button>
+      <button type="button" onClick={() => onLogin({ loginMethods: ["google"] })}>
+        Continue with Google
+      </button>
+      {PRIVY_APPLE_LOGIN_ENABLED ? (
+        <button type="button" onClick={() => onLogin({ loginMethods: ["apple"] })}>
+          Continue with Apple
+        </button>
+      ) : null}
+      <button type="button" onClick={() => onLogin({ loginMethods: ["wallet"] })}>
+        Continue with wallet
+      </button>
+      <p>Privy shows configured wallet connectors and search inside the wallet flow when dashboard settings allow it.</p>
     </div>
   );
 }
@@ -826,7 +886,7 @@ function FundingCardShell({ eligibility }: { eligibility: EligibilityResponse })
       <FundingCard
         eligibility={eligibility}
         wallet={{ status: "local-dev", authStatus: "not-configured" }}
-        providerEnabled={PRIVY_FUNDING_ENABLED}
+        providerEnabled={PRIVY_FIAT_ONRAMP_EXPOSED}
         providerAvailable={false}
       />
     );
@@ -953,7 +1013,7 @@ function PrivyFundingCard({ eligibility }: { eligibility: EligibilityResponse })
       wallet.status !== "connected" ||
       !wallet.address ||
       eligibility.state !== "liveEligible" ||
-      !PRIVY_FUNDING_ENABLED ||
+      !PRIVY_FIAT_ONRAMP_EXPOSED ||
       typeof fundWallet !== "function"
     ) {
       return;
@@ -975,8 +1035,8 @@ function PrivyFundingCard({ eligibility }: { eligibility: EligibilityResponse })
     <FundingCard
       eligibility={eligibility}
       wallet={wallet}
-      providerEnabled={PRIVY_FUNDING_ENABLED}
-      providerAvailable={PRIVY_FUNDING_ENABLED && typeof fundWallet === "function"}
+      providerEnabled={PRIVY_FIAT_ONRAMP_EXPOSED}
+      providerAvailable={PRIVY_FIAT_ONRAMP_EXPOSED && typeof fundWallet === "function"}
       providerOpening={opening}
       providerError={providerError}
       onOpenProvider={openProvider}
@@ -1001,10 +1061,14 @@ function FundingCard(props: {
     providerAvailable: props.providerAvailable,
     providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
     depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+    fiatOnrampEnabled: PRIVY_FIAT_ONRAMP_EXPOSED,
+    bankDepositEnabled: PRIVY_BANK_DEPOSIT_ENABLED,
+    bankDepositConfigured: BRIDGE_BANK_DEPOSIT_CONFIGURED,
+    cryptoDepositAddressEnabled: PRIVY_CRYPTO_DEPOSIT_ADDRESS_ENABLED,
     providerOpening: props.providerOpening,
     providerError: props.providerError,
   });
-  const methods = getFundingMethodDisplays({
+  const methodGroups = getFundingMethodGroups({
     eligibilityState: props.eligibility.state,
     hasPrivyEnv: HAS_PRIVY,
     walletConnected: props.wallet.status === "connected",
@@ -1012,6 +1076,10 @@ function FundingCard(props: {
     providerAvailable: props.providerAvailable,
     providerConfigured: DASHBOARD_PROVIDER_CONFIGURED,
     depositAddressConfigured: DASHBOARD_DEPOSIT_ADDRESS_CONFIGURED,
+    fiatOnrampEnabled: PRIVY_FIAT_ONRAMP_EXPOSED,
+    bankDepositEnabled: PRIVY_BANK_DEPOSIT_ENABLED,
+    bankDepositConfigured: BRIDGE_BANK_DEPOSIT_CONFIGURED,
+    cryptoDepositAddressEnabled: PRIVY_CRYPTO_DEPOSIT_ADDRESS_ENABLED,
     providerOpening: props.providerOpening,
     providerError: props.providerError,
   });
@@ -1024,7 +1092,7 @@ function FundingCard(props: {
     display.primaryCtaKind === "paper" ? (
       <Link className="primary-action compact-button" href="/terminal">{display.primaryCtaLabel}</Link>
     ) : display.primaryCtaKind === "connect_wallet" && props.wallet.login ? (
-      <button className="primary-action compact-button" onClick={props.wallet.login}>{display.primaryCtaLabel}</button>
+      <button className="primary-action compact-button" onClick={() => props.wallet.login?.()}>{display.primaryCtaLabel}</button>
     ) : display.primaryCtaKind === "open_provider" ? (
       <button className="primary-action compact-button" disabled={!display.primaryCtaEnabled} onClick={props.onOpenProvider}>
         {display.primaryCtaLabel}
@@ -1055,29 +1123,26 @@ function FundingCard(props: {
           <Link className="secondary-action compact-button" href="/markets">Scan markets</Link>
         </div>
       </div>
-      <div className="funding-methods">
-        {methods.map((method) => (
-          <FundingMethod
-            key={method.title}
-            title={method.title}
-            body={method.body}
-            status={method.status}
-            enabled={method.enabled}
-            detail={method.detail}
-          />
-        ))}
-        <FundingMethod
-          title="Hyperliquid deposit"
-          body="Wallet funding is separate from depositing into Hyperliquid. The legacy bridge/deposit surface is hidden unless explicitly enabled for an approved internal environment."
-          status={
-            bridgeDepositEnabled
-              ? "Flag enabled; still requires confirmation"
-              : HL_BRIDGE_DEPOSIT_ENABLED
-                ? "Disabled until live eligible"
-                : "Default-off"
-          }
-          enabled={bridgeDepositEnabled}
-          detail="This default-off legacy compatibility path is not normal onboarding."
+      <div className="funding-tabs">
+        <FundingMethodGroup title="Cash" methods={methodGroups.cash} />
+        <FundingMethodGroup title="Crypto" methods={methodGroups.crypto} />
+        <FundingMethodGroup
+          title="Hyperliquid"
+          methods={[
+            ...methodGroups.hyperliquid,
+            {
+              tab: "hyperliquid",
+              title: "Hyperliquid deposit",
+              body: "Wallet funding is separate from depositing into Hyperliquid. The legacy bridge/deposit surface is hidden unless explicitly enabled for an approved internal environment.",
+              status: bridgeDepositEnabled
+                ? "Flag enabled; still requires confirmation"
+                : HL_BRIDGE_DEPOSIT_ENABLED
+                  ? "Disabled until live eligible"
+                  : "Default-off",
+              enabled: bridgeDepositEnabled,
+              detail: "This default-off legacy compatibility path is not normal onboarding.",
+            },
+          ]}
         />
       </div>
       <p className="onboarding-note">
@@ -1569,7 +1634,7 @@ function PrivyBuilderApprovalCard({ eligibility }: { eligibility: EligibilityRes
       setApproval(await res.json() as BuilderApprovalState);
     } catch (err) {
       setApproval(undefined);
-      setApprovalError(err instanceof Error ? err.message : "Builder approval status unavailable.");
+      setApprovalError(err instanceof Error ? err.message : "Trading permission status unavailable.");
     } finally {
       setApprovalLoading(false);
     }
@@ -1603,7 +1668,7 @@ function PrivyBuilderApprovalCard({ eligibility }: { eligibility: EligibilityRes
     const maxFeeRate = builderApprovalMaxFeeRate(approval);
     if (!maxFeeRate) {
       setPhase("error");
-      setActionMessage("Configured Agent.trade builder fee could not be read. Refresh approval status before approving.");
+      setActionMessage("Configured Agent.trade permission fee could not be read. Refresh permission status before enabling trading.");
       return;
     }
 
@@ -1624,11 +1689,11 @@ function PrivyBuilderApprovalCard({ eligibility }: { eligibility: EligibilityRes
         body: JSON.stringify({ user: address, action }),
       });
       if (!buildRes.ok) {
-        throw new Error(liveOrderErrorMessage(await readBuilderApprovalError(buildRes, "Builder approval build failed")));
+        throw new Error(liveOrderErrorMessage(await readBuilderApprovalError(buildRes, "Enable Agent.trade execution build failed")));
       }
       const built = await readJsonOrEmpty(buildRes) as { typedData?: HyperliquidTypedData; nonce: number; action: unknown };
       if (!built.typedData) {
-        throw new Error("Builder approval build did not return typed data for wallet signing.");
+        throw new Error("Enable Agent.trade execution build did not return typed data for wallet signing.");
       }
 
       setPhase("signing");
@@ -1648,15 +1713,15 @@ function PrivyBuilderApprovalCard({ eligibility }: { eligibility: EligibilityRes
         body: JSON.stringify({ action: built.action, nonce: built.nonce, signature }),
       });
       if (!sendRes.ok) {
-        throw new Error(liveOrderErrorMessage(await readBuilderApprovalError(sendRes, "Builder approval send failed")));
+        throw new Error(liveOrderErrorMessage(await readBuilderApprovalError(sendRes, "Enable Agent.trade execution send failed")));
       }
       setPhase("approved");
-      setActionMessage("Builder fee approved. Live orders still require confirmation.");
+      setActionMessage("Trading enabled. You confirm orders in Agent.trade. Current MVP may still ask for wallet signatures until one-tap trading is enabled.");
       await refreshApproval();
       await refreshHlBalance();
     } catch (err) {
       setPhase("error");
-      setActionMessage(err instanceof Error ? err.message : "Builder approval failed.");
+      setActionMessage(err instanceof Error ? err.message : "Enable Agent.trade execution failed.");
     }
   }
 
@@ -1698,20 +1763,20 @@ function BuilderApprovalCard(props: {
   });
   const isBusy = props.phase === "building" || props.phase === "signing" || props.phase === "submitting";
   const phaseLabel = (() => {
-    if (props.phase === "building") return "Preparing approval";
-    if (props.phase === "signing") return "Sign builder approval";
-    if (props.phase === "submitting") return "Submitting approval";
-    if (props.phase === "approved") return "Builder fee approved";
-    if (props.phase === "error") return "Approval failed";
+    if (props.phase === "building") return "Preparing permission";
+    if (props.phase === "signing") return "Sign permission";
+    if (props.phase === "submitting") return "Submitting permission";
+    if (props.phase === "approved") return "Trading enabled";
+    if (props.phase === "error") return "Enable Agent.trade execution failed";
     return readiness.title;
   })();
-  const ctaDisabledReason = readiness.ctaDisabledReason ?? (isBusy ? "Approval is in progress." : undefined);
+  const ctaDisabledReason = readiness.ctaDisabledReason ?? (isBusy ? "Permission is in progress." : undefined);
 
   return (
     <div id="builder-approval-card" className="panel onboarding-card builder-approval-card">
       <div className="panel-head">
         <div>
-          <span>Builder approval</span>
+          <span>Trading permission</span>
           <strong>{phaseLabel}</strong>
         </div>
         <span className={`readiness-pill ${readiness.approved ? "green" : readiness.ctaEnabled ? "blue" : "amber"}`}>
@@ -1722,20 +1787,29 @@ function BuilderApprovalCard(props: {
         <ReadinessRow label="Active wallet" value={formatWalletAddress(props.wallet.address)} ok={props.wallet.status === "connected"} />
         <ReadinessRow label="Hyperliquid trading balance" value={`$${props.hlAccountValueUsd.toFixed(2)}`} ok={props.hlAccountValueUsd >= props.eligibility.minOrderNotionalUsd} />
         <ReadinessRow label="Eligibility" value={getEligibilityDisplay(props.eligibility.state).label} ok={props.eligibility.state === "liveEligible"} />
-        <ReadinessRow label="Builder address" value={formatWalletAddress(props.approval?.builder)} ok={Boolean(props.approval?.builder)} />
-        <ReadinessRow label="Configured fee" value={formatBuilderFeeBps(props.approval)} ok={Boolean(props.approval?.feeBreakdown?.configuredPerpsBps != null)} />
-        <ReadinessRow label="Current max fee" value={props.approval?.maxFeeRate ?? "Not checked"} ok={props.approval?.canTradePerps === true} />
-        <ReadinessRow label="Readiness" value={readiness.approved ? "Live orders ready after confirmation" : readiness.ctaEnabled ? "Approval required" : ctaDisabledReason ?? readiness.title} ok={readiness.approved} />
+        <ReadinessRow label="Readiness" value={readiness.approved ? "Start trading" : readiness.ctaEnabled ? "Enable Agent.trade execution" : ctaDisabledReason ?? readiness.title} ok={readiness.approved} />
       </div>
       <div className="gasless-deposit-body">
         <p>{readiness.summary}</p>
         {props.hlAccountValueUsd > 0 && props.hlAccountValueUsd < props.eligibility.minOrderNotionalUsd ? (
           <p>
             Trading balance is below/near the recommended amount for live orders.
-            Approval can be completed now; orders still require sufficient margin and $10+ notional.
+            Trading can be enabled now; orders still require sufficient margin and $10+ notional.
           </p>
         ) : null}
-        <p>Approving the builder fee lets Hyperliquid apply Agent.trade&apos;s configured builder code and fee. It does not grant autonomous trading; every live order still requires confirmation.</p>
+        <p>One-time Hyperliquid permission. You confirm orders in Agent.trade. Current MVP may still ask for wallet signatures until one-tap trading is enabled.</p>
+        <p>One-tap trading: coming soon. Approve a dedicated Hyperliquid API wallet so future orders can be confirmed in Agent.trade without repeated wallet popups.</p>
+        <details className="builder-technical-details">
+          <summary>Permission details</summary>
+          <div className="readiness-list">
+            <ReadinessRow label="Builder approval status" value={props.approval?.canTradePerps === true ? "Approved" : "Not approved"} ok={props.approval?.canTradePerps === true} />
+            <ReadinessRow label="Builder address" value={formatWalletAddress(props.approval?.builder)} ok={Boolean(props.approval?.builder)} />
+            <ReadinessRow label="Builder fee bps" value={formatBuilderFeeBps(props.approval)} ok={Boolean(props.approval?.feeBreakdown?.configuredPerpsBps != null)} />
+            <ReadinessRow label="Current max fee" value={props.approval?.maxFeeRate ?? "Not checked"} ok={props.approval?.canTradePerps === true} />
+            <ReadinessRow label="API wallet status" value="One-tap trading coming soon" ok={false} />
+            <ReadinessRow label="Agent wallet status" value="Not enabled" ok={false} />
+          </div>
+        </details>
         {props.actionMessage ? <p className={props.phase === "error" ? "form-error" : undefined}>{props.actionMessage}</p> : null}
         {readiness.ctaVisible ? (
           <button
@@ -1799,7 +1873,7 @@ function RiskCard({ state }: { state: EligibilityMode }) {
       </div>
       <div className="risk-copy-list">
         <p>Leveraged perpetuals can lose more than expected if sizing and liquidation risk are misunderstood.</p>
-        <p>In the current MVP flow, orders require Agent.trade confirmation. Permissioned agent execution is future roadmap work with scopes, caps, revocation, eligibility checks, audit logs, and kill switches.</p>
+        <p>In the current MVP flow, orders require Agent.trade confirmation and may still ask for wallet signatures. One-tap trading is future roadmap work with API wallet authorization, scopes, caps, revocation, eligibility checks, audit logs, and kill switches.</p>
         <p>Live orders remain guarded by server-side eligibility, caps, terms acknowledgement, and the kill switch.</p>
         <p>Where the edge jurisdiction gate blocks an entire restricted region, visitors may see the restricted page instead of app surfaces.</p>
         <p>{display.summary}</p>
@@ -1822,6 +1896,29 @@ function ReadinessItemRow({ item }: { item: ReadinessItem }) {
     <div className="readiness-row" title={item.detail}>
       <span>{item.label}</span>
       <strong className={item.ok ? "pos" : "neg"}>{item.value}</strong>
+    </div>
+  );
+}
+
+function FundingMethodGroup(props: { title: string; methods: FundingMethodDisplay[] }) {
+  return (
+    <div className="funding-method-group">
+      <div className="funding-method-group-head">
+        <strong>{props.title}</strong>
+        <span>{props.methods.some((method) => method.enabled) ? "Available" : "Hidden or gated"}</span>
+      </div>
+      <div className="funding-methods">
+        {props.methods.map((method) => (
+          <FundingMethod
+            key={method.title}
+            title={method.title}
+            body={method.body}
+            status={method.status}
+            enabled={method.enabled}
+            detail={method.detail}
+          />
+        ))}
+      </div>
     </div>
   );
 }

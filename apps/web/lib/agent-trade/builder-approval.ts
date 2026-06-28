@@ -1,7 +1,7 @@
 import type { EligibilityMode } from "./types";
 import type { WalletReadinessSummary } from "./account-readiness";
 
-export const BUILDER_APPROVAL_REQUIRED_MESSAGE = "Approve Agent.trade builder fee before first live order.";
+export const BUILDER_APPROVAL_REQUIRED_MESSAGE = "Enable Agent.trade execution before the first live order.";
 
 export interface BuilderApprovalState {
   approved: boolean;
@@ -52,9 +52,9 @@ export function getBuilderApprovalReadiness(input: {
   if (!input.hasPrivyEnv || input.wallet.status === "local-dev" || input.wallet.authStatus === "not-configured") {
     return {
       status: "local-dev",
-      title: "Builder approval unavailable",
+      title: "Trading permission unavailable",
       summary: "Privy sign-in is not configured in this environment. Paper mode remains available.",
-      ctaLabel: "Approval unavailable",
+      ctaLabel: "Enable Agent.trade execution unavailable",
       ctaVisible: false,
       ctaEnabled: false,
       approved: false,
@@ -64,9 +64,9 @@ export function getBuilderApprovalReadiness(input: {
   if (input.wallet.status === "loading" || input.wallet.authStatus === "loading") {
     return {
       status: "loading",
-      title: "Checking builder approval",
-      summary: "Checking the active wallet before showing builder approval readiness.",
-      ctaLabel: "Checking approval",
+      title: "Checking trading permission",
+      summary: "Checking the active wallet before showing one-time Hyperliquid permission readiness.",
+      ctaLabel: "Checking permission",
       ctaVisible: false,
       ctaEnabled: false,
       approved: false,
@@ -77,7 +77,7 @@ export function getBuilderApprovalReadiness(input: {
     return {
       status: "not-connected",
       title: "Connect wallet first",
-      summary: "A connected Privy wallet is required before checking or approving Agent.trade builder fees.",
+      summary: "A connected Privy wallet is required before checking the one-time Hyperliquid permission.",
       ctaLabel: "Connect wallet",
       ctaVisible: false,
       ctaEnabled: false,
@@ -89,8 +89,8 @@ export function getBuilderApprovalReadiness(input: {
     return {
       status: "ineligible",
       title: "Paper mode only",
-      summary: "Restricted, unknown, paper-only, or kill-switch states cannot approve builder fees or submit live orders.",
-      ctaLabel: "Approval disabled",
+      summary: "Restricted, unknown, paper-only, or kill-switch states cannot enable live trading or submit live orders.",
+      ctaLabel: "Enable Agent.trade execution disabled",
       ctaVisible: false,
       ctaEnabled: false,
       approved: false,
@@ -101,8 +101,8 @@ export function getBuilderApprovalReadiness(input: {
     return {
       status: "funding-required",
       title: "Fund Hyperliquid first",
-      summary: "Deposit USDC into Hyperliquid before approving the builder fee. Hyperliquid requires a funded account before wallet setup actions.",
-      ctaLabel: "Approval waits for funding",
+      summary: "Deposit USDC into Hyperliquid before enabling Agent.trade execution. Hyperliquid requires a funded account before wallet setup actions.",
+      ctaLabel: "Enable Agent.trade execution waits for funding",
       ctaVisible: true,
       ctaEnabled: false,
       ctaDisabledReason: "Hyperliquid trading balance is empty or unavailable.",
@@ -113,12 +113,12 @@ export function getBuilderApprovalReadiness(input: {
   if (input.approvalLoading) {
     return {
       status: "loading",
-      title: "Checking builder approval",
-      summary: "Checking Hyperliquid builder fee approval for the active wallet.",
-      ctaLabel: "Checking approval",
+      title: "Checking trading permission",
+      summary: "Checking the one-time Hyperliquid permission for the active wallet.",
+      ctaLabel: "Checking permission",
       ctaVisible: true,
       ctaEnabled: false,
-      ctaDisabledReason: "Approval status is still loading.",
+      ctaDisabledReason: "Permission status is still loading.",
       approved: false,
     };
   }
@@ -126,12 +126,12 @@ export function getBuilderApprovalReadiness(input: {
   if (!input.approval) {
     return {
       status: "unavailable",
-      title: "Approval status unavailable",
-      summary: input.approvalError ?? "Agent.trade could not read Hyperliquid builder approval for this wallet.",
-      ctaLabel: "Approval unavailable",
+      title: "Trading permission unavailable",
+      summary: input.approvalError ?? "Agent.trade could not read the Hyperliquid trading permission for this wallet.",
+      ctaLabel: "Permission unavailable",
       ctaVisible: true,
       ctaEnabled: false,
-      ctaDisabledReason: "Refresh approval status before live trading.",
+      ctaDisabledReason: "Refresh permission status before live trading.",
       approved: false,
     };
   }
@@ -139,11 +139,11 @@ export function getBuilderApprovalReadiness(input: {
   if (input.approval.canTradePerps) {
     return {
       status: "approved",
-      title: "Builder fee approved",
+      title: "Trading enabled",
       summary: input.hlAccountValueUsd < input.minOrderNotionalUsd
-        ? `This wallet has approved the configured Agent.trade builder fee for Hyperliquid perps. Trading balance is below Agent.trade's $${input.minOrderNotionalUsd}+ order notional requirement; orders still require sufficient margin and explicit confirmation.`
-        : "This wallet has approved the configured Agent.trade builder fee for Hyperliquid perps. Every live order still requires explicit confirmation.",
-      ctaLabel: "Approved",
+        ? `This wallet has the one-time Hyperliquid permission enabled. Trading balance is below Agent.trade's $${input.minOrderNotionalUsd}+ order notional requirement; orders still require sufficient margin and Agent.trade confirmation.`
+        : "This wallet has the one-time Hyperliquid permission enabled. You confirm orders in Agent.trade. Current MVP may still ask for wallet signatures until one-tap trading is enabled.",
+      ctaLabel: "Start trading",
       ctaVisible: true,
       ctaEnabled: false,
       approved: true,
@@ -152,11 +152,11 @@ export function getBuilderApprovalReadiness(input: {
 
   return {
     status: "approval-required",
-    title: "Builder approval required",
+    title: "Enable Agent.trade execution",
     summary: input.hlAccountValueUsd < input.minOrderNotionalUsd
-      ? `Approve Agent.trade builder fee now. Trading balance is below Agent.trade's $${input.minOrderNotionalUsd}+ order notional requirement; orders still require sufficient margin and explicit confirmation.`
-      : "Approve Agent.trade builder fee so Hyperliquid can apply the configured builder code and fee. This does not grant autonomous trading; every order still requires confirmation.",
-    ctaLabel: "Approve Agent.trade builder fee",
+      ? `Enable Agent.trade execution with a one-time Hyperliquid permission. Trading balance is below Agent.trade's $${input.minOrderNotionalUsd}+ order notional requirement; orders still require sufficient margin and Agent.trade confirmation.`
+      : "Enable Agent.trade execution with a one-time Hyperliquid permission. You confirm orders in Agent.trade. Current MVP may still ask for wallet signatures until one-tap trading is enabled.",
+    ctaLabel: "Enable Agent.trade execution",
     ctaVisible: true,
     ctaEnabled: true,
     approved: false,

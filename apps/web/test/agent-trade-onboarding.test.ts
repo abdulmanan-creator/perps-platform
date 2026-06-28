@@ -129,7 +129,7 @@ describe("Agent.trade onboarding helpers", () => {
     expect(copy.summary).toContain("gasless Bridge2 permit deposit");
   });
 
-  it("shows builder approval required for live eligible $5 funded wallets without approval", () => {
+  it("shows enable trading for live eligible funded wallets without permission", () => {
     const readiness = getBuilderApprovalReadiness({
       hasPrivyEnv: true,
       wallet: {
@@ -146,13 +146,13 @@ describe("Agent.trade onboarding helpers", () => {
 
     expect(readiness.status).toBe("approval-required");
     expect(readiness.ctaEnabled).toBe(true);
-    expect(readiness.ctaLabel).toBe("Approve Agent.trade builder fee");
-    expect(readiness.summary).toContain("Approve Agent.trade builder fee now");
+    expect(readiness.ctaLabel).toBe("Enable Agent.trade execution");
+    expect(readiness.summary).toContain("one-time Hyperliquid permission");
     expect(readiness.summary).toContain("$10+ order notional");
     expect(builderApprovalMaxFeeRate(builderApprovalBase)).toBe("0.04%");
   });
 
-  it("waits for a non-empty Hyperliquid account before builder approval", () => {
+  it("waits for a non-empty Hyperliquid account before enabling trading", () => {
     const readiness = getBuilderApprovalReadiness({
       hasPrivyEnv: true,
       wallet: {
@@ -171,7 +171,7 @@ describe("Agent.trade onboarding helpers", () => {
     expect(readiness.ctaDisabledReason).toContain("empty or unavailable");
   });
 
-  it("marks builder approval ready when Hyperliquid maxBuilderFee covers perps", () => {
+  it("shows start trading when Hyperliquid maxBuilderFee covers perps", () => {
     const readiness = getBuilderApprovalReadiness({
       hasPrivyEnv: true,
       wallet: {
@@ -194,11 +194,13 @@ describe("Agent.trade onboarding helpers", () => {
 
     expect(readiness.status).toBe("approved");
     expect(readiness.approved).toBe(true);
+    expect(readiness.ctaLabel).toBe("Start trading");
     expect(readiness.ctaEnabled).toBe(false);
-    expect(readiness.summary).toContain("Every live order still requires explicit confirmation");
+    expect(readiness.summary).toContain("You confirm orders in Agent.trade");
+    expect(readiness.summary).toContain("one-tap trading");
   });
 
-  it("hides builder approval CTA for restricted users", () => {
+  it("hides enable trading CTA for restricted users", () => {
     const readiness = getBuilderApprovalReadiness({
       hasPrivyEnv: true,
       wallet: {
@@ -214,7 +216,7 @@ describe("Agent.trade onboarding helpers", () => {
 
     expect(readiness.status).toBe("ineligible");
     expect(readiness.ctaVisible).toBe(false);
-    expect(readiness.summary).toContain("cannot approve builder fees");
+    expect(readiness.summary).toContain("cannot enable live trading");
   });
 
   it("summarizes missing Privy env as local-dev paper readiness", () => {
@@ -272,6 +274,8 @@ describe("Agent.trade onboarding helpers", () => {
     expect(readiness.tradingMode.value).toBe("Testnet eligible");
     expect(readiness.funding.value).toBe("Provider configured, app hidden");
     expect(readiness.funding.ok).toBe(false);
+    expect(readiness.oneTapTrading.value).toBe("Coming soon");
+    expect(readiness.oneTapTrading.detail).toContain("may still ask for wallet signatures");
   });
 
   it("summarizes restricted users as paper-only with funding disabled", () => {

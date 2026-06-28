@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getFundingDisplay, getFundingMethodDisplays } from "../lib/agent-trade/funding";
+import { getFundingDisplay, getFundingMethodDisplays, getFundingMethodGroups } from "../lib/agent-trade/funding";
 import {
   HL_BRIDGE_ARBITRUM,
   USDC_ARBITRUM,
@@ -131,8 +131,46 @@ describe("Agent.trade funding helpers", () => {
       .join(" ");
 
     expect(copy).toContain("Dashboard configured; app hidden");
-    expect(copy).toContain("Dashboard configured; not exposed");
+    expect(copy).toContain("Hidden by feature flag");
     expect(copy).not.toMatch(/\b(MoonPay|Stripe|ACH|Apple Pay|Google Pay|bank deposit)\b/u);
+  });
+
+  it("shows configured cash funding only when the fiat on-ramp flag and provider API are available", () => {
+    const methods = getFundingMethodGroups({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: true,
+      providerAvailable: true,
+      providerConfigured: true,
+      fiatOnrampEnabled: true,
+    });
+    const cash = methods.cash.find((method) => method.title === "Cash");
+
+    expect(cash?.enabled).toBe(true);
+    expect(cash?.status).toBe("Privy provider available");
+    expect(cash?.body).toContain("Privy's configured funding flow");
+  });
+
+  it("keeps bank transfer and deposit address hidden without explicit verified configuration", () => {
+    const methods = getFundingMethodDisplays({
+      eligibilityState: "liveEligible",
+      hasPrivyEnv: true,
+      walletConnected: true,
+      providerEnabled: true,
+      providerAvailable: true,
+      bankDepositEnabled: true,
+      bankDepositConfigured: false,
+      cryptoDepositAddressEnabled: true,
+      depositAddressConfigured: false,
+    });
+    const bank = methods.find((method) => method.title === "Bank transfer");
+    const depositAddress = methods.find((method) => method.title === "Deposit address");
+
+    expect(bank?.enabled).toBe(false);
+    expect(bank?.status).toContain("Hidden");
+    expect(depositAddress?.enabled).toBe(false);
+    expect(depositAddress?.status).toBe("Hidden");
   });
 
   it("does not enable live funding while the provider is opening or errored", () => {
@@ -278,7 +316,7 @@ describe("Agent.trade funding helpers", () => {
     });
 
     expect(readiness.action).toBe("open_ticket");
-    expect(readiness.primaryLabel).toBe("Open mainnet ticket");
+    expect(readiness.primaryLabel).toBe("Start trading");
     expect(readiness.readyToTrade).toBe(true);
   });
 

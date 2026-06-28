@@ -24,6 +24,11 @@ import { http } from "wagmi";
 import { arbitrum } from "wagmi/chains";
 
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
+const PRIVY_APPLE_LOGIN_ENABLED =
+  process.env.NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_APPLE_LOGIN === "true";
+const PRIVY_LOGIN_METHODS = PRIVY_APPLE_LOGIN_ENABLED
+  ? ["email", "google", "wallet", "apple"] as const
+  : ["email", "google", "wallet"] as const;
 
 const wagmiConfig = createConfig({
   chains: [arbitrum],
@@ -43,7 +48,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <PrivyProvider
       appId={PRIVY_APP_ID}
       config={{
-        loginMethods: ["email", "google", "wallet"],
+        loginMethods: [...PRIVY_LOGIN_METHODS],
         appearance: {
           theme: "dark",
           accentColor: "#0052ff",

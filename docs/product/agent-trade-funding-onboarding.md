@@ -21,11 +21,18 @@ loosen geo/live-trading rules, or change `/agent-trade/exchange`.
   for users without wallets, and pins Privy/wagmi to Arbitrum.
 - `apps/web/components/agent-trade/OnboardingClient.tsx` imports
   `useFundWallet`, but the funding CTA only opens when Privy env, wallet,
-  live eligibility, `NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING=true`, and a
-  callable SDK hook are all present.
+  live eligibility, `NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FIAT_ONRAMP=true`,
+  `NEXT_PUBLIC_AGENT_TRADE_PRIVY_FIAT_ONRAMP_CONFIGURED=true`, and a callable
+  SDK hook are all present. The older
+  `NEXT_PUBLIC_AGENT_TRADE_ENABLE_PRIVY_FUNDING=true` is treated as a legacy
+  alias for the product flag, but dashboard/config approval is still required.
 - `apps/api/src/helpers/privyAuth.ts` verifies Privy JWTs with
   `PRIVY_APP_ID` and `PRIVY_APP_SECRET`, then prefers a Privy embedded wallet
   address over external linked wallets.
+- Hyperliquid's official exchange docs define `approveAgent` as the action
+  that approves an API Wallet, also called an Agent Wallet. The related
+  Hyperliquid API wallet docs say API wallets sign on behalf of the master
+  account, while reads must still use the master account address.
 
 ## Current Support Matrix
 
@@ -40,6 +47,59 @@ loosen geo/live-trading rules, or change `/agent-trade/exchange`.
 | Apple Pay / Google Pay | No explicit app flow | SDK UI/assets mention mobile wallets/payment request, but no Agent.trade wiring or QA | Unknown beyond provider config | No | Not supported today |
 | Crypto deposit address via Relay | No app API, hook, route, or UI flow found | No Relay/deposit-address API found in installed Privy package search | Deposit Address/Relay reportedly enabled | No | Future only |
 | Hyperliquid Bridge2 deposit | Legacy compatibility path in `/approve` | Via app-owned USDC transfer, not Privy funding | Not a Privy dashboard capability | Default-off behind `NEXT_PUBLIC_AGENT_TRADE_ENABLE_HL_BRIDGE_DEPOSIT` plus legacy approval gate | Internal compatibility only |
+| One-tap trading / API wallet approval | Shared/API schemas support `approveAgent`; UI shows future status only | Current SDK exports the action type but no high-level `approveAgent` helper method | Requires future key custody/ops design | No | Coming soon only |
+
+## Builder Approval Vs API Wallet Approval
+
+Agent.trade has two different Hyperliquid permissions that should not be
+collapsed in copy or readiness checks:
+
+- **Builder approval (`approveBuilderFee`)** lets Hyperliquid apply the
+  configured Agent.trade builder address and fee ceiling to user-signed orders.
+  It does not remove current MVP confirmation or wallet-signing requirements.
+- **API wallet approval (`approveAgent`)** authorizes a dedicated Hyperliquid
+  API Wallet, also called an Agent Wallet, to sign trading actions on behalf of
+  the user's master account. This is the primitive needed for future one-tap
+  trading where the user confirms inside Agent.trade without repeated wallet
+  popups.
+
+Current onboarding/settings copy should therefore say:
+
+- "You confirm orders in Agent.trade."
+- "Current MVP may still ask for wallet signatures until one-tap trading is
+  enabled."
+- "One-tap trading: coming soon."
+
+It should not promise that users will review and sign every order forever.
+
+### Repo Support Today
+
+- `packages/shared/src/action.ts` defines `ApproveAgentAction` with
+  `agentAddress`, optional `agentName`, matching nonce fields, and revocation
+  semantics.
+- `apps/api/src/routes/exchange.ts` can build `approveAgent` typed data and
+  derive a per-user agent address from `AGENT_MASTER_SEED` when configured.
+- `apps/api/src/helpers/verify.ts` verifies `approveAgent` signatures.
+- `apps/api/src/routes/agent.ts` explicitly rejects `approveAgent` on the
+  agent-signed route because it must be signed by the user's primary wallet.
+- `packages/sdk/src/client.ts` supports agent-JWT mode after a user has signed
+  `approveAgent`, but the SDK currently exposes no high-level
+  `approveAgent(...)` helper analogous to `approveBuilder(...)`.
+
+### What Remains For True One-Tap Trading
+
+- Decide API wallet custody: HSM, encrypted per-user keys, sharded derivation,
+  or another non-plaintext production model. Do not store API wallet private
+  keys in this pass.
+- Add an explicit user-facing API wallet approval flow with clear revocation
+  semantics and no implication that builder approval alone enables one-tap.
+- Add server-side caps, per-order and daily limits, kill switch integration,
+  audit logging, idempotency, nonce management, and replay protection on the
+  agent-signed path.
+- Add a readiness/readback model for API wallet status, including approved,
+  missing, revoked, expired/pruned, and unavailable states.
+- Keep restricted users paper-only and keep `/agent-trade/exchange` semantics
+  unchanged until the one-tap path is separately designed and reviewed.
 
 ## Env Flag State
 

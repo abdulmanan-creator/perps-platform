@@ -32,9 +32,10 @@ export interface OnboardingReadinessSummary {
   eligibility: ReadinessItem;
   tradingMode: ReadinessItem;
   funding: ReadinessItem;
+  oneTapTrading: ReadinessItem;
 }
 
-export const supportedSignInMethods = ["Email", "Google", "Existing wallet"] as const;
+export const supportedSignInMethods = ["Email", "Google", "Wallet"] as const;
 
 export function getOnboardingReadiness(input: OnboardingReadinessInput): OnboardingReadinessSummary {
   const eligibility = getEligibilityDisplay(input.eligibilityState);
@@ -42,6 +43,7 @@ export function getOnboardingReadiness(input: OnboardingReadinessInput): Onboard
   const embeddedWallet = getEmbeddedWalletReadiness(input);
   const tradingMode = getTradingModeReadiness(input);
   const funding = getFundingReadiness(input);
+  const oneTapTrading = getOneTapTradingReadiness();
   const isReadyForLive =
     input.wallet.status === "connected" &&
     input.wallet.authStatus === "authenticated" &&
@@ -65,6 +67,7 @@ export function getOnboardingReadiness(input: OnboardingReadinessInput): Onboard
     },
     tradingMode,
     funding,
+    oneTapTrading,
   };
 }
 
@@ -75,7 +78,7 @@ function getSignInMethodsReadiness(input: OnboardingReadinessInput): ReadinessIt
       value: "Local-dev paper only",
       ok: false,
       tone: "amber",
-      detail: "Set NEXT_PUBLIC_PRIVY_APP_ID to expose configured email, Google, and existing-wallet sign-in.",
+      detail: "Set NEXT_PUBLIC_PRIVY_APP_ID to expose configured email, Google, and wallet sign-in.",
     };
   }
 
@@ -84,7 +87,7 @@ function getSignInMethodsReadiness(input: OnboardingReadinessInput): ReadinessIt
     value: supportedSignInMethods.join(", "),
     ok: true,
     tone: "green",
-    detail: "These are the only sign-in methods wired in the app today.",
+    detail: "These are the configured sign-in methods wired in the app today. Apple stays hidden unless explicitly configured.",
   };
 }
 
@@ -195,5 +198,15 @@ function getFundingReadiness(input: OnboardingReadinessInput): ReadinessItem {
     ok: input.funding.liveFundingEnabled,
     tone: input.funding.tone,
     detail: input.funding.summary,
+  };
+}
+
+function getOneTapTradingReadiness(): ReadinessItem {
+  return {
+    label: "One-tap trading",
+    value: "Coming soon",
+    ok: false,
+    tone: "blue",
+    detail: "Current MVP confirms orders in Agent.trade and may still ask for wallet signatures until a dedicated Hyperliquid API wallet flow is enabled.",
   };
 }
