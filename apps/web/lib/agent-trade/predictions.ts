@@ -93,6 +93,26 @@ export interface PredictionL2BookUpdate {
   asks: Array<{ px: string; sz: string }>;
 }
 
+export interface PredictionWorldCupStreamCoins {
+  yesCoin: string;
+  noCoin: string;
+  activeSubscriptions: string[];
+}
+
+export interface PredictionLiveOrderReadinessInput {
+  mode: "paper" | "live";
+  tif: "Ioc" | "Gtc";
+  limitProbability: number;
+  selectedSide?: PredictionSideOdds;
+  isBookStale: boolean;
+}
+
+export interface PredictionLiveOrderClassification {
+  kind: "paper" | "unavailable" | "marketable_ioc" | "resting_gtc" | "marketable_gtc";
+  label: string;
+  reason?: string;
+}
+
 export const PREDICTION_LIVE_EXCHANGE_PATH = "/prediction/exchange";
 export const PREDICTION_BALANCE_PATH = "/prediction/balance";
 export const PREDICTION_USDC_TRANSFER_PATH = "/prediction/usdc-transfer";
@@ -137,6 +157,16 @@ export function predictionHip4Encoding(outcome: number, side: 0 | 1): number {
 
 export function predictionHip4Coin(outcome: number, side: 0 | 1): string {
   return `#${predictionHip4Encoding(outcome, side)}`;
+}
+
+export function predictionWorldCupStreamCoins(outcome: number): PredictionWorldCupStreamCoins {
+  const yesCoin = predictionHip4Coin(outcome, 0);
+  const noCoin = predictionHip4Coin(outcome, 1);
+  return {
+    yesCoin,
+    noCoin,
+    activeSubscriptions: [yesCoin, noCoin],
+  };
 }
 
 export function predictionHyperliquidWsUrl(): string {
@@ -377,6 +407,81 @@ export function buildPredictionLiveOrderAction(args: {
   };
 }
 
+export function marketablePredictionLimitFromAsk(bestAsk: string | null | undefined): number | null {
+  const ask = Number(bestAsk);
+  if (!Number.isFinite(ask) || ask <= 0 || ask >= 1) {
+    return null;
+  }
+  return Number(formatPredictionLivePriceWire(Math.min(0.9999, ask + 0.0001)));
+}
+
+export function isPredictionBookStale(
+  lastBookAt: number | undefined,
+  now = Date.now(),
+  maxAgeMs = 15_000,
+): boolean {
+  return lastBookAt === undefined || now - lastBookAt > maxAgeMs;
+}
+
+export function classifyPredictionLiveOrder(input: PredictionLiveOrderReadinessInput): PredictionLiveOrderClassification {
+  if (input.mode === "paper") {
+    return { kind: "paper", label: "Paper preview" };
+  }
+  if (!input.selectedSide?.bestAsk || !input.selectedSide.bestBid || input.selectedSide.emptyBook) {
+    return {
+      kind: "unavailable",
+      label: "Book unavailable",
+      reason: "Selected side needs a current two-sided book before live review.",
+    };
+  }
+  if (input.isBookStale) {
+    return {
+      kind: "unavailable",
+      label: "Book stale",
+      reason: "Refresh or wait for the selected book stream before reviewing a live order.",
+    };
+  }
+
+  const ask = Number(input.selectedSide.bestAsk);
+  if (!Number.isFinite(ask)) {
+    return {
+      kind: "unavailable",
+      label: "Book unavailable",
+      reason: "Selected side needs a numeric best ask before live review.",
+    };
+  }
+  const limit = Number(formatPredictionLivePriceWire(input.limitProbability));
+  if (input.tif === "Ioc" && limit + 1e-9 < ask) {
+    return {
+      kind: "unavailable",
+      label: "IOC below ask",
+      reason: `IOC buy must be at or above current ask ${formatProbabilityPrice(input.selectedSide.bestAsk)}.`,
+    };
+  }
+  if (input.tif === "Ioc") {
+    return { kind: "marketable_ioc", label: "Marketable IOC" };
+  }
+  if (limit + 1e-9 < ask) {
+    return { kind: "resting_gtc", label: "Resting GTC", reason: "Limit is below the current ask and may not fill immediately." };
+  }
+  return { kind: "marketable_gtc", label: "Marketable GTC" };
+}
+
+export function sortPredictionOutcomesForTerminal(
+  question: PredictionQuestion,
+  odds: PredictionQuestionOdds | undefined,
+): PredictionOutcome[] {
+  return [...question.namedOutcomes].sort((a, b) => {
+    const aOdds = selectedOutcomeOdds(odds, a.outcome);
+    const bOdds = selectedOutcomeOdds(odds, b.outcome);
+    const aDepth = outcomeVisibleDepth(aOdds);
+    const bDepth = outcomeVisibleDepth(bOdds);
+    const aProbability = probabilityFromSide(aOdds?.sides[0]) ?? 0;
+    const bProbability = probabilityFromSide(bOdds?.sides[0]) ?? 0;
+    return bDepth - aDepth || bProbability - aProbability || a.name.localeCompare(b.name);
+  });
+}
+
 export function summarizePredictionLiveExchangeResult(response: unknown): PredictionLiveExchangeResult {
   const direct = response && typeof response === "object"
     ? (response as { exchangeResult?: PredictionLiveExchangeResult }).exchangeResult
@@ -478,7 +583,8 @@ export function clearPredictionStreamOutcomeOdds(
 
 export function normalizePredictionL2BookMessage(args: {
   message: unknown;
-  selectedCoin: string;
+  selectedCoin?: string;
+  selectedCoins?: string[];
   now?: number;
 }): PredictionL2BookUpdate | undefined {
   const record = objectRecord(args.message);
@@ -491,7 +597,8 @@ export function normalizePredictionL2BookMessage(args: {
 
   const data = objectRecord(record.data);
   const coin = typeof data?.coin === "string" ? data.coin : undefined;
-  if (coin !== args.selectedCoin) {
+  const selectedCoins = args.selectedCoins ?? (args.selectedCoin ? [args.selectedCoin] : []);
+  if (!coin || !selectedCoins.includes(coin)) {
     return undefined;
   }
 
@@ -936,6 +1043,8 @@ function predictionSideOddsFromBook(args: {
     midpointProbability,
     spread,
     depth: predictionDepthSummary(args.update.bids, args.update.asks),
+    topBidLevels: args.update.bids.slice(0, 5),
+    topAskLevels: args.update.asks.slice(0, 5),
     emptyBook: args.update.bids.length === 0 && args.update.asks.length === 0,
     fetchedAt: args.update.receivedAt,
   };
@@ -952,9 +1061,18 @@ function emptyPredictionSideOdds(
     midpointProbability: null,
     spread: null,
     depth: { bidLevels: 0, askLevels: 0, bidSize: 0, askSize: 0, bidNotional: 0, askNotional: 0 },
+    topBidLevels: [],
+    topAskLevels: [],
     emptyBook: true,
     fetchedAt,
   };
+}
+
+function outcomeVisibleDepth(outcome: PredictionOutcomeOdds | undefined): number {
+  if (!outcome) {
+    return 0;
+  }
+  return outcome.sides.reduce((sum, side) => sum + side.depth.bidSize + side.depth.askSize, 0);
 }
 
 function predictionDepthSummary(

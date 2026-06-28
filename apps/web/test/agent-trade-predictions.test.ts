@@ -10,6 +10,7 @@ import {
   calculatePredictionTicketMath,
   buildPredictionUsdcTransfer,
   buildPredictionLiveOrderAction,
+  classifyPredictionLiveOrder,
   clearPredictionStreamOutcomeOdds,
   enrichPredictionPaperPositions,
   filterAndSortPredictionQuestions,
@@ -24,11 +25,13 @@ import {
   getPredictionHip4MinOrderCostUsd,
   hasSufficientPredictionSpotBalance,
   hasValidPredictionTopOfBook,
+  isPredictionBookStale,
   isResolvingSoon,
   isPredictionLiveTradingEnabled,
   isPredictionWorldCupStreamEnabled,
   loadPredictionBalance,
   loadPredictionDiscoveryOddsSummaries,
+  marketablePredictionLimitFromAsk,
   mergePredictionL2BookUpdate,
   minimumPredictionContractsForCost,
   maxTransferablePredictionUsdc,
@@ -38,6 +41,7 @@ import {
   predictionPaperFillsForQuestion,
   predictionHip4Coin,
   predictionL2BookSubscription,
+  predictionWorldCupStreamCoins,
   predictionPaperPositionsForQuestion,
   predictionStreamStatusLabel,
   predictionUsdcTransferEndpoint,
@@ -50,6 +54,7 @@ import {
   summarizePredictionLiveExchangeResult,
   summarizePredictionPortfolioExposure,
   summarizeQuestionOdds,
+  sortPredictionOutcomesForTerminal,
   submitPredictionPaperOrder,
   type PredictionDiscoveryQuestion,
 } from "../lib/agent-trade/predictions";
@@ -388,9 +393,14 @@ describe("Agent.trade prediction helpers", () => {
     expect(predictionStreamStatusLabel("disconnected")).toBe("Stream disconnected");
   });
 
-  it("maps selected outcome and side to one HIP-4 l2Book subscription coin", () => {
+  it("maps selected World Cup outcome to Yes and No HIP-4 l2Book subscription coins only", () => {
     expect(predictionHip4Coin(189, 0)).toBe("#1890");
     expect(predictionHip4Coin(189, 1)).toBe("#1891");
+    expect(predictionWorldCupStreamCoins(189)).toEqual({
+      yesCoin: "#1890",
+      noCoin: "#1891",
+      activeSubscriptions: ["#1890", "#1891"],
+    });
 
     const subscription = predictionL2BookSubscription(predictionHip4Coin(189, 0));
     expect(subscription).toEqual({
@@ -401,7 +411,7 @@ describe("Agent.trade prediction helpers", () => {
     expect(Array.isArray(subscription)).toBe(false);
   });
 
-  it("normalizes selected HIP-4 l2Book updates and ignores other coins", () => {
+  it("normalizes selected HIP-4 Yes/No l2Book updates and ignores other coins", () => {
     const message = {
       channel: "l2Book",
       data: {
@@ -415,12 +425,12 @@ describe("Agent.trade prediction helpers", () => {
 
     expect(normalizePredictionL2BookMessage({
       message,
-      selectedCoin: "#111",
+      selectedCoins: ["#111", "#112"],
       now: 123,
     })).toBeUndefined();
     expect(normalizePredictionL2BookMessage({
       message,
-      selectedCoin: "#110",
+      selectedCoins: ["#110", "#111"],
       now: 123,
     })).toEqual({
       coin: "#110",
@@ -438,8 +448,22 @@ describe("Agent.trade prediction helpers", () => {
         data: {
           coin: "#110",
           levels: [
-            [{ px: "0.21", sz: "40" }],
-            [{ px: "0.24", sz: "10" }],
+            [
+              { px: "0.21", sz: "40" },
+              { px: "0.20", sz: "30" },
+              { px: "0.19", sz: "20" },
+              { px: "0.18", sz: "10" },
+              { px: "0.17", sz: "9" },
+              { px: "0.16", sz: "8" },
+            ],
+            [
+              { px: "0.24", sz: "10" },
+              { px: "0.25", sz: "11" },
+              { px: "0.26", sz: "12" },
+              { px: "0.27", sz: "13" },
+              { px: "0.28", sz: "14" },
+              { px: "0.29", sz: "15" },
+            ],
           ],
         },
       },
@@ -462,7 +486,21 @@ describe("Agent.trade prediction helpers", () => {
       bestAsk: "0.24",
       midpointProbability: 0.225,
       spread: 0.03,
-      depth: { bidLevels: 1, askLevels: 1, bidSize: 40, askSize: 10, bidNotional: 8.4, askNotional: 2.4 },
+      depth: { bidLevels: 6, askLevels: 6, bidSize: 117, askSize: 75, bidNotional: 22.81, askNotional: 20.05 },
+      topBidLevels: [
+        { px: "0.21", sz: "40" },
+        { px: "0.20", sz: "30" },
+        { px: "0.19", sz: "20" },
+        { px: "0.18", sz: "10" },
+        { px: "0.17", sz: "9" },
+      ],
+      topAskLevels: [
+        { px: "0.24", sz: "10" },
+        { px: "0.25", sz: "11" },
+        { px: "0.26", sz: "12" },
+        { px: "0.27", sz: "13" },
+        { px: "0.28", sz: "14" },
+      ],
       emptyBook: false,
       fetchedAt: 456,
     });
@@ -472,6 +510,80 @@ describe("Agent.trade prediction helpers", () => {
     const cleared = clearPredictionStreamOutcomeOdds(questionOdds, 11);
     expect(cleared?.outcomes).toHaveLength(0);
     expect(clearPredictionStreamOutcomeOdds(questionOdds, 999)?.outcomes).toHaveLength(1);
+  });
+
+  it("classifies live IOC/GTC order entry against the selected best ask", () => {
+    const side = questionOdds.outcomes[0]!.sides[0]!;
+    expect(isPredictionBookStale(1_000, 12_000)).toBe(false);
+    expect(isPredictionBookStale(1_000, 17_001)).toBe(true);
+    expect(marketablePredictionLimitFromAsk("0.25")).toBe(0.2501);
+
+    expect(classifyPredictionLiveOrder({
+      mode: "live",
+      tif: "Ioc",
+      limitProbability: 0.24,
+      selectedSide: side,
+      isBookStale: false,
+    })).toMatchObject({
+      kind: "unavailable",
+      reason: "IOC buy must be at or above current ask 0.25.",
+    });
+    expect(classifyPredictionLiveOrder({
+      mode: "live",
+      tif: "Ioc",
+      limitProbability: 0.2501,
+      selectedSide: side,
+      isBookStale: false,
+    })).toMatchObject({ kind: "marketable_ioc", label: "Marketable IOC" });
+    expect(classifyPredictionLiveOrder({
+      mode: "live",
+      tif: "Gtc",
+      limitProbability: 0.24,
+      selectedSide: side,
+      isBookStale: false,
+    })).toMatchObject({
+      kind: "resting_gtc",
+      label: "Resting GTC",
+      reason: "Limit is below the current ask and may not fill immediately.",
+    });
+    expect(classifyPredictionLiveOrder({
+      mode: "live",
+      tif: "Ioc",
+      limitProbability: 0.2501,
+      selectedSide: side,
+      isBookStale: true,
+    })).toMatchObject({ kind: "unavailable", label: "Book stale" });
+  });
+
+  it("sorts terminal outcomes by live visible depth before probability", () => {
+    const sorted = sortPredictionOutcomesForTerminal(baseQuestions[1]!, {
+      questionId: 1,
+      name: "World Cup Champion",
+      fetchedAt: 100,
+      outcomes: [
+        {
+          outcome: 12,
+          name: "Brazil",
+          description: "",
+          quoteToken: "USDC",
+          sides: [
+            {
+              ...questionOdds.outcomes[0]!.sides[0]!,
+              side: 0,
+              name: "Yes",
+              encoding: 120,
+              coin: "#120",
+              assetId: 100_000_120,
+              midpointProbability: 0.1,
+              depth: { bidLevels: 1, askLevels: 1, bidSize: 100, askSize: 100, bidNotional: 10, askNotional: 10 },
+            },
+            questionOdds.outcomes[0]!.sides[1]!,
+          ],
+        },
+        questionOdds.outcomes[0]!,
+      ],
+    });
+    expect(sorted.map((outcome) => outcome.name)).toEqual(["Brazil", "France"]);
   });
 
   it("normalizes HIP-4 live order prices with Hyperliquid spot rules", () => {
@@ -890,10 +1002,24 @@ describe("prediction route smoke", () => {
   it("gates World Cup selected-book streaming to question 32 with diagnostics", () => {
     const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
     expect(source).toContain("isPredictionWorldCupStreamEnabled(questionId)");
-    expect(source).toContain("predictionL2BookSubscription(selectedCoin)");
+    expect(source).toContain("predictionWorldCupStreamCoins(selectedOutcomeId)");
+    expect(source).toContain("predictionL2BookSubscription(coin)");
+    expect(source).toContain("predictionL2BookUnsubscribe(coin)");
+    expect(source).toContain("yesCoin");
+    expect(source).toContain("noCoin");
+    expect(source).toContain("activeSubscriptions");
+    expect(source).toContain("lastBookUpdate");
+    expect(source).toContain("streamStatus");
     expect(source).toContain("__agentTradePredictionStream");
     expect(source).toContain("clearPredictionStreamOutcomeOdds");
     expect(source).not.toContain("WORLD_CUP_PRIORITY_OUTCOMES.map");
+  });
+
+  it("keeps selected-coin trades as an explicit TODO instead of fake data", () => {
+    const source = readFileSync(join(process.cwd(), "components/agent-trade/PredictionDetailClient.tsx"), "utf8");
+    expect(source).toContain("Selected-coin trades");
+    expect(source).toContain("not shown yet");
+    expect(source).not.toContain("fake trades");
   });
 
   it("renders technical details in the live prediction confirmation", () => {

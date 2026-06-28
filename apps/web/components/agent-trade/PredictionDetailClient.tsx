@@ -19,6 +19,7 @@ import type {
 import {
   calculatePredictionTicketMath,
   buildPredictionUsdcTransfer,
+  classifyPredictionLiveOrder,
   clearPredictionStreamOutcomeOdds,
   enrichPredictionPaperPositions,
   formatEmptyBook,
@@ -33,6 +34,7 @@ import {
   getPredictionHip4MinOrderCostUsd,
   hasSufficientPredictionSpotBalance,
   hasValidPredictionTopOfBook,
+  isPredictionBookStale,
   isPredictionLiveTradingEnabled,
   isPredictionWorldCupStreamEnabled,
   loadPredictionQuestion,
@@ -40,17 +42,18 @@ import {
   loadPredictionQuestionOddsProgressive,
   loadPredictionPaperAccount,
   loadPredictionBalance,
+  marketablePredictionLimitFromAsk,
   mergePredictionL2BookUpdate,
   mergePredictionOutcomeOdds,
   minimumPredictionContractsForCost,
   maxTransferablePredictionUsdc,
   normalizePredictionL2BookMessage,
   predictionPaperFillsForQuestion,
-  predictionHip4Coin,
   predictionHyperliquidWsUrl,
   predictionL2BookSubscription,
   predictionL2BookUnsubscribe,
   predictionStreamStatusLabel,
+  predictionWorldCupStreamCoins,
   probabilityFromSide,
   predictionLiveExchangeEndpoint,
   predictionCategoryLabel,
@@ -62,6 +65,7 @@ import {
   suggestPredictionUsdcTransferAmount,
   isPredictionUsdcTransferAmountValid,
   submitPredictionPaperOrder,
+  sortPredictionOutcomesForTerminal,
   summarizePredictionPortfolioExposure,
   summarizePredictionLiveExchangeResult,
   type PredictionStreamStatus,
@@ -80,6 +84,22 @@ interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
 }
 
+interface PredictionSideStreamState {
+  coin?: string;
+  status: PredictionStreamStatus;
+  lastBookAt?: number;
+}
+
+interface PredictionTwoSideStreamState {
+  yes: PredictionSideStreamState;
+  no: PredictionSideStreamState;
+}
+
+const INITIAL_PREDICTION_STREAM_STATE: PredictionTwoSideStreamState = {
+  yes: { status: "idle" },
+  no: { status: "idle" },
+};
+
 export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const [question, setQuestion] = useState<PredictionQuestion | undefined>();
   const [odds, setOdds] = useState<PredictionQuestionOdds | undefined>();
@@ -92,9 +112,8 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const [oddsRefreshNonce, setOddsRefreshNonce] = useState(0);
   const [error, setError] = useState<string | undefined>();
   const [eligibility, setEligibility] = useState<EligibilityResponse>(DEFAULT_ELIGIBILITY_RESPONSE);
-  const [predictionStreamStatus, setPredictionStreamStatus] = useState<PredictionStreamStatus>("idle");
-  const [predictionStreamCoin, setPredictionStreamCoin] = useState<string | undefined>();
-  const [predictionStreamLastBookAt, setPredictionStreamLastBookAt] = useState<number | undefined>();
+  const [predictionStreamState, setPredictionStreamState] =
+    useState<PredictionTwoSideStreamState>(INITIAL_PREDICTION_STREAM_STATE);
   const previousStreamOutcomeRef = useRef<number | undefined>();
   const { ready: privyReady, authenticated, login } = usePrivy();
   const { wallets } = useWallets();
@@ -205,15 +224,19 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
 
   useEffect(() => {
     if (!isPredictionWorldCupStreamEnabled(questionId) || !question || selectedOutcomeId === undefined) {
-      setPredictionStreamStatus("idle");
-      setPredictionStreamCoin(undefined);
-      setPredictionStreamLastBookAt(undefined);
+      setPredictionStreamState(INITIAL_PREDICTION_STREAM_STATE);
       return;
     }
 
-    const selectedCoin = predictionHip4Coin(selectedOutcomeId, selectedSideIndex);
-    setPredictionStreamCoin(selectedCoin);
-    setPredictionStreamLastBookAt(undefined);
+    const streamCoins = predictionWorldCupStreamCoins(selectedOutcomeId);
+    const sideByCoin = new Map<string, 0 | 1>([
+      [streamCoins.yesCoin, 0],
+      [streamCoins.noCoin, 1],
+    ]);
+    setPredictionStreamState({
+      yes: { coin: streamCoins.yesCoin, status: "connecting" },
+      no: { coin: streamCoins.noCoin, status: "connecting" },
+    });
     setOdds((current) => {
       const previousOutcome = previousStreamOutcomeRef.current;
       previousStreamOutcomeRef.current = selectedOutcomeId;
@@ -223,13 +246,15 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
     });
 
     if (typeof WebSocket === "undefined") {
-      setPredictionStreamStatus("rest_fallback");
+      setPredictionStreamState({
+        yes: { coin: streamCoins.yesCoin, status: "rest_fallback" },
+        no: { coin: streamCoins.noCoin, status: "rest_fallback" },
+      });
       return;
     }
 
     let closed = false;
     const socket = new WebSocket(predictionHyperliquidWsUrl());
-    setPredictionStreamStatus("connecting");
 
     const sendJson = (payload: unknown) => {
       socket.send(JSON.stringify(payload));
@@ -237,44 +262,69 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
 
     socket.onopen = () => {
       if (closed) return;
-      sendJson(predictionL2BookSubscription(selectedCoin));
+      for (const coin of streamCoins.activeSubscriptions) {
+        sendJson(predictionL2BookSubscription(coin));
+      }
     };
     socket.onmessage = (event) => {
       if (closed) return;
       try {
         const update = normalizePredictionL2BookMessage({
           message: JSON.parse(String(event.data)),
-          selectedCoin,
+          selectedCoins: streamCoins.activeSubscriptions,
         });
         if (!update) return;
+        const sideIndex = sideByCoin.get(update.coin);
+        if (sideIndex === undefined) return;
         setOdds((current) => mergePredictionL2BookUpdate({
           current,
           question,
           outcomeId: selectedOutcomeId,
-          sideIndex: selectedSideIndex,
+          sideIndex,
           update,
         }));
-        setPredictionStreamStatus("live");
-        setPredictionStreamLastBookAt(update.receivedAt);
+        setPredictionStreamState((current) => ({
+          ...current,
+          [sideIndex === 0 ? "yes" : "no"]: {
+            coin: update.coin,
+            status: "live",
+            lastBookAt: update.receivedAt,
+          },
+        }));
       } catch {
-        setPredictionStreamStatus("rest_fallback");
+        setPredictionStreamState({
+          yes: { coin: streamCoins.yesCoin, status: "rest_fallback" },
+          no: { coin: streamCoins.noCoin, status: "rest_fallback" },
+        });
       }
     };
     socket.onerror = () => {
-      if (!closed) setPredictionStreamStatus("rest_fallback");
+      if (!closed) {
+        setPredictionStreamState({
+          yes: { coin: streamCoins.yesCoin, status: "rest_fallback" },
+          no: { coin: streamCoins.noCoin, status: "rest_fallback" },
+        });
+      }
     };
     socket.onclose = () => {
-      if (!closed) setPredictionStreamStatus("disconnected");
+      if (!closed) {
+        setPredictionStreamState({
+          yes: { coin: streamCoins.yesCoin, status: "disconnected" },
+          no: { coin: streamCoins.noCoin, status: "disconnected" },
+        });
+      }
     };
 
     return () => {
       closed = true;
       if (socket.readyState === WebSocket.OPEN) {
-        sendJson(predictionL2BookUnsubscribe(selectedCoin));
+        for (const coin of streamCoins.activeSubscriptions) {
+          sendJson(predictionL2BookUnsubscribe(coin));
+        }
       }
       socket.close();
     };
-  }, [questionId, question, selectedOutcomeId, selectedSideIndex]);
+  }, [questionId, question, selectedOutcomeId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -282,28 +332,38 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
       __agentTradePredictionStream?: {
         questionId: number;
         selectedOutcome: number | null;
-        selectedSide: 0 | 1;
-        selectedCoin: string | null;
-        status: PredictionStreamStatus;
-        lastBookAt: number | null;
+        yesCoin: string | null;
+        noCoin: string | null;
+        activeSubscriptions: string[];
+        lastBookUpdate: number | null;
+        streamStatus: {
+          yes: PredictionStreamStatus;
+          no: PredictionStreamStatus;
+        };
       };
     };
     if (process.env.NODE_ENV === "production") {
       delete target.__agentTradePredictionStream;
       return;
     }
+    const activeSubscriptions = [predictionStreamState.yes.coin, predictionStreamState.no.coin]
+      .filter((coin): coin is string => Boolean(coin));
     target.__agentTradePredictionStream = {
       questionId,
       selectedOutcome: selectedOutcomeId ?? null,
-      selectedSide: selectedSideIndex,
-      selectedCoin: predictionStreamCoin ?? null,
-      status: predictionStreamStatus,
-      lastBookAt: predictionStreamLastBookAt ?? null,
+      yesCoin: predictionStreamState.yes.coin ?? null,
+      noCoin: predictionStreamState.no.coin ?? null,
+      activeSubscriptions,
+      lastBookUpdate: Math.max(predictionStreamState.yes.lastBookAt ?? 0, predictionStreamState.no.lastBookAt ?? 0) || null,
+      streamStatus: {
+        yes: predictionStreamState.yes.status,
+        no: predictionStreamState.no.status,
+      },
     };
     return () => {
       delete target.__agentTradePredictionStream;
     };
-  }, [questionId, selectedOutcomeId, selectedSideIndex, predictionStreamCoin, predictionStreamStatus, predictionStreamLastBookAt]);
+  }, [questionId, selectedOutcomeId, predictionStreamState]);
 
   const selectedOdds = selectedOutcomeId === undefined ? undefined : selectedOutcomeOdds(odds, selectedOutcomeId);
   const selectedSide = selectedOdds?.sides[selectedSideIndex];
@@ -318,6 +378,8 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
   const paperPositions = question ? enrichPredictionPaperPositions(paperAccount, question, odds) : [];
   const paperFills = question ? predictionPaperFillsForQuestion(paperAccount, question.questionId) : [];
   const selectedSideLoading = Boolean(question && selectedOutcomeId !== undefined && !selectedSide && oddsStatus !== "failed");
+  const selectedSideStream = selectedSideIndex === 0 ? predictionStreamState.yes : predictionStreamState.no;
+  const combinedStreamStatus = combinedPredictionStreamStatus(predictionStreamState);
 
   function refreshPaperAccount(nextAccount: PredictionPaperAccount) {
     setPaperAccount(nextAccount);
@@ -373,7 +435,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
         <div className="prediction-detail-health">
           <span className="state-pill live">{predictionStatusLabel(question)}</span>
           {isPredictionWorldCupStreamEnabled(question.questionId) ? (
-            <span className="state-pill account-warning">{predictionStreamStatusLabel(predictionStreamStatus)}</span>
+            <span className="state-pill account-warning">{predictionStreamStatusLabel(combinedStreamStatus)}</span>
           ) : null}
           <span>{predictionCategoryLabel(question)}</span>
           <span>{(question.quoteToken ?? question.quoteTokens.join(", ")) || "Quote token pending"}</span>
@@ -389,6 +451,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             oddsError={oddsError}
             selectedOutcomeId={selectedOutcomeId}
             selectedSideIndex={selectedSideIndex}
+            streamState={predictionStreamState}
             onRefresh={() => {
               setOdds(undefined);
               setOddsStatus("idle");
@@ -403,6 +466,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
           <OrderBookPreview
             outcome={selectedOutcome}
             side={selectedSide}
+            stream={selectedSideStream}
             isLoading={selectedSideLoading}
             error={oddsError}
           />
@@ -419,6 +483,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             }}
           />
           <PredictionPaperPortfolio positions={paperPositions} fills={paperFills} />
+          <PredictionLiveActivityPanel />
           <div className="prediction-terminal-lower">
             <SettlementModule question={question} />
             <PredictionAgentPreview />
@@ -431,6 +496,7 @@ export function PredictionDetailClient({ questionId }: { questionId: number }) {
             selectedSideIndex={selectedSideIndex}
             selectedOutcome={selectedOutcome}
             selectedSide={selectedSide}
+            selectedSideStream={selectedSideStream}
             hip4LiveFlagEnabled={isPredictionLiveTradingEnabled()}
             eligibility={eligibility}
             walletReady={privyReady}
@@ -466,25 +532,38 @@ function OutcomeGrid(props: {
   oddsError?: string;
   selectedOutcomeId: number | undefined;
   selectedSideIndex: 0 | 1;
+  streamState: PredictionTwoSideStreamState;
   onRefresh: () => void;
   onSelect: (outcome: number, side: 0 | 1) => void;
 }) {
+  const [query, setQuery] = useState("");
   const isLoadingOdds = props.oddsStatus === "loading" || props.oddsStatus === "partial";
+  const rows = sortPredictionOutcomesForTerminal(props.question, props.odds)
+    .filter((outcome) => outcome.name.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <section className="panel prediction-outcome-panel">
       <div className="panel-head">
         <div>
-          <span>Outcome markets</span>
+          <span>World Cup markets</span>
           <strong>{props.question.namedOutcomes.length} named outcomes</strong>
         </div>
         <button type="button" onClick={props.onRefresh}>
           {isLoadingOdds ? "Refreshing..." : "Refresh odds"}
         </button>
       </div>
+      <label className="prediction-outcome-search">
+        <span>Search team</span>
+        <input
+          type="search"
+          placeholder="France, Brazil, USA..."
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
       {props.oddsError ? <p className="market-notice">{props.oddsError}</p> : null}
       {isLoadingOdds ? <p className="market-notice">Loading priority outcome books first. Other markets remain selectable.</p> : null}
       <div className="prediction-outcome-grid">
-        {props.question.namedOutcomes.map((outcome) => {
+        {rows.map((outcome) => {
           const outcomeOdds = selectedOutcomeOdds(props.odds, outcome.outcome);
           return (
             <article key={outcome.outcome} className="prediction-outcome-card">
@@ -496,13 +575,16 @@ function OutcomeGrid(props: {
                 {outcome.sides.map((side, index) => {
                   const odds = outcomeOdds?.sides[index];
                   const active = props.selectedOutcomeId === outcome.outcome && props.selectedSideIndex === index;
+                  const stream = props.selectedOutcomeId === outcome.outcome
+                    ? (side.side === 0 ? props.streamState.yes : props.streamState.no)
+                    : undefined;
                   return (
                     <button
                       key={side.side}
                       className={active ? "active" : ""}
                       onClick={() => props.onSelect(outcome.outcome, side.side)}
                     >
-                      <span>{side.name}</span>
+                      <span>{side.name}<i>{stream ? predictionStreamStatusLabel(stream.status) : "REST"}</i></span>
                       <strong>{formatProbability(odds?.midpointProbability)}</strong>
                       <em>{odds ? formatEmptyBook(odds) : "Loading odds"}</em>
                       <small>
@@ -592,21 +674,25 @@ function ProbabilitySnapshot(props: {
 function OrderBookPreview({
   outcome,
   side,
+  stream,
   isLoading,
   error,
 }: {
   outcome: PredictionOutcome | undefined;
   side: PredictionSideOdds | undefined;
+  stream: PredictionSideStreamState;
   isLoading: boolean;
   error?: string;
 }) {
+  const lastUpdate = formatBookUpdateAge(stream.lastBookAt);
   return (
     <section className="panel prediction-book-panel">
       <div className="panel-head">
         <div>
-          <span>Top of book</span>
+          <span>Selected book</span>
           <strong>{outcome && side ? `${outcome.name} / ${side.name}` : "Select outcome"}</strong>
         </div>
+        <span className="state-pill account-warning">{predictionStreamStatusLabel(stream.status)}</span>
       </div>
       {error ? <p className="market-notice">{error}</p> : null}
       {isLoading ? <p className="market-notice">Selected outcome book is loading. Live submit stays disabled until bid and ask are available.</p> : null}
@@ -640,6 +726,29 @@ function OrderBookPreview({
           <div className="prediction-depth-readout">
             <span>{side.depth.bidLevels} bid levels / {Math.round(side.depth.bidSize)} contracts</span>
             <span>{side.depth.askLevels} ask levels / {Math.round(side.depth.askSize)} contracts</span>
+            <span>Last update {lastUpdate}</span>
+          </div>
+          <div className="prediction-book-ladder">
+            <div>
+              <span>Bid px</span>
+              <span>Bid size</span>
+              {(side.topBidLevels ?? []).slice(0, 5).map((level) => (
+                <div key={`bid-${level.px}-${level.sz}`}>
+                  <strong>{formatProbabilityPrice(level.px)}</strong>
+                  <em>{formatContractSize(level.sz)}</em>
+                </div>
+              ))}
+            </div>
+            <div>
+              <span>Ask px</span>
+              <span>Ask size</span>
+              {(side.topAskLevels ?? []).slice(0, 5).map((level) => (
+                <div key={`ask-${level.px}-${level.sz}`}>
+                  <strong>{formatProbabilityPrice(level.px)}</strong>
+                  <em>{formatContractSize(level.sz)}</em>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       ) : (
@@ -693,6 +802,7 @@ function PredictionPaperTicket(props: {
   selectedSideIndex: 0 | 1;
   selectedOutcome: PredictionOutcome | undefined;
   selectedSide: PredictionSideOdds | undefined;
+  selectedSideStream: PredictionSideStreamState;
   hip4LiveFlagEnabled: boolean;
   eligibility: EligibilityResponse;
   walletReady: boolean;
@@ -712,6 +822,7 @@ function PredictionPaperTicket(props: {
     walletAddress: props.activeWallet?.address,
   });
   const [mode, setMode] = useState<"paper" | "live">("paper");
+  const [tif, setTif] = useState<"Ioc" | "Gtc">("Ioc");
   const [contracts, setContracts] = useState(10);
   const [limitProbability, setLimitProbability] = useState(initialProbability);
   const [criteriaAcknowledged, setCriteriaAcknowledged] = useState(false);
@@ -781,6 +892,17 @@ function PredictionPaperTicket(props: {
   const selectedTechnical = props.selectedOutcome?.sides[props.selectedSideIndex];
   const canSubmit = Boolean(props.selectedOutcome && props.selectedSide && criteriaAcknowledged && math.contracts > 0);
   const selectedTopOfBookReady = hasValidPredictionTopOfBook(props.selectedSide);
+  const selectedBookStale = isPredictionWorldCupStreamEnabled(props.question.questionId)
+    ? props.selectedSideStream.status !== "live" || isPredictionBookStale(props.selectedSideStream.lastBookAt)
+    : false;
+  const orderClassification = classifyPredictionLiveOrder({
+    mode,
+    tif,
+    limitProbability: math.probability,
+    selectedSide: props.selectedSide,
+    isBookStale: selectedBookStale,
+  });
+  const liveBookAllowsReview = mode !== "live" || orderClassification.kind !== "unavailable";
   const liveRequiredCostUsd = mode === "live" ? Math.max(math.estimatedCost, hip4EffectiveMinOrderCostUsd) : math.estimatedCost;
   const predictionBalanceSufficient = hasSufficientPredictionSpotBalance(predictionBalance, liveRequiredCostUsd);
   const maxTransferableUsdc = maxTransferablePredictionUsdc(predictionBalance);
@@ -809,6 +931,7 @@ function PredictionPaperTicket(props: {
     liveAvailable.allowed &&
     Boolean(selectedTechnical) &&
     selectedTopOfBookReady &&
+    liveBookAllowsReview &&
     math.estimatedCost >= hip4EffectiveMinOrderCostUsd &&
     predictionBalanceStatus === "ready" &&
     predictionBalanceSufficient;
@@ -819,6 +942,8 @@ function PredictionPaperTicket(props: {
     selectedSideLoading: props.selectedSideLoading,
     selectedTechnical: Boolean(selectedTechnical),
     selectedTopOfBookReady,
+    selectedBookStale,
+    orderClassificationReason: orderClassification.reason,
     criteriaAcknowledged,
     contracts: math.contracts,
     estimatedCost: math.estimatedCost,
@@ -872,7 +997,7 @@ function PredictionPaperTicket(props: {
         action: "buy",
         contracts: math.contracts,
         limitProbability: math.probability,
-        tif: "Ioc",
+        tif,
         criteriaAcknowledged,
         liveAcknowledged: true,
       };
@@ -1014,6 +1139,13 @@ function PredictionPaperTicket(props: {
           </div>
         </div>
         <label>
+          <span>Time in force</span>
+          <select value={tif} onChange={(event) => setTif(event.target.value === "Gtc" ? "Gtc" : "Ioc")}>
+            <option value="Ioc">IOC</option>
+            <option value="Gtc">GTC</option>
+          </select>
+        </label>
+        <label>
           <span>{mode === "live" ? "Buy live contracts" : "Buy paper contracts"}</span>
           <input
             min="1"
@@ -1034,6 +1166,30 @@ function PredictionPaperTicket(props: {
             onChange={(event) => setLimitProbability(Number(event.target.value))}
           />
         </label>
+        {mode === "live" ? (
+          <div className="prediction-ticket-book-actions">
+            <button
+              type="button"
+              disabled={!props.selectedSide?.bestAsk}
+              onClick={() => props.selectedSide?.bestAsk && setLimitProbability(Number(props.selectedSide.bestAsk))}
+            >
+              Use best ask
+            </button>
+            <button
+              type="button"
+              disabled={!props.selectedSide?.bestAsk}
+              onClick={() => {
+                const marketable = marketablePredictionLimitFromAsk(props.selectedSide?.bestAsk);
+                if (marketable !== null) {
+                  setTif("Ioc");
+                  setLimitProbability(marketable);
+                }
+              }}
+            >
+              Marketable IOC
+            </button>
+          </div>
+        ) : null}
         <div className="prediction-ticket-body">
           <MetricCell label={mode === "live" ? "Max cost" : "Estimated cost"} value={formatUsdc(math.estimatedCost)} />
           <MetricCell label="Max payout" value={formatUsdc(math.maxPayout)} />
@@ -1047,6 +1203,9 @@ function PredictionPaperTicket(props: {
             <MetricCell label="Asset id" value={String(selectedTechnical.assetId)} />
             <MetricCell label="Coin" value={selectedTechnical.coin} />
             <MetricCell label="HIP-4 min target" value={formatUsdc(hip4EffectiveMinOrderCostUsd)} />
+            <MetricCell label="Best ask" value={formatProbabilityPrice(props.selectedSide?.bestAsk)} />
+            <MetricCell label="Order type" value={orderClassification.label} />
+            <MetricCell label="Book updated" value={formatBookUpdateAge(props.selectedSideStream.lastBookAt)} />
           </div>
         ) : null}
         {mode === "live" ? (
@@ -1139,6 +1298,9 @@ function PredictionPaperTicket(props: {
         {mode === "live" && props.selectedSide && !selectedTopOfBookReady ? (
           <p className="market-notice">Live review requires a valid two-sided top of book for the selected outcome side.</p>
         ) : null}
+        {mode === "live" && orderClassification.reason ? (
+          <p className="market-notice">{orderClassification.reason}</p>
+        ) : null}
         {mode === "live" && math.estimatedCost < hip4EffectiveMinOrderCostUsd ? (
           <div className="market-notice prediction-min-order-notice">
             <span>
@@ -1190,7 +1352,7 @@ function PredictionPaperTicket(props: {
           </p>
         ) : null}
       </div>
-      {liveConfirmOpen && props.selectedOutcome && props.selectedSide && selectedTechnical ? (
+        {liveConfirmOpen && props.selectedOutcome && props.selectedSide && selectedTechnical ? (
         <div className="prediction-confirm-backdrop" role="dialog" aria-modal="true" aria-label="Confirm live prediction order">
           <div className="panel prediction-confirm-modal">
             <div className="panel-head">
@@ -1204,6 +1366,10 @@ function PredictionPaperTicket(props: {
               <MetricCell label="Outcome" value={props.selectedOutcome.name} />
               <MetricCell label="Side" value={props.selectedSide.name} />
               <MetricCell label="Buy/sell" value="Buy" />
+              <MetricCell label="Time in force" value={tif} />
+              <MetricCell label="Best ask" value={formatProbabilityPrice(props.selectedSide.bestAsk)} />
+              <MetricCell label="Selected limit" value={formatProbabilityPrice(liveWirePrice)} />
+              <MetricCell label="Classification" value={orderClassification.label} />
               <MetricCell label="Contracts" value={math.contracts.toFixed(0)} />
               <MetricCell label="Wire price" value={liveWirePrice} />
               <MetricCell label="Max cost" value={formatUsdc(math.estimatedCost)} />
@@ -1310,6 +1476,23 @@ function PredictionPaperPortfolio({ positions, fills }: { positions: PredictionP
   );
 }
 
+function PredictionLiveActivityPanel() {
+  return (
+    <section className="panel prediction-live-activity-panel">
+      <div className="panel-head">
+        <div>
+          <span>Live orders and fills</span>
+          <strong>Proof after submit</strong>
+        </div>
+      </div>
+      <p className="prediction-panel-copy">
+        Live HIP-4 order status and Hypurrscan account proof appear after a signed submission. Selected-coin trades
+        streaming is not shown yet because this pass only subscribes to outcome l2Book data.
+      </p>
+    </section>
+  );
+}
+
 function MetricCell({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -1386,6 +1569,8 @@ function liveReviewDisabledReasons(input: {
   selectedSideLoading: boolean;
   selectedTechnical: boolean;
   selectedTopOfBookReady: boolean;
+  selectedBookStale: boolean;
+  orderClassificationReason?: string;
   criteriaAcknowledged: boolean;
   contracts: number;
   estimatedCost: number;
@@ -1400,6 +1585,8 @@ function liveReviewDisabledReasons(input: {
   if (input.selectedSideLoading) reasons.push("Selected odds finish loading.");
   if (!input.selectedTechnical) reasons.push("Selected outcome technical details are available.");
   if (!input.selectedTopOfBookReady) reasons.push("Selected outcome has a valid two-sided top of book.");
+  if (input.selectedBookStale) reasons.push("Selected live book is connected and fresh.");
+  if (input.orderClassificationReason) reasons.push(input.orderClassificationReason);
   if (!input.criteriaAcknowledged) reasons.push("Resolution criteria are acknowledged.");
   if (input.contracts <= 0) reasons.push("Contracts are a positive whole number.");
   if (input.estimatedCost < input.effectiveMinCost) {
@@ -1441,6 +1628,27 @@ async function readJsonOrEmpty(response: Response): Promise<unknown> {
 function probabilityBarWidth(probability: number | null | undefined): number {
   if (probability === null || probability === undefined || !Number.isFinite(probability)) return 4;
   return Math.min(100, Math.max(4, probability * 100));
+}
+
+function combinedPredictionStreamStatus(state: PredictionTwoSideStreamState): PredictionStreamStatus {
+  if (state.yes.status === "live" && state.no.status === "live") return "live";
+  if (state.yes.status === "connecting" || state.no.status === "connecting") return "connecting";
+  if (state.yes.status === "rest_fallback" || state.no.status === "rest_fallback") return "rest_fallback";
+  if (state.yes.status === "disconnected" || state.no.status === "disconnected") return "disconnected";
+  return "idle";
+}
+
+function formatBookUpdateAge(lastBookAt: number | undefined, now = Date.now()): string {
+  if (lastBookAt === undefined) return "--";
+  const seconds = Math.max(0, Math.round((now - lastBookAt) / 1000));
+  if (seconds < 2) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
+}
+
+function formatContractSize(value: string): string {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed).toLocaleString() : value;
 }
 
 function defaultPredictionOutcomeId(question: PredictionQuestion): number | undefined {

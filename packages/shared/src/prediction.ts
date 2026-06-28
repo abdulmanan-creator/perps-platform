@@ -55,8 +55,15 @@ export interface PredictionSideOdds extends PredictionOutcomeSide {
   midpointProbability: number | null;
   spread: number | null;
   depth: PredictionDepthSummary;
+  topBidLevels?: PredictionBookLevel[];
+  topAskLevels?: PredictionBookLevel[];
   emptyBook: boolean;
   fetchedAt: number;
+}
+
+export interface PredictionBookLevel {
+  px: string;
+  sz: string;
 }
 
 export interface PredictionOutcomeOdds {
