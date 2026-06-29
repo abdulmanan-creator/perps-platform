@@ -142,6 +142,12 @@ describe("Agent.trade real agent provider wiring", () => {
     expect(fetchImpl).toHaveBeenCalledWith("https://api.openai.com/v1/chat/completions", expect.objectContaining({
       method: "POST",
     }));
+    const requestInit = fetchImpl.mock.calls[0]?.[1] as RequestInit;
+    const requestBody = JSON.parse(String(requestInit.body)) as {
+      response_format?: { type?: string; json_schema?: unknown };
+    };
+    expect(requestBody.response_format).toEqual({ type: "json_object" });
+    expect(JSON.stringify(requestBody.response_format)).not.toContain("json_schema");
     expect(analysis.responseType).toBe("market_read");
     expect(analysis.provider).toMatchObject({
       name: "openai",
@@ -456,6 +462,37 @@ describe("Agent.trade real agent provider wiring", () => {
       name: "openai",
       model: "test-agent-model",
       fallbackReason: "OpenAI provider returned HTTP 401.",
+    });
+  });
+
+  it("handles OpenAI response_format HTTP 400 safely without a draft", async () => {
+    const input = buildTestAgentInput();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        type: "invalid_request_error",
+        code: "invalid_value",
+        param: "response_format",
+        message: "Invalid schema for response_format: all fields must be required.",
+      },
+    }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    }));
+    const provider = new OpenAIAgentProvider({
+      apiKey: "sk-fake",
+      model: "test-agent-model",
+      fetchImpl,
+    });
+
+    const analysis = await provider.analyzeMarket(input);
+
+    expect(analysis.responseType).toBe("refusal");
+    expect(analysis.orderDraft).toBeUndefined();
+    expect(analysis.predictionDraft).toBeUndefined();
+    expect(analysis.provider).toMatchObject({
+      name: "openai",
+      model: "test-agent-model",
+      fallbackReason: "OpenAI provider rejected response_format schema (HTTP 400).",
     });
   });
 

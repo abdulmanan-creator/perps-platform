@@ -13,6 +13,7 @@ const DEFAULT_OPENAI_TIMEOUT_MS = 12_000;
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 const DEEPSEEK_CHAT_COMPLETIONS_URL = "https://api.deepseek.com/chat/completions";
 const QWEN_CHAT_COMPLETIONS_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions";
+const MAX_PROVIDER_ERROR_MESSAGE_LENGTH = 240;
 
 export type AgentFetch = (input: string, init: RequestInit) => Promise<Response>;
 
@@ -100,8 +101,20 @@ export class ChatCompletionAgentProvider implements AgentProvider {
       });
 
       if (!response.ok) {
-        safeLogProviderWarning({ providerName: this.name, input, message: `${providerDisplayName(this.name)} HTTP ${response.status}` });
-        return this.refusal(input, `${providerDisplayName(this.name)} provider returned HTTP ${response.status}.`, startedAt);
+        const providerError = await readProviderError(response);
+        const reason = providerHttpFallbackReason({
+          providerName: this.name,
+          status: response.status,
+          providerError,
+        });
+        safeLogProviderWarning({
+          providerName: this.name,
+          input,
+          message: `${providerDisplayName(this.name)} HTTP ${response.status}`,
+          httpStatus: response.status,
+          providerError,
+        });
+        return this.refusal(input, reason, startedAt);
       }
 
       const content = extractChatCompletionContent(await response.json());
@@ -194,7 +207,7 @@ export class OpenAIAgentProvider extends ChatCompletionAgentProvider {
       apiKey: options.apiKey,
       model: options.model ?? DEFAULT_OPENAI_AGENT_MODEL,
       endpoint: OPENAI_CHAT_COMPLETIONS_URL,
-      responseFormat: "json_schema",
+      responseFormat: "json_object",
       timeoutMs: options.timeoutMs,
       fetchImpl: options.fetchImpl,
     });
@@ -248,11 +261,79 @@ function parseJson(input: string): unknown {
   }
 }
 
+interface SanitizedProviderError {
+  type?: string;
+  code?: string;
+  param?: string;
+  message?: string;
+}
+
+async function readProviderError(response: Response): Promise<SanitizedProviderError | undefined> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("json")) {
+    return undefined;
+  }
+
+  try {
+    const body = await response.json() as unknown;
+    if (!isRecord(body) || !isRecord(body.error)) {
+      return undefined;
+    }
+    return sanitizeProviderError(body.error);
+  } catch {
+    return undefined;
+  }
+}
+
+function sanitizeProviderError(error: Record<string, unknown>): SanitizedProviderError {
+  return {
+    type: sanitizedString(error.type),
+    code: sanitizedString(error.code),
+    param: sanitizedString(error.param),
+    message: truncateProviderErrorMessage(sanitizedString(error.message)),
+  };
+}
+
+function sanitizedString(input: unknown): string | undefined {
+  return typeof input === "string" && input.trim() ? input.trim() : undefined;
+}
+
+function truncateProviderErrorMessage(message: string | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+  return message.length > MAX_PROVIDER_ERROR_MESSAGE_LENGTH
+    ? `${message.slice(0, MAX_PROVIDER_ERROR_MESSAGE_LENGTH)}...`
+    : message;
+}
+
+function providerHttpFallbackReason(args: {
+  providerName: Extract<AgentProviderName, "openai" | "deepseek" | "qwen">;
+  status: number;
+  providerError?: SanitizedProviderError;
+}): string {
+  if (
+    args.providerName === "openai" &&
+    args.status === 400 &&
+    mentionsResponseFormat(args.providerError)
+  ) {
+    return "OpenAI provider rejected response_format schema (HTTP 400).";
+  }
+  return `${providerDisplayName(args.providerName)} provider returned HTTP ${args.status}.`;
+}
+
+function mentionsResponseFormat(error: SanitizedProviderError | undefined): boolean {
+  const text = `${error?.param ?? ""} ${error?.message ?? ""}`.toLowerCase();
+  return text.includes("response_format");
+}
+
 function safeLogProviderWarning(args: {
   providerName: Extract<AgentProviderName, "openai" | "deepseek" | "qwen">;
   input: AgentInput;
   message: string;
   diagnostic?: string;
+  httpStatus?: number;
+  providerError?: SanitizedProviderError;
 }) {
   if (process.env.NODE_ENV === "test") {
     return;
@@ -263,6 +344,8 @@ function safeLogProviderWarning(args: {
     source: args.input.market.source,
     message: args.message,
     diagnostic: args.diagnostic,
+    httpStatus: args.httpStatus,
+    providerError: args.providerError,
   });
 }
 
